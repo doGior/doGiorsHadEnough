@@ -1,0 +1,8 @@
+{
+  "name": "doGior's Had Enough",
+  "description": "Hi, I'm doGior, and I've had enough of searching for Cloudstream plugins that end up broken or abandoned, so I decided to create my own repository",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/plugins.json"
+  ]
+}
