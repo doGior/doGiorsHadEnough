@@ -1,0 +1,166 @@
+[
+    {
+        "iconUrl": "https://www.animeunity.to/apple-touch-icon.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 37226,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "doGior"
+        ],
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA"
+        ],
+        "version": 5,
+        "internalName": "AnimeUnity",
+        "description": "Anime from AnimeUnity",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/AnimeUnity.cs3",
+        "name": "AnimeUnity"
+    },
+    {
+        "iconUrl": "https://static.animeworld.so/assets/images/favicon/android-icon-192x192.png?s",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 20820,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "Gian-Fr",
+            "doGior"
+        ],
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA"
+        ],
+        "version": 4,
+        "internalName": "AnimeWorld",
+        "description": "Anime from AnimeWorld. This plugin is a fork of the AnimeWorld plugin in the ItalianProvider repo",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/AnimeWorld.cs3",
+        "name": "AnimeWorld"
+    },
+    {
+        "iconUrl": "https://www.calciostreaming.mom/templates/calciostreaming1/images/icons/apple-touch-icon.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 9340,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "Gian-Fr",
+            "Adippe",
+            "doGior"
+        ],
+        "tvTypes": [
+            "Live"
+        ],
+        "version": 2,
+        "internalName": "CalcioStreaming",
+        "description": "Live streams from the CalcioStreaming. Forked from the CalcioStreaming plugin in the ItalianProvider repo",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/CalcioStreaming.cs3",
+        "name": "CalcioStreaming"
+    },
+    {
+        "iconUrl": "https://avatars.githubusercontent.com/u/55937028?s=200&v=4",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 14076,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "Gian-Fr",
+            "Adippe",
+            "doGior"
+        ],
+        "tvTypes": [
+            "Live"
+        ],
+        "version": 1,
+        "internalName": "CanaliTV",
+        "description": "Live streams from the Free TV github repository. Forked from the Free-TV plugin in the ItalianProvider repo",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/CanaliTV.cs3",
+        "name": "CanaliTV"
+    },
+    {
+        "iconUrl": "https://streamed.su/favicon.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 27211,
+        "status": 2,
+        "authors": [
+            "doGior"
+        ],
+        "tvTypes": [
+            "Live"
+        ],
+        "version": 8,
+        "internalName": "Streamed",
+        "description": "Live streams of different sports from streamed.su",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/Streamed.cs3",
+        "name": "Streamed"
+    },
+    {
+        "iconUrl": "https://streamingcommunity.computer/apple-touch-icon.png?v=2",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 36875,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "doGior"
+        ],
+        "tvTypes": [
+            "TvSeries",
+            "Movie",
+            "Cartoon"
+        ],
+        "version": 7,
+        "internalName": "StreamingCommunity",
+        "description": "TV Shows and Movies from StreamingCommunity",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/StreamingCommunity.cs3",
+        "name": "StreamingCommunity"
+    },
+    {
+        "iconUrl": "https://toonitalia.green/wp-content/uploads/2023/08/favicon.ico",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 15828,
+        "status": 1,
+        "language": "it",
+        "authors": [
+            "doGior"
+        ],
+        "tvTypes": [
+            "Cartoon",
+            "TvSeries",
+            "Movie",
+            "Anime"
+        ],
+        "version": 1,
+        "internalName": "ToonItalia",
+        "description": "Movies, TV Shows and Anime from ToonItalia.green",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/ToonItalia.cs3",
+        "name": "ToonItalia"
+    },
+    {
+        "iconUrl": "https://www.youtube.com/s/desktop/711fd789/img/logos/favicon_144x144.png",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "fileSize": 39115,
+        "status": 1,
+        "authors": [
+            "doGior"
+        ],
+        "tvTypes": [
+            "Others"
+        ],
+        "version": 5,
+        "internalName": "YouTube",
+        "description": "Videos, playlists and channels from YouTube",
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/YouTube.cs3",
+        "name": "YouTube"
+    }
+]
