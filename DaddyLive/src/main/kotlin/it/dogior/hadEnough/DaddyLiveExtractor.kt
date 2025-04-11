@@ -6,6 +6,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import java.net.URL
 import java.net.URLEncoder
@@ -68,19 +70,21 @@ class DaddyLiveExtractor : ExtractorApi() {
 
         val finalLink = "https://$key.newkso.ru/$key/$url2$m3u8"
 
-        return ExtractorLink(
+        return newExtractorLink(
             sourceName,
             sourceName,
             finalLink,
-            referer = "",
-            isM3u8 = true,
-            headers = mapOf(
+            type = ExtractorLinkType.M3U8,
+        ) {
+            this.referer = ""
+            this.quality = Qualities.Unknown.value
+            this.headers = mapOf(
                 "Referer" to ref,
                 "Origin" to ref,
                 "Keep-Alive" to "true",
                 "User-Agent" to userAgent
-            ),
-            quality = Qualities.Unknown.value
-        )
+            )
+        }
+        
     }
 }

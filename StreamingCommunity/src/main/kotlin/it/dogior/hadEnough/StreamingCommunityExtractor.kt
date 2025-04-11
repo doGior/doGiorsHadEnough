@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -32,14 +34,15 @@ class StreamingCommunityExtractor : ExtractorApi() {
             Log.w(TAG, "FINAL URL: $playlistUrl")
 
             callback.invoke(
-                ExtractorLink(
+                newExtractorLink(
                     source = "Vixcloud",
                     name = "Streaming Community",
                     url = playlistUrl,
-                    referer = referer!!,
-                    isM3u8 = true,
-                    quality = Qualities.Unknown.value
-                )
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = referer!!
+                    this.quality = Qualities.Unknown.value
+                }
             )
         }
 

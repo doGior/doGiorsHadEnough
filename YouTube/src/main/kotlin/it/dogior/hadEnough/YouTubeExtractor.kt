@@ -5,6 +5,8 @@ import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.mvvm.logError
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.schemaStripRegex
@@ -41,14 +43,15 @@ open class YouTubeExtractor(private val hls: Boolean) : ExtractorApi() {
         Log.d("YoutubeExtractor", "HLS Url: ${extractor.hlsUrl}")
         if (hls) {
             callback.invoke(
-                ExtractorLink(
+                newExtractorLink(
                     this.name,
                     this.name,
                     extractor.hlsUrl,
-                    referer ?: "",
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = true
-                )
+                    type = ExtractorLinkType.M3U8
+                ) {
+                    this.referer = referer ?: ""
+                    this.quality = Qualities.Unknown.value
+                }
             )
         } else {
             val stream = M3u8Helper.generateM3u8(this.name, extractor.hlsUrl, "")

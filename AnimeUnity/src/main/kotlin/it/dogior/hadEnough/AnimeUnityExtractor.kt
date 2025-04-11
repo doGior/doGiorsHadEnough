@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -26,14 +28,14 @@ class AnimeUnityExtractor : ExtractorApi() {
         val masterPlaylist = getMasterPlaylistUrl(url)
         if (url.isNotEmpty()) {
             callback.invoke(
-                ExtractorLink(
+                newExtractorLink(
                     source = "Vixcloud",
                     name = "AnimeUnity",
                     url = masterPlaylist,
-                    referer = referer!!,
-                    isM3u8 = true,
-                    quality = Qualities.Unknown.value
-                )
+                ) {
+                    this.referer = referer!!
+                    this.quality = Qualities.Unknown.value
+                }
             )
         }
     }

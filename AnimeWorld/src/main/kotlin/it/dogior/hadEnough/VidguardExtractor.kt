@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.NativeJSON.stringify
@@ -32,14 +34,15 @@ class VidguardExtractor : ExtractorApi() {
         val playlistUrl = sigDecode(json.stream)
 
         callback.invoke(
-            ExtractorLink(
+            newExtractorLink(
                 "VidGuard",
                 "VidGuard",
                 playlistUrl,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                isM3u8 = true
-            )
+                type = ExtractorLinkType.M3U8
+            ){
+                this.referer = mainUrl
+                this.quality = Qualities.Unknown.value
+            }
         )
     }
 

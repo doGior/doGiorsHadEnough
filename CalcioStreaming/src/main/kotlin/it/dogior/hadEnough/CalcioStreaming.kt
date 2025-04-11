@@ -11,7 +11,7 @@ import org.jsoup.nodes.Document
 
 class CalcioStreaming : MainAPI() {
     override var lang = "it"
-    override var mainUrl = "https://calciostreaming.day"
+    override var mainUrl = "https://guardacalcio.cam" // Cambio totale di dominio. Valutare un cambio di naming dell'estensione
     override var name = "CalcioStreaming"
     override val hasMainPage = true
     override val hasChromecastSupport = true
@@ -94,14 +94,15 @@ class CalcioStreaming : MainAPI() {
                 if (newPage.select("script").size >= 6 && streamUrl != null){
                     videoNotFound = false
                     callback(
-                        ExtractorLink(
-                            this.name,
-                            button.text(),
-                            streamUrl,
-                            fixUrl(link),
-                            quality = 0,
-                            true
-                        )
+                        newExtractorLink(
+                            source = this.name,
+                            name = button.text(),
+                            url = streamUrl,
+                            type = ExtractorLinkType.M3U8
+                        ){
+                            this.quality = 0
+                            this.referer = fixUrl(link)
+                        }
                     )
                 }
             }

@@ -18,6 +18,8 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 
 class Huhu(domain: String, private val countries: Map<String, Boolean>, language: String) : MainAPI() {
@@ -92,14 +94,15 @@ class Huhu(domain: String, private val countries: Map<String, Boolean>, language
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         callback(
-            ExtractorLink(
+            newExtractorLink(
                 this.name,
                 this.name,
                 data,
-                referer = "",
-                quality = Qualities.Unknown.value,
-                isM3u8 = true
-            )
+                type = ExtractorLinkType.M3U8
+            ){
+                this.referer = ""
+                this.quality = Qualities.Unknown.value
+            }
         )
         return true
     }
