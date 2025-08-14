@@ -1,0 +1,327 @@
+[
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/AltaDefinizione.cs3",
+        "status": 0,
+        "version": 8,
+        "name": "AltaDefinizione",
+        "internalName": "AltaDefinizione",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Movies and Tv Series from Altadefinizione",
+        "fileSize": 21671,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Documentary"
+        ],
+        "iconUrl": "https://altadefinizione.autos/templates/Dark/img/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-83caeb75bd0776346da06929702509dd5d6a45855765ee76ed28cabcdb2bc36e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/AnimeUnity.cs3",
+        "status": 1,
+        "version": 26,
+        "name": "AnimeUnity",
+        "internalName": "AnimeUnity",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Anime from AnimeUnity",
+        "fileSize": 134697,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA"
+        ],
+        "iconUrl": "https://www.animeunity.so/apple-touch-icon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-cb52c0cc8d5ddb9a6f3bfa3d7990479449ac097a7a7cfed01e088853079bbdc5"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/AnimeWorld.cs3",
+        "status": 1,
+        "version": 18,
+        "name": "AnimeWorld",
+        "internalName": "AnimeWorld",
+        "authors": [
+            "Gian-Fr",
+            "doGior"
+        ],
+        "description": "Anime from AnimeWorld. This plugin is a fork of the AnimeWorld plugin in the ItalianProvider repo",
+        "fileSize": 41097,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA"
+        ],
+        "iconUrl": "https://static.animeworld.ac/assets/images/favicon/android-icon-192x192.png?s",
+        "apiVersion": 1,
+        "fileHash": "sha256-d751833d4b7925e8afa522c353f6fa1b38d3a0505def2a1abe523eb527d225e1"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/Arte.cs3",
+        "status": 1,
+        "version": 4,
+        "name": "Arte",
+        "internalName": "Arte",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Magazine shows, concerts, documentaries, and more: the European culture channel's programmes available to stream free of charge on arte.tv",
+        "fileSize": 36303,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "en",
+        "tvTypes": [
+            "Documentary"
+        ],
+        "iconUrl": "https://static-cdn.arte.tv/replay/favicons/favicon-194x194.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-bd359a3364d501e306b45faf9cbf607e2667881996b73a95cf7d226fecd8b949"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/CalcioStreaming.cs3",
+        "status": 1,
+        "version": 14,
+        "name": "CalcioStreaming",
+        "internalName": "CalcioStreaming",
+        "authors": [
+            "Gian-Fr",
+            "Adippe",
+            "doGior"
+        ],
+        "description": "\u26a0\ufe0fUse AdGuard DNS in the app settings\u26a0\ufe0f Live streams from the CalcioStreaming. Forked from the CalcioStreaming plugin in the ItalianProvider repo",
+        "fileSize": 29017,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://corner.direttecommunity.online/assets/icons/apple-touch-icon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-284aa3bbc84962287b73a61a4a97c0ce2955a7de2dceb91c42241bc4c813540e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/CorsaroNero.cs3",
+        "status": 0,
+        "version": 4,
+        "name": "CorsaroNero",
+        "internalName": "CorsaroNero",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Torrents from Il Corsaro Nero. If something doesn't work the torrent has probably not enough seeds",
+        "fileSize": 32147,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "Movie",
+            "Torrent"
+        ],
+        "iconUrl": "https://ilcorsaronero.link/assets/images/icon-dca0f2c8f780ee155024c67b63f5ebc5.svg",
+        "apiVersion": 1,
+        "fileHash": "sha256-0435049c33d57ba5e12a2e77b539a6f9bcacb9e2662be304a3a0e986af70e88a"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/IlCorsaroViola.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "IlCorsaroViola",
+        "internalName": "IlCorsaroViola",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Torrents from Il Corsaro Viola",
+        "fileSize": 45226,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Torrent",
+            "Documentary"
+        ],
+        "iconUrl": "https://i.imgur.com/OPM9e9p.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-189750d23df33b723669995522024fda5ee0ddfd873c3bae333132dc3dcb1822"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/IPTV.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "IPTV",
+        "internalName": "IPTV",
+        "authors": [
+            "anhdaden",
+            "dogior"
+        ],
+        "description": "General IPTV player. Add a list in the settings and you'll see it in the plugins list in the home",
+        "fileSize": 40065,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://www.shutterstock.com/image-vector/iptv-vector-line-icon-ip-260nw-1841427610.jpg",
+        "apiVersion": 1,
+        "fileHash": "sha256-097ead934efa159b6bca81c416fd4d4f109d972b3a826947253d2c6f32ccf953"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/Nebula.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "Nebula",
+        "internalName": "Nebula",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Plugin to watch the free videos and ONLY THE FREE VIDEOS from nebula.tv",
+        "fileSize": 24084,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "en",
+        "tvTypes": [
+            "Others"
+        ],
+        "iconUrl": "https://nebula.tv/apple-touch-icon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-113e9ef9a8f2f2a71500c74e250b9525572d1be5ab9e145fa619f8fc9eca98a8"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/SimklProvider.cs3",
+        "status": 1,
+        "version": 2,
+        "name": "SimklProvider",
+        "internalName": "SimklProvider",
+        "authors": [
+            "doGior"
+        ],
+        "description": "No Streaming. This is just to open the info page of a show from the simkl library",
+        "fileSize": 11786,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "en",
+        "tvTypes": [
+            "AnimeMovie",
+            "Anime",
+            "OVA",
+            "TvSeries",
+            "Movie",
+            "Documentary",
+            "Cartoon"
+        ],
+        "iconUrl": "https://eu.simkl.in/img_favicon/v2/favicon-192x192.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-a11f30544c4c0754aed0cd649c8c2205c0907a7edc6b45621217338f46043f9e"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/StreamCenter.cs3",
+        "status": 1,
+        "version": 9,
+        "name": "StreamCenter",
+        "internalName": "StreamCenter",
+        "authors": [
+            "Italiani"
+        ],
+        "description": "Film, Serie TV, Anime e TV in un unico posto.",
+        "fileSize": 1410559,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "Anime",
+            "AnimeMovie",
+            "Live"
+        ],
+        "iconUrl": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/StreamCenter/icon.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-1f7ead722b5acb2dacbcd13c4466660541f2407a92c3c72f9c15652ccff7c3b3"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/StreamingCommunity.cs3",
+        "status": 1,
+        "version": 34,
+        "name": "StreamingCommunity",
+        "internalName": "StreamingCommunity",
+        "authors": [
+            "doGior"
+        ],
+        "description": "TV Shows and Movies from StreamingCommunity",
+        "fileSize": 61029,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "language": "it",
+        "tvTypes": [
+            "TvSeries",
+            "Movie",
+            "Documentary",
+            "Cartoon"
+        ],
+        "iconUrl": "https://streamingunity.dog/apple-touch-icon.png?v=2",
+        "apiVersion": 1,
+        "fileHash": "sha256-e321d6ac77390ceeeda807428effcf225e9362365efb47b8f8e40713cf3cff9f"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/TV.cs3",
+        "status": 1,
+        "version": 3,
+        "name": "TV",
+        "internalName": "TV",
+        "authors": [
+            "Gian-Fr",
+            "Adippe",
+            "doGior"
+        ],
+        "description": "Live streams from the Free TV github repository. Forked from the Free-TV plugin in the ItalianProvider repo",
+        "fileSize": 29249,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/master/TV/television.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-4412218868a561a54ab93f5be12d3a7bcc3044b7ac34ba33d8c2193b9443057c"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/Vavoo.cs3",
+        "status": 1,
+        "version": 7,
+        "name": "Vavoo",
+        "internalName": "Vavoo",
+        "authors": [
+            "doGior"
+        ],
+        "description": "\u26a0\ufe0f W.I.P. \u26a0\ufe0f TV channels from vavoo.to",
+        "fileSize": 36264,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "tvTypes": [
+            "Live"
+        ],
+        "iconUrl": "https://vavoo.tv/favicon.ico",
+        "apiVersion": 1,
+        "fileHash": "sha256-7344294448821ac3215ae67b0a1527b0078f5f92774ce10a1015fb7e09f36863"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/YouTube.cs3",
+        "status": 1,
+        "version": 15,
+        "name": "YouTube",
+        "internalName": "YouTube",
+        "authors": [
+            "doGior"
+        ],
+        "description": "Videos, playlists and channels from YouTube",
+        "fileSize": 45230,
+        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "tvTypes": [
+            "Others"
+        ],
+        "iconUrl": "https://www.youtube.com/s/desktop/711fd789/img/logos/favicon_144x144.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-577aad4b037e48ea46c6663a49b47d681014227866eb1980327ba071642c5198"
+    }
+]

@@ -1,0 +1,9 @@
+{
+  "name": "doGior's Had Enough",
+  "iconUrl": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/repo_icon.png",
+  "description": "Repository with mostly italian providers and some international one",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/plugins.json"
+  ]
+}
