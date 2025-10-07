@@ -158,7 +158,7 @@ class StreamingCommunity : MainAPI() {
     }
 
 
-    /*override suspend fun search(query: String): List<SearchResponse> {
+    override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search"
         val params = mapOf("q" to query)
 
@@ -169,7 +169,7 @@ class StreamingCommunity : MainAPI() {
         val result = parseJson<InertiaResponse>(response)
 
         return searchResponseBuilder(result.props.titles!!)
-    }*/
+    }
 
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
