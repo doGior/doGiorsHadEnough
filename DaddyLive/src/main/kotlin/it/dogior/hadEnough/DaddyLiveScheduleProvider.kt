@@ -28,7 +28,7 @@ import java.util.Locale
 import java.util.TimeZone
 
 class DaddyLiveScheduleProvider : MainAPI() {
-    override var mainUrl = "https://daddylive.dad"
+    override var mainUrl = "https://dlhd.dad"
     override var name = "DaddyLive Schedule"
     override val supportedTypes = setOf(TvType.Live)
     override var lang = "un"
@@ -83,7 +83,8 @@ class DaddyLiveScheduleProvider : MainAPI() {
     }
 
     private suspend fun searchResponseBuilder(): List<Pair<String, List<LiveSearchResponse>>> {
-        val headers = mapOf("User-Agent" to userAgent,
+        val headers = mapOf(
+            "User-Agent" to userAgent,
             "Referer" to "$mainUrl/"
         )
         val schedule = app.get(
@@ -99,23 +100,22 @@ class DaddyLiveScheduleProvider : MainAPI() {
             categories.keys().forEach { cat ->
                 val array = categories.getJSONArray(cat)
                 val event = tryParseJson<List<Event>>(array.toString())
-                if (event==null){
+                if (event == null) {
                     Log.d("DaddyLive Schedule - Parsing Error", array.toString())
+                    return@forEach
                 }
-                if (event != null) {
-                    val searchResponses = event.map {
-                        Log.d("BANANA", it.toJson())
-                        it.date = convertStringToLocalDate(date)
-                        eventToSearchResponse(it)
-                    }.toMutableList()
+                val searchResponses = event.map {
+                    it.date = convertStringToLocalDate(date)
+                    eventToSearchResponse(it)
+                }.toMutableList()
 
-                    val fixedCat = cat.replace("</span>", "")
-                    if (events[fixedCat] == null) {
-                        events[fixedCat] = searchResponses
-                    } else {
-                        events[fixedCat]?.addAll(searchResponses)
-                    }
+                val fixedCat = cat.replace("</span>", "")
+                if (events[fixedCat] == null) {
+                    events[fixedCat] = searchResponses
+                } else {
+                    events[fixedCat]?.addAll(searchResponses)
                 }
+
             }
         }
 
@@ -154,7 +154,7 @@ class DaddyLiveScheduleProvider : MainAPI() {
         val event = parseJson<Event>(url)
         val time = convertGMTToLocalTime(event.time)
 
-        return newLiveStreamLoadResponse(event.name,url, event.channels.toJson()) {
+        return newLiveStreamLoadResponse(event.name, url, event.channels.toJson()) {
             this.tags = listOf(event.date + " " + time)
             this.posterUrl = Companion.posterUrl
         }
@@ -207,10 +207,11 @@ class DaddyLiveScheduleProvider : MainAPI() {
 //            )
 //        }
     }
+
     private fun eventToSearchResponse(event: Event): LiveSearchResponse {
         val title = convertGMTToLocalTime(event.time) + " - " + event.name
 
-        return newLiveSearchResponse(title, event.toJson(), TvType.Live){
+        return newLiveSearchResponse(title, event.toJson(), TvType.Live) {
             posterUrl = Companion.posterUrl
         }
     }

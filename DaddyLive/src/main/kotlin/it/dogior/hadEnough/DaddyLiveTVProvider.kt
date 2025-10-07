@@ -1,5 +1,6 @@
 package it.dogior.hadEnough
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
@@ -15,12 +16,13 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
+import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
-import java.util.regex.Pattern
 
 class DaddyLiveTVProvider : MainAPI() {
-    override var mainUrl = "https://daddylive.dad"
+    override var mainUrl = "https://dlhd.dad"
     override var name = "DaddyLive TV"
     override val supportedTypes = setOf(TvType.Live)
     override var lang = "un"
@@ -291,7 +293,7 @@ class DaddyLiveTVProvider : MainAPI() {
     }
 
     private suspend fun searchResponseBuilder(): List<LiveSearchResponse> {
-        val channelsUrl = "$mainUrl/24-7-channels.php"
+        val channelsUrl = "$mainUrl/daddy.json"
         val response = app.post(
             channelsUrl,
             headers = mapOf(
@@ -299,32 +301,19 @@ class DaddyLiveTVProvider : MainAPI() {
                 "User-Agent" to userAgent
             )
         )
-        val respBody = response.body.string()
-        val chBlockPattern =
-            Pattern.compile("<center><h1(.+?)tab-2", Pattern.DOTALL or Pattern.MULTILINE)
-        val chBlockMatcher = chBlockPattern.matcher(respBody)
-        val chBlock = if (chBlockMatcher.find()) chBlockMatcher.group(1) else ""
+        val channel = parseJson<List<Channel>>(response.body.string())
 
-        val chanDataPattern = Pattern.compile("href=\"(.*)\" target(.*)<strong>(.*)</strong>")
-        val chanDataMatcher = chanDataPattern.matcher(chBlock)
-        val chanData = mutableListOf<List<String>>()
-
-        while (chanDataMatcher.find()) {
-            val href = chanDataMatcher.group(1)
-            val target = chanDataMatcher.group(2)
-            val strongText = chanDataMatcher.group(3)
-            chanData.add(listOf(href, target, strongText) as List<String>)
-        }
-
-        return chanData.map {
-            val name = it[2]
-            val url = it[0]
-            channelsName["$mainUrl$url"] = name
+        return channel.map {
+            val name = it.name
+            val url = "$mainUrl/stream/stream-${it.id}.php"
+            channelsName[url] = name
             newLiveSearchResponse(name, url){
                 posterUrl = poster
             }
         }
     }
+
+
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val searchResponses = searchResponseBuilder()
@@ -377,10 +366,15 @@ class DaddyLiveTVProvider : MainAPI() {
         val players = listOf("stream", "cast", "watch", "player")
         val servers = players.map { data.replace("/stream/", "/$it/") }
 
+        Log.d("BANANA", servers.toJson())
         val output = servers.map {
             loadExtractor(it, null, subtitleCallback, callback)
         }
 
         return output.any{it}
     }
+    data class Channel(
+        @JsonProperty("channel_name") val name: String,
+        @JsonProperty("channel_id") val id: String,
+    )
 }

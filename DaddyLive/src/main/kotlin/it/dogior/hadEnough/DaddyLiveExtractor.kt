@@ -18,7 +18,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.URL
 
 class DaddyLiveExtractor : ExtractorApi() {
-    override val mainUrl = ""
+    override val mainUrl = "https://dlhd.dad"
     override val name = "DaddyLive"
     override val requiresReferer = false
     private val userAgent =
@@ -48,7 +48,7 @@ class DaddyLiveExtractor : ExtractorApi() {
     }
 
     private suspend fun extractVideo(url: String, sourceName: String = this.name): ExtractorLink? {
-        if (!url.contains("daddylive")) return null
+        if (!url.contains("dlhd")) return null
 
         val resp = app.post(url, headers = headers).document
         val iframes = resp.select("iframe")
@@ -105,11 +105,12 @@ class DaddyLiveExtractor : ExtractorApi() {
 
     private suspend fun extractFromJxoxkplay(urlNextPage: String, serverUrl: String): String? {
         val page = app.get(urlNextPage, headers).document
-        val script = page.select("script").first { it.data().contains("const XJZ") }.data()
+        Log.d("DDLExt", page.toString())
+        val script = page.select("script").first { it.data().contains("CHANNEL_KEY") }.data()
         Log.d("DDLExt", script)
 
         val bundle = base64Decode(
-            Regex("""(?<=const XJZ=").*(?=")""").find(script)?.value ?: return null
+            Regex("""(?<=const XKZK=").*(?=")""").find(script)?.value ?: return null
         )
         val bundleObj = parseJson<Bundle>(bundle)
         Log.d("DDLExt", bundleObj.toJson())
