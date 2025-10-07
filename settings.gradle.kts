@@ -16,6 +16,7 @@ include(
     "Huhu",
     "IPTV",
 //    "OnlineSerieTV",
+    "Nebula",
     "SimklProvider",
     "StreamingCommunity",
     "TV",
