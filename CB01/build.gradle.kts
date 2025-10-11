@@ -22,7 +22,7 @@ cloudstream {
     requiresResources = false
     language = "it"
 
-    iconUrl = "https://cb01.uno/favicon-512x512.png"
+    iconUrl = "https://cb01.uno/apple-icon-180x180px.png"
 }
 dependencies{
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
