@@ -1,6 +1,5 @@
 package it.dogior.hadEnough
 
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
@@ -13,10 +12,10 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.VPNStatus
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
-import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -31,13 +30,11 @@ class DaddyLiveTVProvider : MainAPI() {
     override val hasDownloadSupport = false
     override val instantLinkLoading = true
 
-    private val userAgent =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36"
-
     @Suppress("ConstPropertyName")
     companion object {
         val channelsName: MutableMap<String, String> = mutableMapOf()
-        private const val poster = "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/master/DaddyLive/daddylive.jpg"
+        private const val poster =
+            "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/refs/heads/master/DaddyLive/daddylive.jpg"
         val countries = listOf(
             "Andorra",
             "UAE",
@@ -293,26 +290,19 @@ class DaddyLiveTVProvider : MainAPI() {
     }
 
     private suspend fun searchResponseBuilder(): List<LiveSearchResponse> {
-        val channelsUrl = "$mainUrl/daddy.json"
-        val response = app.post(
-            channelsUrl,
-            headers = mapOf(
-                "Referer" to mainUrl,
-                "User-Agent" to userAgent
-            )
-        )
-        val channel = parseJson<List<Channel>>(response.body.string())
+        val channelsUrl = "$mainUrl/24-7-channels.php"
+        val response = app.get(channelsUrl).document
+        val channels = response.select("div.grid > a")
 
-        return channel.map {
-            val name = it.name
-            val url = "$mainUrl/stream/stream-${it.id}.php"
+        return channels.map {
+            val name = it.select("div.card__title").text()
+            val url = fixUrl(it.attr("href"))
             channelsName[url] = name
-            newLiveSearchResponse(name, url){
+            newLiveSearchResponse(name, url) {
                 posterUrl = poster
             }
         }
     }
-
 
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -350,8 +340,13 @@ class DaddyLiveTVProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        return newLiveStreamLoadResponse(channelsName[url] ?: "Channel",
-            url, url){
+        val resp = app.get(url)
+        val h2 = resp.document.selectFirst("h2")?.text()
+        val title =
+            h2?.substringBefore('(') ?: channelsName[url] ?: "Channel"
+        val id = h2?.substringAfter("ID ")?.substringBefore(')')
+        val dataUrl = "$mainUrl/%s/stream-$id.php"
+        return newLiveStreamLoadResponse(title, url, dataUrl) {
             posterUrl = poster
         }
     }
@@ -363,18 +358,15 @@ class DaddyLiveTVProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val players = listOf("stream", "cast", "watch", "player")
-        val servers = players.map { data.replace("/stream/", "/$it/") }
+        Log.d("DDL", data)
+        val players = listOf("stream", "cast", "watch", "plus", "casting", "player")
 
-        Log.d("BANANA", servers.toJson())
-        val output = servers.map {
-            loadExtractor(it, null, subtitleCallback, callback)
+        val output = players.map {
+            val url = data.format(it)
+            Log.d("DDL - Servers", url)
+            loadExtractor(url, null, subtitleCallback, callback)
         }
 
-        return output.any{it}
+        return output.any { it }
     }
-    data class Channel(
-        @JsonProperty("channel_name") val name: String,
-        @JsonProperty("channel_id") val id: String,
-    )
 }
