@@ -36,6 +36,7 @@ class DaddyLiveExtractor : ExtractorApi() {
     ) {
         // List of pairs <channel name, link>
         val links = tryParseJson<List<Pair<String, String>>>(url)
+        Log.d("DDLExt - Links", links?.toJson() ?: "null")
         val extractors = links?.map {
             extractVideo(it.second, it.first)
         } ?: listOf(extractVideo(url))
@@ -59,7 +60,7 @@ class DaddyLiveExtractor : ExtractorApi() {
 
         Log.d("DDLExt", url1)
         val finalUrl = (if (url1.contains("vidembed")) extractFromVidembed(url1) else
-            extractFromJxoxkplay(url1, refererBase)) ?: return null
+            extractFromNewzar(url1, refererBase)) ?: return null
 
 
         return newExtractorLink(
@@ -103,14 +104,14 @@ class DaddyLiveExtractor : ExtractorApi() {
         return null
     }
 
-    private suspend fun extractFromJxoxkplay(urlNextPage: String, serverUrl: String): String? {
+    private suspend fun extractFromNewzar(urlNextPage: String, serverUrl: String): String? {
         val page = app.get(urlNextPage, headers).document
-        Log.d("DDLExt", page.toString())
+//        Log.d("DDLExt", page.toString())
         val script = page.select("script").first { it.data().contains("CHANNEL_KEY") }.data()
-        Log.d("DDLExt", script)
+//        Log.d("DDLExt", script)
 
         val bundle = base64Decode(
-            Regex("""(?<=const XKZK=").*(?=")""").find(script)?.value ?: return null
+            Regex("""(?<=const IJXX=").*(?=")""").find(script)?.value ?: return null
         )
         val bundleObj = parseJson<Bundle>(bundle)
         Log.d("DDLExt", bundleObj.toJson())

@@ -13,14 +13,19 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.VPNStatus
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 import org.json.JSONObject
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -82,68 +87,42 @@ class DaddyLiveScheduleProvider : MainAPI() {
         }
     }
 
-    private suspend fun searchResponseBuilder(): List<Pair<String, List<LiveSearchResponse>>> {
-        val headers = mapOf(
-            "User-Agent" to userAgent,
-            "Referer" to "$mainUrl/"
-        )
-        val schedule = app.get(
-            "$mainUrl/schedule/schedule-generated.php",
-            headers,
-            timeout = 10
-        ).body.string()
-        val jsonSchedule = JSONObject(schedule)
-
-        val events = mutableMapOf<String, MutableList<LiveSearchResponse>>()
-        jsonSchedule.keys().forEach { date ->
-            val categories = jsonSchedule.getJSONObject(date)
-            categories.keys().forEach { cat ->
-                val array = categories.getJSONArray(cat)
-                val event = tryParseJson<List<Event>>(array.toString())
-                if (event == null) {
-                    Log.d("DaddyLive Schedule - Parsing Error", array.toString())
-                    return@forEach
-                }
-                val searchResponses = event.map {
-                    it.date = convertStringToLocalDate(date)
-                    eventToSearchResponse(it)
-                }.toMutableList()
-
-                val fixedCat = cat.replace("</span>", "")
-                if (events[fixedCat] == null) {
-                    events[fixedCat] = searchResponses
-                } else {
-                    events[fixedCat]?.addAll(searchResponses)
-                }
-
+    private fun searchResponseBuilder(doc: Element): List<LiveSearchResponse> {
+        return doc.select(".schedule__event").map { e ->
+            val dataTitle = e.select(".schedule__eventHeader").attr("data-title")
+            val eventTitle = e.select(".schedule__eventTitle").text()
+            val channels = e.select(".schedule__channels > a").map { fixUrl(it.attr("href")) }
+            val time = e.select(".schedule__time").text()
+            val formattedTime = convertGMTToLocalTime(time)
+            newLiveSearchResponse("$formattedTime - $eventTitle", dataTitle){
+                this.posterUrl = Companion.posterUrl
             }
-        }
-
-        return events.map {
-            it.key to it.value
         }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val searchResponses = searchResponseBuilder()
-        val sections = searchResponses.map {
+        val doc = app.get(mainUrl).document
+        val schedule = doc.select(".schedule__category").map {
+            val sectionTitle = it.select(".card__meta").text()
+            val events = searchResponseBuilder(it)
             HomePageList(
-                it.first,
-                it.second,
+                sectionTitle,
+                events,
                 false
             )
         }
-
         return newHomePageResponse(
-            sections,
+            schedule,
             false
         )
     }
 
-    // this function gets called when you search for something
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchResponses = searchResponseBuilder().map { it.second }.flatten()
-        val matches = searchResponses.filter {
+        val doc = app.get(mainUrl).document
+        val schedule = doc.select(".schedule__category").map {
+            searchResponseBuilder(it)
+        }.flatten()
+        val matches = schedule.filter {
             query.lowercase().replace(" ", "") in
                     it.name.lowercase().replace(" ", "")
         }
@@ -151,21 +130,23 @@ class DaddyLiveScheduleProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val event = parseJson<Event>(url)
-        val time = convertGMTToLocalTime(event.time)
-
-        return newLiveStreamLoadResponse(event.name, url, event.channels.toJson()) {
-            this.tags = listOf(event.date + " " + time)
+        val doc = app.get(mainUrl).document
+        val dataTitle = url.removePrefix("$mainUrl/")
+        val event = doc.select(".schedule__event").first{
+            val header = it.select("div.schedule__eventHeader")
+            header.attr("data-title") == dataTitle
+        }
+        val eventTitle = event.select(".schedule__eventTitle").text()
+        val channels = event.select(".schedule__channels > a").map {
+            val id = it.attr("href").substringAfter("id=")
+            Channel(it.text(), "$mainUrl/%s/stream-$id.php")
+        }
+        Log.d("DDL Schedule - Channels", channels.toJson())
+        val time = event.select(".schedule__time").text()
+        val formattedTime = convertGMTToLocalTime(time)
+        return newLiveStreamLoadResponse("$formattedTime - $eventTitle", url, dataUrl = channels.toJson()){
             this.posterUrl = Companion.posterUrl
         }
-//        LiveStreamLoadResponse(
-//            event.name,
-//            url,
-//            this.name,
-//            event.channels.toJson(),
-//            tags = listOf(event.date + " " + time),
-//            posterUrl = posterUrl
-//        )
     }
 
 
@@ -175,51 +156,23 @@ class DaddyLiveScheduleProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
+        val players = listOf("stream", "cast", "watch", "plus", "casting", "player")
         val channels = parseJson<List<Channel>>(data)
+
         val links = channels.map {
-            val link = "$mainUrl/stream/stream-${it.channelId}.php"
-            it.channelName to link
-        }
+            players.map { l ->
+                val url = it.channelId.format(l)
+                Log.d("DDL - Servers", url)
+                it.channelName + " - $l" to url
+            }
+        }.flatten()
 
         DaddyLiveExtractor().getUrl(links.toJson(), null, subtitleCallback, callback)
         return true
     }
 
-    data class Event(
-        var date: String?,
-        val time: String,
-        @JsonProperty("event")
-        val name: String,
-        val channels: List<Channel>,
-        @JsonProperty("channels2")
-        val channels2: List<Channel>
-    ) {
-//        fun toSearchResponse(apiName: String): LiveSearchResponse {
-//            val title = this.date?.let { it + " " + convertGMTToLocalTime(time) + " - " + name }
-//                ?: (convertGMTToLocalTime(time) + " - " + name)
-//
-//            return LiveSearchResponse(
-//                title,
-//                this.toJson(),
-//                apiName,
-//                posterUrl = posterUrl,
-//                type = TvType.Live
-//            )
-//        }
-    }
-
-    private fun eventToSearchResponse(event: Event): LiveSearchResponse {
-        val title = convertGMTToLocalTime(event.time) + " - " + event.name
-
-        return newLiveSearchResponse(title, event.toJson(), TvType.Live) {
-            posterUrl = Companion.posterUrl
-        }
-    }
-
     data class Channel(
-        @JsonProperty("channel_name")
         val channelName: String,
-        @JsonProperty("channel_id")
         val channelId: String
     )
 }
