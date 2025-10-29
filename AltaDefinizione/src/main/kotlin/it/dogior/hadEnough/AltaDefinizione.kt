@@ -16,17 +16,15 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addRating
+import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
-import com.lagradost.cloudstream3.utils.loadExtractor
 import it.dogior.hadEnough.extractors.DroploadExtractor
 import it.dogior.hadEnough.extractors.MySupervideoExtractor
-import okhttp3.FormBody
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class AltaDefinizione : MainAPI() {
-    override var mainUrl = "https://altadefinizionegratis.onl"
+    override var mainUrl = "https://altadefinizionegratis.group"
     override var name = "AltaDefinizione"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Documentary)
     override var lang = "it"
@@ -117,7 +115,7 @@ class AltaDefinizione : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
-                addRating(rating)
+                addScore(rating)
             }
         } else {
             val mostraGuardaLink = doc.select("#player1 > iframe").attr("src")
@@ -137,7 +135,7 @@ class AltaDefinizione : MainAPI() {
                 this.plot = plot
                 this.tags = genres
                 this.year = year?.toIntOrNull()
-                addRating(rating)
+                addScore(rating)
             }
         }
     }
