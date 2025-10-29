@@ -85,7 +85,7 @@ open class SimklProvider : MainAPI() {
             this.posterUrl = poster
             this.recommendations = recommendations
             this.year = year.toIntOrNull()
-            addRating(rating)
+            addScore(rating)
             duration?.let { this.duration = parseDurationToMinutes(it) }
         }
     }
