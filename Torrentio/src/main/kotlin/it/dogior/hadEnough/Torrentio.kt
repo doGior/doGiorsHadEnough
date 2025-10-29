@@ -25,6 +25,7 @@ import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.Qualities
@@ -119,7 +120,7 @@ class Torrentio : TmdbProvider() {
         val bgPoster = getImageUrl(res.backdropPath, getOriginal = true)
         val releaseDate = res.releaseDate ?: res.firstAirDate
         val year = releaseDate?.split("-")?.first()?.toIntOrNull()
-        val rating = res.voteAverage.toString().toRatingInt()
+        val rating = res.voteAverage.toString()
         val genres = res.genres?.mapNotNull { it.name }
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
@@ -158,7 +159,7 @@ class Torrentio : TmdbProvider() {
                 this.plot = res.overview
                 this.duration = res.runtime
                 this.tags = genres
-                this.rating = rating
+                addScore(rating)
                 this.recommendations = recommendations
                 this.actors = actors
                 addTrailer(trailer)
@@ -177,7 +178,7 @@ class Torrentio : TmdbProvider() {
                 this.year = year
                 this.plot = res.overview
                 this.tags = genres
-                this.rating = rating
+                addScore(rating)
                 this.recommendations = recommendations
                 this.actors = actors
                 addTrailer(trailer)
