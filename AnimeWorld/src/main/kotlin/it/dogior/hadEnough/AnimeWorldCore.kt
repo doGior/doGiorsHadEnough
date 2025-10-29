@@ -10,7 +10,7 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
-import com.lagradost.cloudstream3.LoadResponse.Companion.addRating
+import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
@@ -346,7 +346,7 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             tags = genres
             addMalId(malId)
             addAniListId(anlId)
-            addRating(rating)
+            addScore(rating)
             duration?.let { addDuration(duration) }
             addTrailer(trailerUrl)
             this.recommendations = recommendations
