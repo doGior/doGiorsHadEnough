@@ -26,8 +26,8 @@ class AnimeWorldPlugin : Plugin() {
             registerMainAPI(AnimeWorldCore(isSplit))
         }
 
-        val activity = context as AppCompatActivity
-        openSettings = {
+        openSettings = { ctx ->
+            val activity = ctx as AppCompatActivity
             val frag = Settings(this)
             frag.show(activity.supportFragmentManager, "Frag")
         }

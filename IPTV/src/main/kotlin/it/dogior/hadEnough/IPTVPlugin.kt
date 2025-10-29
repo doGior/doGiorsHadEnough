@@ -3,9 +3,7 @@ package it.dogior.hadEnough
 import android.content.Context
 import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.plugins.*
-import com.lagradost.cloudstream3.AcraApplication.Companion.context
 import com.lagradost.cloudstream3.AcraApplication.Companion.getKey
 
 @CloudstreamPlugin
@@ -15,13 +13,11 @@ class IPTVPlugin : Plugin() {
     }
 
     init {
-        this.openSettings = {
+        this.openSettings = { ctx ->
+            val activity = ctx as AppCompatActivity
             try {
-                val activity = it as? AppCompatActivity
-                if (activity != null) {
-                    val frag = IPTVSettingsFragment(this)
-                    frag.show(activity.supportFragmentManager, "IPTV")
-                }
+                val frag = IPTVSettingsFragment(this)
+                frag.show(activity.supportFragmentManager, "IPTV")
             } catch (e: Exception) {
             }
         }

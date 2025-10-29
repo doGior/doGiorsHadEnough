@@ -24,8 +24,8 @@ class ArtePlugin: Plugin() {
         registerMainAPI(Arte(languageToCode[language] ?: "it"))
 
         // Enable settings
-        val activity = context as AppCompatActivity
-        openSettings = {
+        openSettings = {ctx ->
+            val activity = ctx as AppCompatActivity
             val frag = Settings(this, sharedPref)
             frag.show(activity.supportFragmentManager, "Frag")
         }

@@ -114,8 +114,8 @@ class TVPlugin : Plugin() {
 
         registerMainAPI(TV(selectedPlaylists.toList(), lang, sharedPref))
 
-        val activity = context as AppCompatActivity
-        openSettings = {
+        openSettings = { ctx ->
+            val activity = ctx as AppCompatActivity
             val frag = Settings(this, sharedPref, playlistsToLang.keys.toList())
             frag.show(activity.supportFragmentManager, "Frag")
         }

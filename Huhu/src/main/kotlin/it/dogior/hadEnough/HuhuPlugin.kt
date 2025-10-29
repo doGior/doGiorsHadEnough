@@ -70,8 +70,8 @@ class HuhuPlugin : Plugin() {
         registerMainAPI(Huhu(domain, savedContries ?: countries, lang))
 
         // Enable settings
-        val activity = context as AppCompatActivity
-        openSettings = {
+        openSettings = {ctx ->
+            val activity = ctx as AppCompatActivity
             val frag = Settings(this, sharedPref, countries)
             frag.show(activity.supportFragmentManager, "Frag")
         }

@@ -30,8 +30,8 @@ class YouTubePlugin : Plugin() {
         registerMainAPI(YouTubeChannelProvider(language))
         registerExtractorAPI(YouTubeExtractor())
 
-        val activity = context as AppCompatActivity
-        openSettings = {
+        openSettings = {ctx ->
+            val activity = ctx as AppCompatActivity
             val frag = SettingsFragment(this, sharedPref)
             frag.show(activity.supportFragmentManager, "Frag")
         }
