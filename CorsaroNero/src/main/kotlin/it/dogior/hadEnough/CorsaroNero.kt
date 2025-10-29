@@ -26,6 +26,7 @@ import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.CommonActivity.showToast
+import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 
 
 class CorsaroNero : TmdbProvider() {
@@ -101,7 +102,7 @@ class CorsaroNero : TmdbProvider() {
         val bgPoster = getImageUrl(res.backdropPath, getOriginal = true)
         val releaseDate = res.releaseDate ?: res.firstAirDate
         val year = releaseDate?.split("-")?.first()?.toIntOrNull()
-        val rating = res.voteAverage.toString().toRatingInt()
+
         val genres = res.genres?.mapNotNull { it.name }
 
         val actors = res.credits?.cast?.mapNotNull { cast ->
@@ -138,7 +139,7 @@ class CorsaroNero : TmdbProvider() {
             this.plot = res.overview
             this.duration = res.runtime
             this.tags = genres
-            this.rating = rating
+            addScore(res.voteAverage.toString())
             this.recommendations = recommendations
             this.actors = actors
             addTrailer(trailer)
