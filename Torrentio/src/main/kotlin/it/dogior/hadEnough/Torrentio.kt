@@ -18,7 +18,6 @@ import com.lagradost.cloudstream3.metaproviders.TmdbProvider
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.toRatingInt
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.INFER_TYPE
@@ -26,7 +25,9 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
+import com.lagradost.cloudstream3.SearchResponseList
 import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.Qualities
 import java.text.SimpleDateFormat
@@ -91,14 +92,16 @@ class Torrentio : TmdbProvider() {
         return newHomePageResponse(request.name, home)
     }
 
-
-    override suspend fun search(query: String): List<SearchResponse>? {
-        return app.get(
-            "$tmdbAPI/search/multi?language=it-IT&query=$query&page=1&include_adult=true",
+    override suspend fun search(query: String, page: Int): SearchResponseList {
+        val response = app.get(
+            "$tmdbAPI/search/multi?language=it-IT&query=$query&page=$page&include_adult=true",
             headers = authHeaders
-        ).parsedSafe<Results>()?.results?.mapNotNull { media ->
+        ).parsedSafe<Results>()
+        val results = response?.results?.mapNotNull { media ->
             media.toSearchResponse()
-        }
+        } ?: emptyList()
+        val hasNext = page < (response?.totalPages ?: 0)
+        return newSearchResponseList(results, hasNext)
     }
 
     override suspend fun load(url: String): LoadResponse? {

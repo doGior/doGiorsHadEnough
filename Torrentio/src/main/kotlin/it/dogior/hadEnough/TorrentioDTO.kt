@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 
 data class Results(
     @JsonProperty("results") val results: ArrayList<Media>? = arrayListOf(),
+    @JsonProperty("total_pages") val totalPages: Int,
 )
 
 data class Media(
