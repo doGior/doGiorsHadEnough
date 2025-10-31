@@ -238,14 +238,17 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        val document = request("$mainUrl/filter?sort=0&keyword=$query").document
+        val pageParam = if (page <= 1) "" else "&page=$page"
+        val document = request("$mainUrl/filter?sort=0&keyword=${query.trim()}$pageParam").document
 
         val list = document.select(".film-list > .item").map {
             it.toSearchResult(false)
         }
         val pagingWrapper = document.select("#paging-form").firstOrNull()
         val totalPages = pagingWrapper?.select("span.total")?.text()?.toIntOrNull()
+        Log.d("BANANA", "$totalPages")
         val hasNextPage = totalPages != null && (page + 1) < totalPages
+        Log.d("BANANA", "$hasNextPage")
 
         val searchResponses = list.filter { anime ->
             filterByDubStatus(anime)
@@ -361,7 +364,6 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             this.comingSoon = comingSoon
             if (episodes.isNotEmpty() && nextAiringUnix != null && episodes.last().episode != null) {
                 this.nextAiring = NextAiring(episodes.last().episode!! + 1, nextAiringUnix, null)
-//                this.nextAiring = NextAiring(episodes.last().episode!! + 1, nextAiringUnix)
             }
         }
     }
