@@ -33,12 +33,11 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 
-class StreamingCommunity : MainAPI() {
-    override var mainUrl = Companion.mainUrl
+class StreamingCommunity(override var lang: String = "it") : MainAPI() {
+    override var mainUrl = Companion.mainUrl + lang
     override var name = Companion.name
     override var supportedTypes =
         setOf(TvType.Movie, TvType.TvSeries, TvType.Cartoon, TvType.Documentary)
-    override var lang = "it"
     override val hasMainPage = true
 
     companion object {
@@ -49,12 +48,12 @@ class StreamingCommunity : MainAPI() {
             "X-Inertia-Version" to inertiaVersion,
             "X-Requested-With" to "XMLHttpRequest",
         ).toMutableMap()
-        val mainUrl = "https://streamingunity.tv/it"
+        val mainUrl = "https://streamingunity.tv/"
         var name = "StreamingCommunity"
         val TAG = "SCommunity"
     }
 
-    private val sectionNamesList = mainPageOf(
+    private val sectionNamesListIT = mainPageOf(
         "$mainUrl/browse/top10" to "Top 10 di oggi",
         "$mainUrl/browse/trending" to "I Titoli Del Momento",
         "$mainUrl/browse/latest" to "Aggiunti di Recente",
@@ -73,7 +72,27 @@ class StreamingCommunity : MainAPI() {
         "$mainUrl/browse/genre?g=Romance" to "Romance",
         "$mainUrl/browse/genre?g=Thriller" to "Thriller",
     )
-    override val mainPage = sectionNamesList
+    private val sectionNamesListEN = mainPageOf(
+        "$mainUrl/browse/top10" to "Top 10 of Today",
+        "$mainUrl/browse/trending" to "Trending Titles",
+        "$mainUrl/browse/latest" to "Recently Added",
+        "$mainUrl/browse/genre?g=Animation" to "Animation",
+        "$mainUrl/browse/genre?g=Adventure" to "Adventure",
+        "$mainUrl/browse/genre?g=Action" to "Action",
+        "$mainUrl/browse/genre?g=Comedy" to "Comedy",
+        "$mainUrl/browse/genre?g=Crime" to "Crime",
+        "$mainUrl/browse/genre?g=Documentary" to "Documentary",
+        "$mainUrl/browse/genre?g=Drama" to "Drama",
+        "$mainUrl/browse/genre?g=Family" to "Family",
+        "$mainUrl/browse/genre?g=Science Fiction" to "Science Fiction",
+        "$mainUrl/browse/genre?g=Fantasy" to "Fantasy",
+        "$mainUrl/browse/genre?g=Horror" to "Horror",
+        "$mainUrl/browse/genre?g=Reality" to "Reality",
+        "$mainUrl/browse/genre?g=Romance" to "Romance",
+        "$mainUrl/browse/genre?g=Thriller" to "Thriller",
+    )
+    private val sections = if (lang == "it") sectionNamesListIT else sectionNamesListEN
+    override val mainPage = sections
 
     private suspend fun setupHeaders() {
         val response = app.get("$mainUrl/archive")
@@ -112,7 +131,7 @@ class StreamingCommunity : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         var url = mainUrl.substringBeforeLast("/") + "/api" +
                 request.data.substringAfter(mainUrl)
-        val params = mutableMapOf("lang" to "it")
+        val params = mutableMapOf("lang" to lang)
 
         val section = request.data.substringAfterLast("/")
         when (section) {
@@ -174,7 +193,7 @@ class StreamingCommunity : MainAPI() {
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val searchUrl = "${mainUrl.replace("/it", "")}/api/search"
-        val params = mutableMapOf("q" to query, "lang" to "it")
+        val params = mutableMapOf("q" to query, "lang" to lang)
         if (page > 0) {
             params["offset"] = ((page - 1) * 60).toString()
         }
@@ -284,7 +303,7 @@ class StreamingCommunity : MainAPI() {
     private fun getActualUrl(url: String) =
         if (!url.contains(mainUrl)) {
             val replacingValue =
-                if (url.contains("/it/")) mainUrl.toHttpUrl().host else mainUrl.toHttpUrl().host + "/it"
+                if (url.contains("/it/") || url.contains("/en/")) mainUrl.toHttpUrl().host else mainUrl.toHttpUrl().host + "/$lang"
             val actualUrl = url.replace(url.toHttpUrl().host, replacingValue)
 
             Log.d("$TAG:UrlFix", "Old: $url\nNew: $actualUrl")
