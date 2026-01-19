@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 4
+version = 5
 
 
 cloudstream {
@@ -22,5 +22,5 @@ cloudstream {
     requiresResources = false
     language = "it"
 
-    iconUrl = "https://altadefinizionegratis.group/templates/Dark/img/favicon.ico"
+    iconUrl = "https://altadefinizionegratis.fun/templates/Dark/img/favicon.ico"
 }
