@@ -24,7 +24,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class AltaDefinizione : MainAPI() {
-    override var mainUrl = "https://altadefinizionegratis.group"
+    override var mainUrl = "https://altadefinizionegratis.quest"
     override var name = "AltaDefinizione"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Documentary)
     override var lang = "it"
@@ -61,9 +61,11 @@ class AltaDefinizione : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "${request.data}page/$page/"
         val doc = app.get(url).document
-        val items = doc.select("#dle-content > .col-lg-3").mapNotNull {
+        
+        val items = doc.select("#dle-content > div").mapNotNull {
             it.toSearchResponse()
         }
+        
         val pagination = doc.select("div.pagin > a").last()?.text()?.toIntOrNull()
         val hasNext = page < (pagination ?: 0)
 
@@ -71,7 +73,9 @@ class AltaDefinizione : MainAPI() {
     }
 
     private fun Element.toSearchResponse(): MovieSearchResponse? {
-        val box = this.selectFirst(".wrapperImage") ?: return null
+        
+        val box = this.selectFirst(".box") ?: return null
+        
         val img = box.selectFirst("img.wp-post-image")
         val href = box.selectFirst("a")?.attr("href") ?: return null
         val title = box.select("h2.titleFilm > a").text().trim()
@@ -80,7 +84,10 @@ class AltaDefinizione : MainAPI() {
         } else {
             img?.attr("data-src")
         }
-        val rating = this.selectFirst("div.imdb-rate")?.ownText()
+        
+        
+        val rating = box.selectFirst("div.imdb-rate")?.ownText()
+        
         return newMovieSearchResponse(title, href) {
             this.posterUrl = fixUrlNull(poster)
             this.score = Score.from(rating, 10)
@@ -89,9 +96,11 @@ class AltaDefinizione : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val doc = app.get("$mainUrl/?story=$query&do=search&subaction=search").document
-        val container = doc.select("#dle-content > .col-lg-3")
-
-        return container.select("div.box").mapNotNull {
+        
+        
+        val container = doc.select("#dle-content > div")
+        
+        return container.mapNotNull {
             it.toSearchResponse()
         }
     }
@@ -109,6 +118,7 @@ class AltaDefinizione : MainAPI() {
         val genres = genreElements.select("a").map { it.text() }
         val yearElements = details.toList().first { it.text().contains("Anno: ") }
         val year = yearElements.select("div").last()?.text()
+        
         return if (url.contains("/serie-tv/")) {
             val episodes = getEpisodes(doc, poster)
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -118,7 +128,17 @@ class AltaDefinizione : MainAPI() {
                 addScore(rating)
             }
         } else {
+            
             val mostraGuardaLink = doc.select("#player1 > iframe").attr("src")
+            
+            
+            val altLinks = doc.select("#listRes a").mapNotNull { element ->
+                val href = element.attr("href")
+                if (href.isNotEmpty() && href != "#") {
+                    fixUrl(href)
+                } else null
+            }.filter { it.contains("/4k/film/embed/") }
+            
             val link = if (mostraGuardaLink.contains("mostraguarda")) {
                 val mostraGuarda = app.get(mostraGuardaLink).document
                 val mirrors = mostraGuarda.select("ul._player-mirrors > li").mapNotNull {
@@ -126,10 +146,11 @@ class AltaDefinizione : MainAPI() {
                     if (l.contains("mostraguarda")) null
                     else fixUrlNull(l)
                 }
-                mirrors
+                mirrors + altLinks 
             } else {
-                emptyList()
+                altLinks
             }
+            
             newMovieLoadResponse(title, url, TvType.Movie, link) {
                 this.posterUrl = poster
                 this.plot = plot
@@ -178,7 +199,6 @@ class AltaDefinizione : MainAPI() {
                 DroploadExtractor().getUrl(it, null, subtitleCallback, callback)
             } else {
                 MySupervideoExtractor().getUrl(it, null, subtitleCallback, callback)
-//                loadExtractor(it, null, subtitleCallback, callback)
             }
         }
         return false
