@@ -11,11 +11,12 @@ import org.jsoup.nodes.Document
 
 class CalcioStreaming : MainAPI() {
     override var lang = "it"
-    override var mainUrl = "https://guarda.direttecommunity.online/"
+    override var mainUrl = "https://uno.direttecommunity.online/"
     override var name = "CalcioStreaming"
     override val hasMainPage = true
     override val hasChromecastSupport = true
     override val supportedTypes = setOf(TvType.Live)
+    override var sequentialMainPage = true
     val cfKiller = CloudflareKiller()
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -32,7 +33,8 @@ class CalcioStreaming : MainAPI() {
             val shows = it.select("div.owl-carousel > .slider-tile-inner > .box-16x9").map {
                 val href = it.selectFirst("a")!!.attr("href")
                 val name = ""
-                val posterUrl = fixUrl(it.selectFirst("a > img")!!.attr("src"))
+                val posterUrl = fixUrl(it.selectFirst("img.tile-image")!!.attr("src"))
+                    .replace("//uploads", "/uploads")
                 newLiveSearchResponse(name, href, TvType.Live) {
                     this.posterUrl = posterUrl
                 }
@@ -58,6 +60,7 @@ class CalcioStreaming : MainAPI() {
         val description = infoBlock.select("div.info-span > span").toList().joinToString(" - ")
         return newLiveStreamLoadResponse(name = title, url = url, dataUrl = url) {
             this.posterUrl = fixUrl(posterUrl)
+                .replace("//uploads", "/uploads")
             this.plot = description
         }
     }
