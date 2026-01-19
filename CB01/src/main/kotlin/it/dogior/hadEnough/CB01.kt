@@ -42,11 +42,12 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 
 class CB01 : MainAPI() {
-    override var mainUrl = "https://cb01.uno"
+    override var mainUrl = "https://cb01official.uno"
     override var name = "CB01"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Cartoon)
     override var lang = "it"
     override val hasMainPage = true
+    override var sequentialMainPage = true
 
     override val mainPage = mainPageOf(
         mainUrl to "Film",
@@ -67,7 +68,7 @@ class CB01 : MainAPI() {
             .replace(Regex("""[-–] COMPLETA"""), "").trim()
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page > 1) "${request.data}/page/$page/" else request.data
         val response = app.get(url)
 
@@ -76,7 +77,11 @@ class CB01 : MainAPI() {
         }
 
         val document = response.document
-        val items = document.selectFirst(".sequex-one-columns")!!.select(".post")
+        val items = document.selectFirst(".sequex-one-columns")?.select(".post")
+        if (items == null){
+            Log.d("CB01 Page Response", document.toString())
+            return null
+        }
         val posts = items.mapNotNull { card ->
             val poster = card.selectFirst("img")?.attr("src")
             val data = card.selectFirst("script")?.data()
@@ -154,24 +159,20 @@ class CB01 : MainAPI() {
         return results
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val urlPath = url.substringAfter("//").substringAfter('/')
-        if (actualMainUrl.isEmpty()) {
-            val r = app.get(url)
-            actualMainUrl = r.okhttpResponse.request.url.toString().substringBeforeLast('/')
-        }
-        val actualUrl = "$actualMainUrl/$urlPath"
-        Log.d("CB01:load", url)
-
+    override suspend fun load(url: String): LoadResponse? {
         val document =
-            app.get(actualUrl, headers = mapOf("Host" to actualUrl.toHttpUrl().host)).document
-        val mainContainer = document.selectFirst(".sequex-main-container")!!
+            app.get(url).document
+        val mainContainer = document.selectFirst(".sequex-main-container")
+        if (mainContainer == null){
+            Log.d("CB01", document.toString())
+            return null
+        }
         val poster =
             mainContainer.selectFirst("img.responsive-locandina")?.attr("src")
         val banner = mainContainer.selectFirst("#sequex-page-title-img")?.attr("data-img")
         val title = mainContainer.selectFirst("h1")?.text()!!
 //        val actionTable = mainContainer.selectFirst("table.cbtable:nth-child(5)")
-        val isMovie = !actualUrl.contains("serietv")
+        val isMovie = !url.contains("serietv")
         val type = if (isMovie) TvType.Movie else TvType.TvSeries
         return if (isMovie) {
             val year = Regex("\\d{4}").find(title)?.value?.toIntOrNull()
@@ -198,7 +199,7 @@ class CB01 : MainAPI() {
                 it.subList(links.size - 2, it.size)
             }?.toJson() ?: "null"
 
-            newMovieLoadResponse(fixTitle(title, true), actualUrl, type, data) {
+            newMovieLoadResponse(fixTitle(title, true), url, type, data) {
                 addPoster(poster)
                 this.plot = plot
                 this.backgroundPosterUrl = banner
@@ -214,7 +215,7 @@ class CB01 : MainAPI() {
             val plot = description?.last()?.trim()
             val tags = description?.first()?.split('/')
             val (episodes, seasons) = getEpisodes(document)
-            newTvSeriesLoadResponse(fixTitle(title, false), actualUrl, type, episodes) {
+            newTvSeriesLoadResponse(fixTitle(title, false), url, type, episodes) {
                 addPoster(poster)
                 addSeasonNames(seasons)
                 this.plot = plot
@@ -325,7 +326,8 @@ class CB01 : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-//        Log.d("CB01", "Data: " + data)
+//        Log.d("CB01 - LoadLinks", "Data: $data")
+        //TODO: update bypass functions
         if (data == "null") return false
         var links = parseJson<List<String>>(data)
         links = links.filter { it.contains("uprot.net") || it.contains("stayonline") }
