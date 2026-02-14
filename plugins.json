@@ -244,9 +244,9 @@
         "name": "SimklProvider"
     },
     {
-        "iconUrl": "https://streamingunity.tv/apple-touch-icon.png?v=2",
+        "iconUrl": "https://streamingunity.club/apple-touch-icon.png?v=2",
         "apiVersion": 1,
-        "repositoryUrl": "https://github.com/doGior/doGiorsHadEnough",
+        "repositoryUrl": "https://github.com/fciccioend/end",
         "fileSize": 51928,
         "status": 1,
         "language": "it",
@@ -259,10 +259,10 @@
             "Documentary",
             "Cartoon"
         ],
-        "version": 24,
+        "version": 25,
         "internalName": "StreamingCommunity",
         "description": "TV Shows and Movies from StreamingCommunity (now StreamingUnity)",
-        "url": "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/StreamingCommunity.cs3",
+        "url": "https://raw.githubusercontent.com/fciccioend/end/builds/StreamingCommunity.cs3",
         "name": "StreamingCommunity"
     },
     {

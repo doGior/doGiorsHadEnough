@@ -4,6 +4,6 @@
   "description": "Repository with mostly italian providers and some international one",
   "manifestVersion": 1,
   "pluginLists": [
-    "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/plugins.json"
+    "https://raw.githubusercontent.com/fciccioend/end/builds/plugins.json"
   ]
 }
