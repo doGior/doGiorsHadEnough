@@ -50,6 +50,7 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE/src
           echo TMDB_API=$TMDB_API >> secrets.properties
+          echo SIMKL_CLIENT_ID=$SIMKL_CLIENT_ID >> secrets.properties
 
       - name: Build Plugins
         run: |
