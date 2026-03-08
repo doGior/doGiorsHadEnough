@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.konan.properties.Properties
+
 // use an integer for version numbers
 version = 24
 
@@ -34,8 +36,15 @@ android {
         buildConfig = true
         viewBinding = true
     }
+    defaultConfig {
+        val properties = Properties()
+        properties.load(project.rootProject.file("secrets.properties").inputStream())
+        android.buildFeatures.buildConfig = true
+        buildConfigField("String", "SIMKL_CLIENT_ID", "\"${properties.getProperty("SIMKL_CLIENT_ID")}\"")
+    }
 }
 
 dependencies {
     implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.room:room-compiler:2.8.4")
 }

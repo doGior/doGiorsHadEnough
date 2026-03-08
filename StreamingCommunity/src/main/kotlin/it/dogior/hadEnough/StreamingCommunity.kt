@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
+import com.lagradost.cloudstream3.LoadResponse.Companion.addSimklId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
@@ -31,6 +32,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.json.JSONObject
 
 
 class StreamingCommunity(override var lang: String = "it") : MainAPI() {
@@ -215,6 +217,19 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         }
     }
 
+    private suspend fun fetchSimklId(
+        imdbId: String,
+        isSeries: Boolean
+    ): Int? = runCatching {
+        val type = if (isSeries) "tv" else "movies"
+        val url = "https://api.simkl.com/$type/$imdbId?client_id=${BuildConfig.SIMKL_CLIENT_ID}"
+
+        JSONObject(app.get(url).text)
+            .optJSONObject("ids")
+            ?.optInt("simkl")
+            ?.takeIf { it != 0 }
+    }.getOrNull()
+
     // This function gets called when you enter the page/show
     override suspend fun load(url: String): LoadResponse {
         val actualUrl = getActualUrl(url)
@@ -251,7 +266,10 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.plot = title.plot
                 title.age?.let { this.contentRating = "$it+" }
                 this.recommendations = related?.titles?.let { searchResponseBuilder(it) }
-                title.imdbId?.let { this.addImdbId(it) }
+                title.imdbId?.let {
+                    this.addImdbId(it)
+                    this.addSimklId(fetchSimklId(it,true))
+                }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
                 this.addActors(title.mainActors?.map { it.name })
                 this.addScore(title.score)
@@ -286,7 +304,10 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.addActors(title.mainActors?.map { it.name })
                 this.addScore(title.score)
 
-                title.imdbId?.let { this.addImdbId(it) }
+                title.imdbId?.let {
+                    this.addImdbId(it)
+                    this.addSimklId(fetchSimklId(it,false))
+                }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
 
                 title.runtime?.let { this.duration = it }
