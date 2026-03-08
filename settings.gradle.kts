@@ -20,6 +20,6 @@ include(
     "SimklProvider",
     "StreamingCommunity",
     "TV",
-    "Torrentio"
-//    "YouTube"
+    "Torrentio",
+    "YouTube"
 )

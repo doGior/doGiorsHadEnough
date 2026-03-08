@@ -77,16 +77,6 @@ class SettingsFragment(
         val headerTw = view.findView<TextView>("header_tw")
         headerTw.text = getString("header_tw")
 
-        val hlsSwitch = view.findView<Switch>("hls_switch")
-        hlsSwitch.text = getString("hls")
-        hlsSwitch.isChecked = sharedPref?.getBoolean("hls", true) ?: true
-        hlsSwitch.setOnCheckedChangeListener { compoundButton, b ->
-            with(sharedPref?.edit()) {
-                this?.putBoolean("hls", hlsSwitch.isChecked)
-                this?.apply()
-            }
-        }
-
         val localizationTW = view.findView<TextView>("localization_tw")
         val homepageTW = view.findView<TextView>("homepage_tw")
 
