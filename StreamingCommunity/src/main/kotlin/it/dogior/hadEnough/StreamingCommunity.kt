@@ -137,16 +137,9 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
 
         val section = request.data.substringAfterLast("/")
         when (section) {
-            "trending" -> {
-//                Log.d(TAG, "TRENDING")
-            }
-
-            "latest" -> {
-//                Log.d(TAG, "LATEST")
-            }
-
+            "trending",
+            "latest",
             "top10" -> {
-//                Log.d(TAG, "TOP10")
             }
 
             else -> {
@@ -247,6 +240,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         val related = props.sliders?.getOrNull(0)
         val trailers = title.trailers?.mapNotNull { it.getYoutubeUrl() }
         val poster = getPoster(title)
+        val simklId = title.imdbId?.let { fetchSimklId(it, title.type == "tv") }
 
         if (title.type == "tv") {
             val episodes: List<Episode> = getEpisodes(props)
@@ -266,10 +260,8 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.plot = title.plot
                 title.age?.let { this.contentRating = "$it+" }
                 this.recommendations = related?.titles?.let { searchResponseBuilder(it) }
-                title.imdbId?.let {
-                    this.addImdbId(it)
-                    this.addSimklId(fetchSimklId(it,true))
-                }
+                title.imdbId?.let { this.addImdbId(it) }
+                simklId?.let { this.addSimklId(it) }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
                 this.addActors(title.mainActors?.map { it.name })
                 this.addScore(title.score)
@@ -306,8 +298,8 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
 
                 title.imdbId?.let {
                     this.addImdbId(it)
-                    this.addSimklId(fetchSimklId(it,false))
                 }
+                simklId?.let { this.addSimklId(it) }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
 
                 title.runtime?.let { this.duration = it }
@@ -357,7 +349,8 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                     type = "tv",
                     tmdbId = title.tmdbId,
                     seasonNumber = season.number,
-                    episodeNumber = ep.number)
+                    episodeNumber = ep.number
+                )
                 episodeList.add(
                     newEpisode(loadData.toJson()) {
                         this.name = ep.name
@@ -394,9 +387,9 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
             callback = callback
         )
 
-        val vixsrcUrl = if(loadData.type == "movie"){
+        val vixsrcUrl = if (loadData.type == "movie") {
             "https://vixsrc.to/movie/${loadData.tmdbId}"
-        } else{
+        } else {
             "https://vixsrc.to/tv/${loadData.tmdbId}/${loadData.seasonNumber}/${loadData.episodeNumber}"
         }
 
