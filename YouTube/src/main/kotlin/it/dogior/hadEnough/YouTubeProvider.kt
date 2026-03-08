@@ -2,6 +2,8 @@ package it.dogior.hadEnough
 
 import android.content.SharedPreferences
 import com.lagradost.api.Log
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -33,12 +35,13 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeService
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
-class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferences?) : MainAPI() {
+open class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferences?) : MainAPI() {
     override var mainUrl = MAIN_URL
     override var name = "YouTube"
     override val supportedTypes = setOf(TvType.Others)
     override val hasMainPage = true
     override var lang = language
+    open val SEARCH_CONTENT_FILTER = "videos"
 
     val service: YoutubeService = ServiceList.YouTube
 
@@ -47,7 +50,6 @@ class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferenc
         const val MAIN_URL = "https://www.youtube.com"
         var SEARCH_PAGE: Page? = null
         lateinit var SEARCH_HANDLER: SearchQueryHandler
-        const val SEARCH_CONTENT_FILTER = "videos"
     }
 
     fun getTrendingVideoUrls(page: Int): HomePageList? {
@@ -250,7 +252,7 @@ class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferenc
                 }
 
                 else -> {
-//                    Log.d("YouTubeVideo", "Other type: ${it.name} \t|\t type: ${it.infoType}")
+//                    Log.d("YouTubeProvider", "Other type: ${it.name} \t|\t type: ${it.infoType}")
                     null
                 }
             }
@@ -258,19 +260,27 @@ class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferenc
         return newSearchResponseList(finalResults, hasNextPage)
     }
 
+    protected fun formatThousands(bigNumber: Long): String{
+        val number = bigNumber.toString().reversed()
+        val n = number.chunked(3).joinToString(" ").reversed()
+        return n
+
+    }
+
     override suspend fun load(url: String): LoadResponse {
         val extractor = service.getStreamExtractor(url)
         extractor.fetchPage()
         val videoInfo = StreamInfo.getInfo(extractor)
-        Log.d("BANANA", "${videoInfo.name} \t ${videoInfo.url}")
-        val views = "Views: ${videoInfo.viewCount}"
-        val likes = "Likes: ${videoInfo.likeCount}"
+        val views = "👀: ${formatThousands(videoInfo.viewCount)}"
+        val likes = "👍: ${formatThousands(videoInfo.likeCount)}"
         val length = videoInfo.duration / 60
         return newMovieLoadResponse(videoInfo.name, url, TvType.Others, url) {
             this.posterUrl = videoInfo.thumbnails.last().url
             this.plot = videoInfo.description.content
             this.duration = length.toInt()
-            this.tags = listOf(videoInfo.uploaderName, views, likes)
+            this.tags = listOf(views, likes)
+            this.actors = listOf(ActorData(
+                Actor(videoInfo.uploaderName, videoInfo.uploaderAvatars.lastOrNull()?.url)))
         }
     }
 
@@ -280,7 +290,6 @@ class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferenc
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        YouTubeExtractor().getUrl(data, "", subtitleCallback, callback)
-        return true
+        return loadExtractor(data, null, subtitleCallback, callback)
     }
 }

@@ -26,10 +26,9 @@ class YouTubePlugin : Plugin() {
         registerMainAPI(YouTubeProvider(language, sharedPref))
         registerMainAPI(YouTubePlaylistsProvider(language))
         registerMainAPI(YouTubeChannelProvider(language))
-        registerExtractorAPI(YouTubeExtractor())
 
-        openSettings = {ctx ->
-            val activity = ctx as AppCompatActivity
+        openSettings = {context ->
+            val activity = context as AppCompatActivity
             val frag = SettingsFragment(this, sharedPref)
             frag.show(activity.supportFragmentManager, "Frag")
         }

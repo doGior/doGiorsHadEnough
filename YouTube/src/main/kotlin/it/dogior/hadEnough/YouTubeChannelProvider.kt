@@ -1,43 +1,50 @@
 package it.dogior.hadEnough
 
+import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.TvType
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.newEpisode
+import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import org.schabi.newpipe.extractor.channel.ChannelInfo
+import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 
-class YouTubeChannelProvider(language: String) : MainAPI() {
-    override var mainUrl = MAIN_URL
+class YouTubeChannelProvider(language: String) : YouTubeProvider(language, null) {
     override var name = "YouTube Channels"
-    override val supportedTypes = setOf(TvType.Others)
     override val hasMainPage = false
-    override var lang = language
-
-    private val ytParser = YouTubeParser(this.name)
-
-    companion object{
-        const val MAIN_URL = "https://www.youtube.com"
-    }
-
-    override suspend fun search(query: String): List<SearchResponse> {
-        val videoUrls = ytParser.search(query, contentFilter = "channels")
-        return videoUrls
-    }
+    override val SEARCH_CONTENT_FILTER = "channels"
 
     override suspend fun load(url: String): LoadResponse {
-        val video = ytParser.channelToLoadResponse(url)
-        return video
+        val channelInfo = ChannelInfo.getInfo(url)
+        val avatars = try {
+            channelInfo.avatars.last().url
+        } catch (_: Exception){
+            null
+        }
+        val banners = try {
+            channelInfo.banners.last().url
+        } catch (_: Exception){
+            null
+        }
+        val tags = mutableListOf("Subscribers: ${formatThousands(channelInfo.subscriberCount)}")
+        return newTvSeriesLoadResponse(channelInfo.name, url, TvType.Others, getChannelVideos(channelInfo)){
+            this.posterUrl = avatars
+            this.backgroundPosterUrl = banners
+            this.plot = channelInfo.description
+            this.tags = tags
+        }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
-    ): Boolean {
-
-        YouTubeExtractor().getUrl(data, "", subtitleCallback, callback)
-        return true
+    private fun getChannelVideos(channel: ChannelInfo): List<Episode> {
+        val tabsLinkHandlers = channel.tabs
+        val tabs = tabsLinkHandlers.map { ChannelTabInfo.getInfo(service, it) }
+        val videoTab = tabs.first { it.name == "videos" }
+        val videos = videoTab.relatedItems.mapNotNull {
+            newEpisode(it.url){
+                this.name = it.name
+                this.posterUrl = it.thumbnails.last().url
+            }
+        }
+        return videos.reversed()
     }
+
 }
