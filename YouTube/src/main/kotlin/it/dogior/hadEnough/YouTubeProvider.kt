@@ -42,6 +42,7 @@ open class YouTubeProvider(language: String, private val sharedPrefs: SharedPref
     override val hasMainPage = true
     override var lang = language
     open val SEARCH_CONTENT_FILTER = "videos"
+    override var sequentialMainPage = true
 
     val service: YoutubeService = ServiceList.YouTube
 
