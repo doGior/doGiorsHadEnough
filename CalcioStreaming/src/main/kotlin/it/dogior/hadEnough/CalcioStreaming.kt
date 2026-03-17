@@ -11,7 +11,7 @@ import org.jsoup.nodes.Document
 
 class CalcioStreaming : MainAPI() {
     override var lang = "it"
-    override var mainUrl = "https://uno.direttecommunity.online/"
+    override var mainUrl = "https://onl.direttecommunity.online/"
     override var name = "CalcioStreaming"
     override val hasMainPage = true
     override val hasChromecastSupport = true
@@ -66,15 +66,9 @@ class CalcioStreaming : MainAPI() {
     }
 
     private fun getStreamUrl(document: Document): String? {
-        val scripts = document.body().select("script")
-        val obfuscatedScript = scripts.findLast { it.data().contains("eval(") }
-        val url = obfuscatedScript?.let {
-            val data = getAndUnpack(it.data())
-//            Log.d("CalcioStreaming", data)
-            val sourceRegex = "(?<=src=\")([^\"]+)".toRegex()
-            val source = sourceRegex.find(data)?.value ?: return null
-            source
-        } ?: return null
+        val script = document.body().select("script[type=\"module\"]").first()?.data() ?: return null
+        val sourceRegex = "(?<=src ?= ?\")([^\"]+)".toRegex()
+        val url = sourceRegex.find(script)?.value
 
         return url
     }
@@ -85,7 +79,9 @@ class CalcioStreaming : MainAPI() {
 
         val doc = app.get(url).document
         val link = doc.selectFirst("iframe")?.attr("src") ?: return null
-        val newPage = app.get(fixUrl(link), referer = ref).document
+        val newPage = app.get(fixUrl(link), referer = ref, headers = mapOf(
+            "Sec-Fetch-Dest" to "iframe"
+        )).document
         val streamUrl = getStreamUrl(newPage)
         return if (newPage.select("script").size >= 6 && !streamUrl.isNullOrEmpty()) {
             streamUrl to fixUrl(link)
