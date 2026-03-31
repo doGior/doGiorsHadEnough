@@ -32,7 +32,7 @@ class Vavoo(private val countries: Map<String, Boolean>, language: String) : Mai
     override val vpnStatus = VPNStatus.MightBeNeeded
 
     companion object {
-        val posterUrl = "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/Vavoo/vavoo.png"
+        val posterUrl = "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/Vavoo/Vavoo.jpg"
         /*val resolveUA = "MediaHubMX/2"
         val authUA = "okhttp/4.11.0"
         var sign: AuthSign? = null
