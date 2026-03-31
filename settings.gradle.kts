@@ -21,5 +21,6 @@ include(
     "StreamingCommunity",
     "TV",
     "Torrentio",
+    "Vavoo",
     "YouTube"
 )

@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 3
+version = 1
 
 
 cloudstream {
@@ -15,13 +15,13 @@ cloudstream {
     * 2: Slow
     * 3: Beta only
     * */
-    status = 0
+    status = 1
 
     tvTypes = listOf("Live")
 
     requiresResources = true
 
-    iconUrl = "https://huhu.to/favicon.ico"
+    iconUrl = "https://vavoo.to/favicon.ico"
 }
 
 android {
