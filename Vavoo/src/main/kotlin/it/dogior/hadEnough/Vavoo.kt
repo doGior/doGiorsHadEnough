@@ -31,15 +31,16 @@ class Vavoo(private val countries: Map<String, Boolean>, language: String) : Mai
     override val hasDownloadSupport = false
     override val vpnStatus = VPNStatus.MightBeNeeded
 
-    /*companion object {
-        val resolveUA = "MediaHubMX/2"
+    companion object {
+        val posterUrl = "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/Vavoo/vavoo.png"
+        /*val resolveUA = "MediaHubMX/2"
         val authUA = "okhttp/4.11.0"
         var sign: AuthSign? = null
         val uniqueId = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { "%02x".format(it) }*/
     }
 
-    data class AuthSign(
+    /*data class AuthSign(
         val sign: String,
         val expires: Long
     )*/
@@ -191,7 +192,9 @@ class Vavoo(private val countries: Map<String, Boolean>, language: String) : Mai
             json = payload
         ).body.string()
         val channel = parseJson<List<ChannelData>>(response).first()
-        return newLiveStreamLoadResponse(channel.name, url, channel.url)
+        return newLiveStreamLoadResponse(channel.name, url, channel.url){
+            this.posterUrl = Companion.posterUrl
+        }
     }
 
     override suspend fun loadLinks(
@@ -212,7 +215,9 @@ class Vavoo(private val countries: Map<String, Boolean>, language: String) : Mai
     }
 
     fun channelToSearchResponse(channel: Channel): LiveSearchResponse {
-        return newLiveSearchResponse(channel.name, channel.url)
+        return newLiveSearchResponse(channel.name, channel.url){
+            this.posterUrl = Companion.posterUrl
+        }
     }
 
     data class Channel(
