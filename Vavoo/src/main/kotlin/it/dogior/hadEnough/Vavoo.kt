@@ -24,7 +24,7 @@ import org.json.JSONObject
 
 class Vavoo(private val countries: Map<String, Boolean>, language: String) : MainAPI() {
     override var mainUrl = "https://vavoo.to"
-    override var name = "1. Vavoo"
+    override var name = "Vavoo"
     override val supportedTypes = setOf(TvType.Live)
     override var lang = language
     override val hasMainPage = true
