@@ -5,7 +5,7 @@ version = 1
 cloudstream {
     // All of these properties are optional, you can safely remove them
 
-    description = "TV channels from huhu.to"
+    description = "⚠️ Experimental ⚠️ TV channels from vavoo.to"
     authors = listOf("doGior")
 
     /**
