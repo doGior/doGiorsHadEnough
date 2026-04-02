@@ -1,11 +1,11 @@
 // use an integer for version numbers
-version = 1
+version = 2
 
 
 cloudstream {
     // All of these properties are optional, you can safely remove them
 
-    description = "⚠️ Experimental ⚠️ TV channels from vavoo.to"
+    description = "⚠️ W.I.P. ⚠️ TV channels from vavoo.to"
     authors = listOf("doGior")
 
     /**
@@ -21,7 +21,7 @@ cloudstream {
 
     requiresResources = true
 
-    iconUrl = "https://vavoo.to/favicon.ico"
+    iconUrl = "https://vavoo.tv/favicon.ico"
 }
 
 android {
