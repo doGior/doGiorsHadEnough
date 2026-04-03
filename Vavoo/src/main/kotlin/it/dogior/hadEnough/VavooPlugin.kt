@@ -66,7 +66,7 @@ class VavooPlugin : Plugin() {
         } ?: ""
 
         // Register Plugin
-        registerMainAPI(Vavoo(savedContries ?: countries, lang))
+        registerMainAPI(Vavoo(savedContries ?: countries, lang, sharedPref))
 
         // Enable settings
         openSettings = {ctx ->
