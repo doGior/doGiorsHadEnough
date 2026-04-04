@@ -8,8 +8,14 @@ abandoned, so I decided to create my own repository.
 Either click on the pizza to install or go to *Settings* -> *Extensions* -> *Add repository* and in
 the URL field type **doGior**
 <p align="center">
-  <img alt="alt_text" width="200px" src="pizza.png"/>
+  <a href="https://diegon7771.github.io/Cs-site?r=cloudstreamrepo://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/repo.json" target="_blank">
+    <img src="pizza.png" alt="alt_text" width="200px"/>
+  </a>
 </p>
+
+### Community
+Telegram group: [Cloudstream Italia](https://t.me/cloudstream_italia)
+
 
 ### Plugins
 
