@@ -9,8 +9,13 @@ ed essere abbandonati, quindi ho deciso di creare una mia repository.
 Clicca sulla pizza per installare la repo oppure vai in *Impostazioni* -> *Estensioni* -> *Aggiungi
 repository* e nel campo URL scrivi **doGior**
 <p align="center">
-  <img alt="alt_text" width="200px" src="pizza.png"/>
+  <a href="https://diegon7771.github.io/Cs-site?r=cloudstreamrepo://raw.githubusercontent.com/doGior/doGiorsHadEnough/builds/repo.json" target="_blank">
+    <img src="pizza.png" alt="alt_text" width="200px"/>
+  </a>
 </p>
+
+### Community
+Gruppo Telegram: [Cloudstream Italia](https://t.me/cloudstream_italia)
 
 ### Plugin
 Questi sono i plugin disponibili al momento
