@@ -1,8 +1,11 @@
 package it.dogior.hadEnough
 
+import com.lagradost.cloudstream3.Actor
+import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.LoadResponse
-import com.lagradost.cloudstream3.LoadResponse.Companion.addRating
+import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
+import com.lagradost.cloudstream3.LoadResponse.Companion.addSimklId
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
@@ -11,6 +14,7 @@ import com.lagradost.cloudstream3.fixUrlNull
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import org.jsoup.nodes.Element
 
 open class SimklProvider : MainAPI() {
     final override var mainUrl = "https://simkl.com"
@@ -35,8 +39,9 @@ open class SimklProvider : MainAPI() {
         val itemElement = doc.select("div.SimklHeaderBgShaddow > div.SimklMyTVShowAboutDiv > table")
         val title = itemElement.select("div.SimklTVAboutTitleText h1").text()
         val rating = itemElement.select("span.SimklTVRatingAverage").text().split(" ").last()
-        val description = doc.selectFirst("td.SimklTVAboutDetailsText")
-            ?.ownText() + " " + (doc.selectFirst("#moreDesc")?.ownText() ?: "")
+        val details = doc.selectFirst("td.SimklTVAboutDetailsText")
+        val description =
+            details?.selectFirst("span.full-text-simple")?.text() ?: details?.ownText() ?: ""
         val genres = itemElement.select("td.SimklTVAboutGenre a").text()
         val links = doc.select(".SimklTVAboutTabsDetailsLinks > a")
         val tmdbLink = links.firstOrNull { a -> a.text().contains("TMDB") }?.attr("href")
@@ -45,10 +50,17 @@ open class SimklProvider : MainAPI() {
         val duration = try {
             itemElement.select(".SimklTVAboutYearCountry > span")
                 .first { it.attr("data-title").contains("Length") }.ownText()
-        } catch (e: NoSuchElementException) {
+        } catch (_: NoSuchElementException) {
             null
         }
 
+        val tmdbPage = tmdbLink?.let { app.get(it).document }
+        val castElements = tmdbPage?.select("#cast_scroller > .people > li.card")
+        val actors = castElements?.let {
+            it.mapNotNull { card ->
+                castElementToActor(card)
+            }
+        }
 
         val poster = if (!tmdbLink.isNullOrEmpty()) {
             val resp = app.get(tmdbLink).document
@@ -75,20 +87,38 @@ open class SimklProvider : MainAPI() {
             TvType.TvSeries
         }
 
+        val simklID = url.substringAfter(mainUrl).substringAfter("/").substringAfter("/")
+
+        val anilistLink = links.firstOrNull { a -> a.text().contains("AniList") }?.attr("href")
+        val anilistID = anilistLink?.substringBeforeLast("/")?.substringAfterLast("/")
+
         val loadResponse = if (duration != null) {
             newMovieLoadResponse(title, "", type, "")
         } else {
             newTvSeriesLoadResponse(title, "", type, emptyList())
         }
         return loadResponse.apply {
+            if (anilistID.isNullOrEmpty()) {
+                this.actors = actors
+            } else {
+                addAniListId(anilistID.toIntOrNull())
+            }
             this.plot = description
             this.tags = genres.split(" ")
             this.posterUrl = poster
             this.recommendations = recommendations
             this.year = year.toIntOrNull()
             addScore(rating)
+            addSimklId(simklID.toIntOrNull())
             duration?.let { this.duration = parseDurationToMinutes(it) }
         }
+    }
+
+    fun castElementToActor(e: Element): ActorData? {
+        val name = e.selectFirst("p > a")?.ownText() ?: return null
+        val character = e.selectFirst("p.character")?.ownText()
+        val img = e.selectFirst("img")?.attr("src")
+        return ActorData(Actor(name, img), null, character, null)
     }
 
 }
