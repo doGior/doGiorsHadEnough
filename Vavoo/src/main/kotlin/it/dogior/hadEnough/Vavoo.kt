@@ -25,8 +25,6 @@ import com.lagradost.cloudstream3.utils.Coroutines.ioSafe
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import okhttp3.Interceptor
-import okhttp3.Response
 import org.json.JSONException
 import org.json.JSONObject
 
@@ -217,7 +215,8 @@ class Vavoo(
                 app.get("https://www.vavoo.to/live2/index?output=json", headers = h).body.string()
             channelsMetadata = parseJson<List<Channel2>>(response)
             with(sharedPref.edit()) {
-                this.clear()
+                this.remove("channels")
+                this.apply()
                 this.putString("channels", channelsMetadata.toJson())
                 this.apply()
             }
