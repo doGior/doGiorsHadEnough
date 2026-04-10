@@ -255,7 +255,7 @@ class IlCorsaroViola : TmdbProvider() {
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val showDetail = parseJson<LinkData>(data)
-        val vercelUrl = BuildConfig.IlCorsaroViolaVercel
+        val vercelUrl = BuildConfig.ILCORSAROVIOLAVERCEL
         val body = if (showDetail.type == "movie") mapOf(
             "tmdb_id" to (showDetail.tmdbId ?: return false)
         ) else
