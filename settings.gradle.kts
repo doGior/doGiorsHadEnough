@@ -14,6 +14,7 @@ include(
     "CorsaroNero",
     "DaddyLive",
     "Huhu",
+    "IlCorsaroViola",
     "IPTV",
 //    "OnlineSerieTV",
     "Nebula",
