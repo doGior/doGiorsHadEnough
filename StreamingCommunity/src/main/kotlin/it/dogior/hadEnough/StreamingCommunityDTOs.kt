@@ -1,7 +1,24 @@
 package it.dogior.hadEnough
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 
+
+data class SliderFetchRequestSlider(
+    val name: String,
+    val genre: String?
+)
+
+data class SliderFetchRequestBody(
+    val sliders: List<SliderFetchRequestSlider>
+) {
+    fun toRequestBody(): RequestBody {
+        return this.toJson().toRequestBody("application/json;charset=utf-8".toMediaType())
+    }
+}
 
 data class LoadData(
     val url: String,

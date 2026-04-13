@@ -10,7 +10,6 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addImdbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
-import com.lagradost.cloudstream3.LoadResponse.Companion.addSimklId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
@@ -20,8 +19,6 @@ import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
-
-import com.lagradost.cloudstream3.mainPageOf
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
@@ -32,10 +29,13 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import org.json.JSONObject
+import org.jsoup.parser.Parser
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
-
-class StreamingCommunity(override var lang: String = "it") : MainAPI() {
+class StreamingCommunity(
+    override var lang: String = "it",
+) : MainAPI() {
     override var mainUrl = Companion.mainUrl + lang
     override var name = Companion.name
     override var supportedTypes =
@@ -44,6 +44,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
 
     companion object {
         private var inertiaVersion = ""
+        private var decodedXsrfToken = ""
         private val headers = mapOf(
             "Cookie" to "",
             "X-Inertia" to true.toString(),
@@ -55,59 +56,157 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         val TAG = "SCommunity"
     }
 
-    private val sectionNamesListIT = mainPageOf(
-        "$mainUrl/browse/top10" to "Top 10 di oggi",
-        "$mainUrl/browse/trending" to "I Titoli Del Momento",
-        "$mainUrl/browse/latest" to "Aggiunti di Recente",
-        "$mainUrl/browse/genre?g=Animation" to "Animazione",
-        "$mainUrl/browse/genre?g=Adventure" to "Avventura",
-        "$mainUrl/browse/genre?g=Action" to "Azione",
-        "$mainUrl/browse/genre?g=Comedy" to "Commedia",
-        "$mainUrl/browse/genre?g=Crime" to "Crime",
-        "$mainUrl/browse/genre?g=Documentary" to "Documentario",
-        "$mainUrl/browse/genre?g=Drama" to "Dramma",
-        "$mainUrl/browse/genre?g=Family" to "Famiglia",
-        "$mainUrl/browse/genre?g=Science Fiction" to "Fantascienza",
-        "$mainUrl/browse/genre?g=Fantasy" to "Fantasy",
-        "$mainUrl/browse/genre?g=Horror" to "Horror",
-        "$mainUrl/browse/genre?g=Reality" to "Reality",
-        "$mainUrl/browse/genre?g=Romance" to "Romance",
-        "$mainUrl/browse/genre?g=Thriller" to "Thriller",
+    private val sliderFetchRequestBody = SliderFetchRequestBody(
+        sliders = listOf(
+            SliderFetchRequestSlider(name = "top10", genre = null),
+            SliderFetchRequestSlider(name = "trending", genre = null),
+            SliderFetchRequestSlider(name = "latest", genre = null),
+            SliderFetchRequestSlider(name = "upcoming", genre = null),
+            SliderFetchRequestSlider(name = "genre", genre = "Animation"),
+            SliderFetchRequestSlider(name = "genre", genre = "Adventure"),
+            SliderFetchRequestSlider(name = "genre", genre = "Action"),
+            SliderFetchRequestSlider(name = "genre", genre = "Comedy"),
+            SliderFetchRequestSlider(name = "genre", genre = "Crime"),
+            SliderFetchRequestSlider(name = "genre", genre = "Documentary"),
+            SliderFetchRequestSlider(name = "genre", genre = "Drama"),
+            SliderFetchRequestSlider(name = "genre", genre = "Family"),
+            SliderFetchRequestSlider(name = "genre", genre = "Science Fiction"),
+            SliderFetchRequestSlider(name = "genre", genre = "Fantasy"),
+            SliderFetchRequestSlider(name = "genre", genre = "Horror"),
+            SliderFetchRequestSlider(name = "genre", genre = "Reality"),
+            SliderFetchRequestSlider(name = "genre", genre = "Romance"),
+            SliderFetchRequestSlider(name = "genre", genre = "Thriller")
+        )
     )
-    private val sectionNamesListEN = mainPageOf(
-        "$mainUrl/browse/top10" to "Top 10 of Today",
-        "$mainUrl/browse/trending" to "Trending Titles",
-        "$mainUrl/browse/latest" to "Recently Added",
-        "$mainUrl/browse/genre?g=Animation" to "Animation",
-        "$mainUrl/browse/genre?g=Adventure" to "Adventure",
-        "$mainUrl/browse/genre?g=Action" to "Action",
-        "$mainUrl/browse/genre?g=Comedy" to "Comedy",
-        "$mainUrl/browse/genre?g=Crime" to "Crime",
-        "$mainUrl/browse/genre?g=Documentary" to "Documentary",
-        "$mainUrl/browse/genre?g=Drama" to "Drama",
-        "$mainUrl/browse/genre?g=Family" to "Family",
-        "$mainUrl/browse/genre?g=Science Fiction" to "Science Fiction",
-        "$mainUrl/browse/genre?g=Fantasy" to "Fantasy",
-        "$mainUrl/browse/genre?g=Horror" to "Horror",
-        "$mainUrl/browse/genre?g=Reality" to "Reality",
-        "$mainUrl/browse/genre?g=Romance" to "Romance",
-        "$mainUrl/browse/genre?g=Thriller" to "Thriller",
-    )
-    private val sections = if (lang == "it") sectionNamesListIT else sectionNamesListEN
-    override val mainPage = sections
+
+    private suspend fun fetchSliderSectionsInBatches(): List<HomePageList> {
+        val maxSlidersPerRequest = 6
+        val allSections = mutableListOf<HomePageList>()
+
+        sliderFetchRequestBody.sliders
+            .chunked(maxSlidersPerRequest)
+            .forEachIndexed { index, sliderBatch ->
+                val response = app.post(
+                    "${Companion.mainUrl}api/sliders/fetch?lang=$lang",
+                    requestBody = SliderFetchRequestBody(sliderBatch).toRequestBody(),
+                    headers = getSliderFetchHeaders()
+                )
+
+                val payload = response.body.string()
+//                Log.d(TAG, "Slider fetch batch=${index + 1} status=${response.code} size=${sliderBatch.size}")
+//                Log.d(TAG, "Slider fetch batch=${index + 1} preview=${payload.take(500)}")
+
+                allSections += parseSliderFetchSections(payload)
+            }
+
+        return allSections
+    }
+
+    private fun isHtmlPayload(payload: String): Boolean {
+        val trimmed = payload.trimStart()
+        return trimmed.startsWith("<") || trimmed.contains("<!DOCTYPE", ignoreCase = true)
+    }
+
+    private fun extractInertiaPageJson(html: String): String? {
+        val dataPageRaw = org.jsoup.Jsoup.parse(html).selectFirst("#app")?.attr("data-page")
+        if (dataPageRaw.isNullOrBlank()) return null
+        return Parser.unescapeEntities(dataPageRaw, true)
+    }
+
+    private fun parseInertiaPayload(payload: String, logContext: String): InertiaResponse? {
+        if (payload.isBlank()) {
+            Log.e(TAG, "$logContext: empty payload")
+            return null
+        }
+        if (isHtmlPayload(payload)) {
+            Log.e(TAG, "$logContext: expected JSON but received HTML payload")
+            return null
+        }
+        return runCatching { parseJson<InertiaResponse>(payload) }
+            .onFailure { Log.e(TAG, "$logContext: invalid JSON payload - ${it.message}") }
+            .getOrNull()
+    }
+
+    private fun parseBrowseTitles(payload: String, logContext: String): List<Title> {
+        val jsonPayload = if (isHtmlPayload(payload)) {
+            Log.e(TAG, "$logContext: received HTML payload, attempting embedded data-page fallback")
+            extractInertiaPageJson(payload) ?: return emptyList()
+        } else {
+            payload
+        }
+
+        val result = parseInertiaPayload(jsonPayload, logContext) ?: return emptyList()
+        return result.props.titles ?: emptyList()
+    }
+
+    private fun parseSliderFetchSections(payload: String): List<HomePageList> {
+        if (payload.isBlank()) return emptyList()
+        val trimmedPayload = payload.trimStart()
+        if (trimmedPayload.startsWith("{") || trimmedPayload.contains("\"message\"")) {
+            Log.e(
+                TAG,
+                "Sliders fetch: received error object instead of slider array: ${payload.take(300)}"
+            )
+            return emptyList()
+        }
+        if (isHtmlPayload(payload)) {
+            Log.e(TAG, "Sliders fetch: expected JSON array but received HTML payload")
+            return emptyList()
+        }
+
+        val sliders = runCatching { parseJson<List<Slider>>(payload) }
+            .onFailure { Log.e(TAG, "Sliders fetch: invalid JSON payload - ${it.message}") }
+            .getOrNull()
+            ?: return emptyList()
+
+        return sliders.mapNotNull { slider ->
+            val items = searchResponseBuilder(slider.titles)
+            if (items.isEmpty()) return@mapNotNull null
+            HomePageList(
+                name = slider.label.ifBlank { slider.name },
+                list = items,
+                isHorizontalImages = false
+            )
+        }
+    }
 
     private suspend fun setupHeaders() {
         val response = app.get("$mainUrl/archive")
-        val cookies = response.cookies
-        headers["Cookie"] = cookies.map { it.key + "=" + it.value }.joinToString(separator = "; ")
-//        Log.d("Inertia", response.headers.toString())
+        val cookieJar = linkedMapOf<String, String>()
+        response.cookies.forEach { cookieJar[it.key] = it.value }
+
+        val csrfResponse = app.get(
+            "${Companion.mainUrl}sanctum/csrf-cookie",
+            headers = mapOf(
+                "Referer" to "$mainUrl/",
+                "X-Requested-With" to "XMLHttpRequest"
+            )
+        )
+        csrfResponse.cookies.forEach { cookieJar[it.key] = it.value }
+
+        headers["Cookie"] = cookieJar.entries.joinToString("; ") { "${it.key}=${it.value}" }
+        decodedXsrfToken = cookieJar["XSRF-TOKEN"]
+            ?.let { URLDecoder.decode(it, StandardCharsets.UTF_8.name()) }
+            ?: ""
+
         val page = response.document
-//        Log.d("Inertia", page.toString())
         val inertiaPageObject = page.select("#app").attr("data-page")
         inertiaVersion = inertiaPageObject
             .substringAfter("\"version\":\"")
             .substringBefore("\"")
         headers["X-Inertia-Version"] = inertiaVersion
+    }
+
+    private fun getSliderFetchHeaders(): Map<String, String> {
+        return mapOf(
+            "Cookie" to (headers["Cookie"] ?: ""),
+            "X-Requested-With" to "XMLHttpRequest",
+            "X-XSRF-TOKEN" to decodedXsrfToken,
+            "Referer" to "$mainUrl/",
+            "Accept" to "application/json, text/plain, */*",
+            "Content-Type" to "application/json",
+            "Origin" to Companion.mainUrl.removeSuffix("/")
+        )
     }
 
     private fun searchResponseBuilder(listJson: List<Title>): List<SearchResponse> {
@@ -129,73 +228,38 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         return list
     }
 
-    //Get the Homepage
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        var url = mainUrl.substringBeforeLast("/") + "/api" +
-                request.data.substringAfter(mainUrl)
-        val params = mutableMapOf("lang" to lang)
-
-        val section = request.data.substringAfterLast("/")
-        when (section) {
-            "trending",
-            "latest",
-            "top10" -> {
-            }
-
-            else -> {
-                val genere = url.substringAfterLast('=')
-                url = url.substringBeforeLast('?')
-                params["g"] = genere
-            }
+        if (page > 1) {
+            return newHomePageResponse(emptyList(), hasNext = false)
         }
-
-        if (page > 0) {
-            params["offset"] = ((page - 1) * 60).toString()
-        }
-        val response = app.get(url, params = params)
-        val responseString = response.body.string()
-        val responseJson = parseJson<Section>(responseString)
-
-        val titlesList = searchResponseBuilder(responseJson.titles)
-
-        val hasNextPage =
-            response.okhttpResponse.request.url.queryParameter("offset")?.toIntOrNull()
-                ?.let { it < 120 } ?: true && titlesList.size == 60
-
-        return newHomePageResponse(
-            HomePageList(
-                name = request.name,
-                list = titlesList,
-                isHorizontalImages = false
-            ), hasNextPage
-        )
-    }
-
-
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search"
-        val params = mapOf("q" to query)
 
         if (headers["Cookie"].isNullOrEmpty()) {
             setupHeaders()
         }
-        val response = app.get(url, params = params, headers = headers).body.string()
-        val result = parseJson<InertiaResponse>(response)
 
-        return searchResponseBuilder(result.props.titles!!)
+        val lazySections = fetchSliderSectionsInBatches()
+        if (lazySections.isEmpty()) {
+            Log.d(TAG, "Lazy slider fetch returned no sections")
+        }
+
+        return newHomePageResponse(lazySections, hasNext = false)
     }
 
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$mainUrl/search"
+        val response = app.get(url, params = mapOf("q" to query)).body.string()
+        val titles = parseBrowseTitles(response, "Search")
+        return searchResponseBuilder(titles)
+    }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        val searchUrl = "${mainUrl.replace("/it", "")}/api/search"
-        val params = mutableMapOf("q" to query, "lang" to lang)
-        if (page > 0) {
-            params["offset"] = ((page - 1) * 60).toString()
-        }
-        val response = app.get(searchUrl, params = params, headers = headers).body.string()
-        val result = parseJson<it.dogior.hadEnough.SearchResponse>(response)
-        val hasNext = (page < 3) || (page < result.lastPage)
-        return newSearchResponseList(searchResponseBuilder(result.data), hasNext = hasNext)
+        val params = mutableMapOf("q" to query)
+        if (page > 1) params["page"] = page.toString()
+        val response = app.get("$mainUrl/search", params = params).body.string()
+        val titles = parseBrowseTitles(response, "Search page=$page")
+        val items = searchResponseBuilder(titles)
+        val hasNext = items.isNotEmpty() && items.size >= 60
+        return newSearchResponseList(items, hasNext = hasNext)
     }
 
     private suspend fun getPoster(title: TitleProp): String? {
@@ -210,20 +274,6 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         }
     }
 
-    private suspend fun fetchSimklId(
-        imdbId: String,
-        isSeries: Boolean
-    ): Int? = runCatching {
-        val type = if (isSeries) "tv" else "movies"
-        val url = "https://api.simkl.com/$type/$imdbId?client_id=${BuildConfig.SIMKL_CLIENT_ID}"
-
-        JSONObject(app.get(url).text)
-            .optJSONObject("ids")
-            ?.optInt("simkl")
-            ?.takeIf { it != 0 }
-    }.getOrNull()
-
-    // This function gets called when you enter the page/show
     override suspend fun load(url: String): LoadResponse {
         val actualUrl = getActualUrl(url)
         if (headers["Cookie"].isNullOrEmpty()) {
@@ -240,7 +290,6 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         val related = props.sliders?.getOrNull(0)
         val trailers = title.trailers?.mapNotNull { it.getYoutubeUrl() }
         val poster = getPoster(title)
-        val simklId = title.imdbId?.let { fetchSimklId(it, title.type == "tv") }
 
         if (title.type == "tv") {
             val episodes: List<Episode> = getEpisodes(props)
@@ -254,6 +303,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.posterUrl = poster
                 title.getBackgroundImageId()
                     .let { this.backgroundPosterUrl = "https://cdn.$domain/images/$it" }
+
                 this.tags = genres
                 this.episodes = episodes
                 this.year = year
@@ -261,7 +311,6 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 title.age?.let { this.contentRating = "$it+" }
                 this.recommendations = related?.titles?.let { searchResponseBuilder(it) }
                 title.imdbId?.let { this.addImdbId(it) }
-                simklId?.let { this.addSimklId(it) }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
                 this.addActors(title.mainActors?.map { it.name })
                 this.addScore(title.score)
@@ -288,6 +337,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.posterUrl = poster
                 title.getBackgroundImageId()
                     .let { this.backgroundPosterUrl = "https://cdn.$domain/images/$it" }
+
                 this.tags = genres
                 this.year = year
                 this.plot = title.plot
@@ -296,10 +346,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 this.addActors(title.mainActors?.map { it.name })
                 this.addScore(title.score)
 
-                title.imdbId?.let {
-                    this.addImdbId(it)
-                }
-                simklId?.let { this.addSimklId(it) }
+                title.imdbId?.let { this.addImdbId(it) }
                 title.tmdbId?.let { this.addTMDbId(it.toString()) }
 
                 title.runtime?.let { this.duration = it }
@@ -319,7 +366,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                 if (url.contains("/it/") || url.contains("/en/")) mainUrl.toHttpUrl().host else mainUrl.toHttpUrl().host + "/$lang"
             val actualUrl = url.replace(url.toHttpUrl().host, replacingValue)
 
-            Log.d("$TAG:UrlFix", "Old: $url\nNew: $actualUrl")
+//            Log.d("$TAG:UrlFix", "Old: $url\nNew: $actualUrl")
             actualUrl
         } else {
             url
@@ -349,8 +396,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
                     type = "tv",
                     tmdbId = title.tmdbId,
                     seasonNumber = season.number,
-                    episodeNumber = ep.number
-                )
+                    episodeNumber = ep.number)
                 episodeList.add(
                     newEpisode(loadData.toJson()) {
                         this.name = ep.name
@@ -373,7 +419,7 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "Load Data : $data")
+//        Log.d(TAG, "Load Data : $data")
         if (data.isEmpty()) return false
         val loadData = parseJson<LoadData>(data)
 
@@ -387,9 +433,9 @@ class StreamingCommunity(override var lang: String = "it") : MainAPI() {
             callback = callback
         )
 
-        val vixsrcUrl = if (loadData.type == "movie") {
+        val vixsrcUrl = if(loadData.type == "movie"){
             "https://vixsrc.to/movie/${loadData.tmdbId}"
-        } else {
+        } else{
             "https://vixsrc.to/tv/${loadData.tmdbId}/${loadData.seasonNumber}/${loadData.episodeNumber}"
         }
 
