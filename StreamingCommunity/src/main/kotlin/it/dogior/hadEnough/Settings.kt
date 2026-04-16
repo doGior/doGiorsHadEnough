@@ -10,22 +10,28 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.annotation.RequiresApi
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.content.edit
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
-import com.lagradost.cloudstream3.utils.AppUtils.toJson
-import androidx.core.content.edit
 
 class Settings(
     private val plugin: StreamingCommunityPlugin,
     private val sharedPref: SharedPreferences?,
 ) : BottomSheetDialogFragment() {
-    private var currentLang: String = sharedPref?.getString("lang", "it") ?: "it"
-    private var currentLangPosition: Int = sharedPref?.getInt("langPosition", 0) ?: 0
+    private var currentLang: String =
+        sharedPref?.getString(StreamingCommunityPlugin.PREF_LANG, "it") ?: "it"
+    private var currentLangPosition: Int =
+        sharedPref?.getInt(StreamingCommunityPlugin.PREF_LANG_POSITION, 0) ?: 0
+    private var currentBaseUrl: String =
+        StreamingCommunity.normalizeBaseUrl(
+            sharedPref?.getString(StreamingCommunityPlugin.PREF_BASE_URL, "")
+        ) ?: ""
 
     private fun View.makeTvCompatible() {
         this.setPadding(
@@ -87,6 +93,11 @@ class Settings(
         headerTw?.text = getString("header_tw")
         val labelTw: TextView? = view.findViewByName("label")
         labelTw?.text = getString("label")
+        val serverAddressLabelTw: TextView? = view.findViewByName("server_address_label")
+        serverAddressLabelTw?.text = getString("server_address_label")
+        val serverAddressInput: EditText? = view.findViewByName("server_address_input")
+        serverAddressInput?.hint = getString("server_address_hint")
+        serverAddressInput?.setText(currentBaseUrl)
 
         val langsDropdown: Spinner? = view.findViewByName("lang_spinner")
         val langs = arrayOf("it", "en")
@@ -116,12 +127,22 @@ class Settings(
         saveBtn?.setImageDrawable(getDrawable("save_icon"))
 
         saveBtn?.setOnClickListener {
+            val rawBaseUrl = serverAddressInput?.text?.toString()?.trim().orEmpty()
+            val normalizedBaseUrl = StreamingCommunity.normalizeBaseUrl(rawBaseUrl)
+
             sharedPref?.edit {
-                this.clear()
-                this.putInt("langPosition", langs.indexOf(currentLang))
-                this.putString("lang", currentLang)
+                this.putInt(StreamingCommunityPlugin.PREF_LANG_POSITION, langs.indexOf(currentLang))
+                this.putString(StreamingCommunityPlugin.PREF_LANG, currentLang)
+                if (normalizedBaseUrl.isNullOrBlank()) {
+                    this.remove(StreamingCommunityPlugin.PREF_BASE_URL)
+                } else {
+                    this.putString(StreamingCommunityPlugin.PREF_BASE_URL, normalizedBaseUrl)
+                }
             }
-            showToast("Saved. Restart the app to apply the settings")
+            currentBaseUrl = normalizedBaseUrl.orEmpty()
+            showToast(
+                getString("settings_saved") ?: "Saved. Restart the app to apply the settings"
+            )
             dismiss()
         }
     }
