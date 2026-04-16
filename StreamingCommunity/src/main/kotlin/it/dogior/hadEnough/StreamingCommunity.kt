@@ -35,25 +35,64 @@ import java.nio.charset.StandardCharsets
 
 class StreamingCommunity(
     override var lang: String = "it",
+    customBaseUrl: String? = null,
 ) : MainAPI() {
-    override var mainUrl = Companion.mainUrl + lang
+    private val siteRootUrl = resolveBaseUrl(customBaseUrl)
+    private val siteHost = siteRootUrl.toHttpUrl().host
+    private val cdnHost = resolveCdnHost(siteHost)
+    private var inertiaVersion = ""
+    private var decodedXsrfToken = ""
+    private val headers = mapOf(
+        "Cookie" to "",
+        "X-Inertia" to true.toString(),
+        "X-Inertia-Version" to inertiaVersion,
+        "X-Requested-With" to "XMLHttpRequest",
+    ).toMutableMap()
+
+    override var mainUrl = siteRootUrl + lang
     override var name = Companion.name
     override var supportedTypes =
         setOf(TvType.Movie, TvType.TvSeries, TvType.Cartoon, TvType.Documentary)
     override val hasMainPage = true
 
     companion object {
-        private var inertiaVersion = ""
-        private var decodedXsrfToken = ""
-        private val headers = mapOf(
-            "Cookie" to "",
-            "X-Inertia" to true.toString(),
-            "X-Inertia-Version" to inertiaVersion,
-            "X-Requested-With" to "XMLHttpRequest",
-        ).toMutableMap()
-        val mainUrl = "https://streamingunity.biz/"
+        const val DEFAULT_BASE_URL = "https://streamingunity.biz/"
         var name = "StreamingCommunity"
-        val TAG = "SCommunity"
+        const val TAG = "SCommunity"
+
+        fun normalizeBaseUrl(rawUrl: String?): String? {
+            val trimmedValue = rawUrl?.trim().orEmpty()
+            if (trimmedValue.isBlank()) return null
+
+            val candidate = if ("://" in trimmedValue) trimmedValue else "https://$trimmedValue"
+
+            return runCatching {
+                candidate.toHttpUrl().newBuilder()
+                    .encodedPath("/")
+                    .query(null)
+                    .fragment(null)
+                    .build()
+                    .toString()
+            }.getOrNull()
+        }
+
+        fun resolveBaseUrl(rawUrl: String?): String {
+            return normalizeBaseUrl(rawUrl) ?: DEFAULT_BASE_URL
+        }
+
+        private fun resolveCdnHost(siteHost: String): String {
+            val fallbackHost = DEFAULT_BASE_URL.toHttpUrl().host
+            return if (isIpAddress(siteHost) || siteHost.equals("localhost", ignoreCase = true)) {
+                "cdn.$fallbackHost"
+            } else {
+                "cdn.$siteHost"
+            }
+        }
+
+        private fun isIpAddress(host: String): Boolean {
+            val ipv4Regex = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            return ipv4Regex.matches(host) || host.contains(":")
+        }
     }
 
     private val sliderFetchRequestBody = SliderFetchRequestBody(
@@ -87,7 +126,7 @@ class StreamingCommunity(
             .chunked(maxSlidersPerRequest)
             .forEachIndexed { index, sliderBatch ->
                 val response = app.post(
-                    "${Companion.mainUrl}api/sliders/fetch?lang=$lang",
+                    "${siteRootUrl}api/sliders/fetch?lang=$lang",
                     requestBody = SliderFetchRequestBody(sliderBatch).toRequestBody(),
                     headers = getSliderFetchHeaders()
                 )
@@ -176,7 +215,7 @@ class StreamingCommunity(
         response.cookies.forEach { cookieJar[it.key] = it.value }
 
         val csrfResponse = app.get(
-            "${Companion.mainUrl}sanctum/csrf-cookie",
+            "${siteRootUrl}sanctum/csrf-cookie",
             headers = mapOf(
                 "Referer" to "$mainUrl/",
                 "X-Requested-With" to "XMLHttpRequest"
@@ -205,23 +244,22 @@ class StreamingCommunity(
             "Referer" to "$mainUrl/",
             "Accept" to "application/json, text/plain, */*",
             "Content-Type" to "application/json",
-            "Origin" to Companion.mainUrl.removeSuffix("/")
+            "Origin" to siteRootUrl.removeSuffix("/")
         )
     }
 
     private fun searchResponseBuilder(listJson: List<Title>): List<SearchResponse> {
-        val domain = mainUrl.substringAfter("://").substringBeforeLast("/")
         val list: List<SearchResponse> =
             listJson.filter { it.type == "movie" || it.type == "tv" }.map { title ->
                 val url = "$mainUrl/titles/${title.id}-${title.slug}"
 
                 if (title.type == "tv") {
                     newTvSeriesSearchResponse(title.name, url) {
-                        posterUrl = "https://cdn.${domain}/images/" + title.getPoster()
+                        posterUrl = "https://$cdnHost/images/" + title.getPoster()
                     }
                 } else {
                     newMovieSearchResponse(title.name, url) {
-                        posterUrl = "https://cdn.$domain/images/" + title.getPoster()
+                        posterUrl = "https://$cdnHost/images/" + title.getPoster()
                     }
                 }
             }
@@ -269,8 +307,7 @@ class StreamingCommunity(
             val img = resp.select("img.poster.w-full").attr("srcset").split(", ").last()
             return img
         } else {
-            val domain = mainUrl.substringAfter("://").substringBeforeLast("/")
-            return title.getBackgroundImageId().let { "https://cdn.$domain/images/$it" }
+            return title.getBackgroundImageId().let { "https://$cdnHost/images/$it" }
         }
     }
 
@@ -282,7 +319,6 @@ class StreamingCommunity(
         val response = app.get(actualUrl, headers = headers)
         val responseBody = response.body.string()
 
-        val domain = mainUrl.substringAfter("://").substringBeforeLast("/")
         val props = parseJson<InertiaResponse>(responseBody).props
         val title = props.title!!
         val genres = title.genres.map { it.name.capitalize() }
@@ -302,7 +338,7 @@ class StreamingCommunity(
             ) {
                 this.posterUrl = poster
                 title.getBackgroundImageId()
-                    .let { this.backgroundPosterUrl = "https://cdn.$domain/images/$it" }
+                    .let { this.backgroundPosterUrl = "https://$cdnHost/images/$it" }
 
                 this.tags = genres
                 this.episodes = episodes
@@ -336,7 +372,7 @@ class StreamingCommunity(
             ) {
                 this.posterUrl = poster
                 title.getBackgroundImageId()
-                    .let { this.backgroundPosterUrl = "https://cdn.$domain/images/$it" }
+                    .let { this.backgroundPosterUrl = "https://$cdnHost/images/$it" }
 
                 this.tags = genres
                 this.year = year
@@ -428,7 +464,7 @@ class StreamingCommunity(
 
         VixCloudExtractor().getUrl(
             url = iframeSrc,
-            referer = mainUrl.substringBeforeLast("it"),
+            referer = siteRootUrl,
             subtitleCallback = subtitleCallback,
             callback = callback
         )

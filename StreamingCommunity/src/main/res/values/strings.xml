@@ -4,4 +4,8 @@
     <string name="label">Language</string>
     <string name="it">🇮🇹  Italian</string>
     <string name="en">🇬🇧 English</string>
+    <string name="server_address_label">Host / URL</string>
+    <string name="server_address_hint">Lascia vuoto per usare quello predefinito</string>
+    <string name="server_address_invalid">Inserisci un dominio o URL valido</string>
+    <string name="settings_saved">Impostazioni salvate. Riavvia l\'app per applicarle</string>
 </resources>

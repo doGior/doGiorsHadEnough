@@ -8,10 +8,18 @@ import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
 class StreamingCommunityPlugin : Plugin() {
+    companion object {
+        const val PREF_LANG = "lang"
+        const val PREF_LANG_POSITION = "langPosition"
+        const val PREF_BASE_URL = "baseUrl"
+    }
+
     private val sharedPref = activity?.getSharedPreferences("StreamingCommunity", Context.MODE_PRIVATE)
     override fun load(context: Context) {
-        val lang = sharedPref?.getString("lang", "it") ?: "it"
-        registerMainAPI(StreamingCommunity(lang))
+        val lang = sharedPref?.getString(PREF_LANG, "it") ?: "it"
+        val baseUrl = sharedPref?.getString(PREF_BASE_URL, null)
+
+        registerMainAPI(StreamingCommunity(lang, baseUrl))
         registerExtractorAPI(VixCloudExtractor())
         registerExtractorAPI(VixSrcExtractor())
 
