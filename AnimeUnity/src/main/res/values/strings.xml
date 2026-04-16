@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="header_tw">Impostazioni AnimeUnity</string>
+    <string name="sections_label">Sezioni della home</string>
+    <string name="latest_episodes_switch_text">Ultimi Episodi</string>
+    <string name="calendar_switch_text">Calendario</string>
+    <string name="ongoing_switch_text">In Corso</string>
+    <string name="popular_switch_text">Popolari</string>
+    <string name="best_switch_text">I migliori</string>
+    <string name="upcoming_switch_text">In Arrivo</string>
+    <string name="display_label">Visualizzazione</string>
+    <string name="score_switch_text">Mostra valutazione</string>
+    <string name="settings_saved">Impostazioni salvate. Riavvia l\'applicazione per applicarle</string>
+</resources>
