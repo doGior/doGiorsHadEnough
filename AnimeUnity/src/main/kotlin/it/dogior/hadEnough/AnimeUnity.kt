@@ -1,5 +1,6 @@
 package it.dogior.hadEnough
 
+import android.content.SharedPreferences
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.HomePageList
@@ -11,6 +12,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -27,6 +29,9 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.text.Normalizer
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 typealias Str = BooleanOrString.AsString
@@ -34,7 +39,9 @@ typealias Str = BooleanOrString.AsString
 
 const val TAG = "AnimeUnity"
 
-class AnimeUnity : MainAPI() {
+class AnimeUnity(
+    private val sharedPref: SharedPreferences?,
+) : MainAPI() {
     override var mainUrl = Companion.mainUrl
     override var name = Companion.name
     override var supportedTypes = setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA)
@@ -44,6 +51,8 @@ class AnimeUnity : MainAPI() {
     companion object {
         @Suppress("ConstPropertyName")
         const val mainUrl = "https://www.animeunity.so"
+        const val latestEpisodesSectionName = "Ultimi Episodi"
+        const val calendarSectionName = "Calendario"
         var name = "AnimeUnity"
         var headers = mapOf(
             "Host" to mainUrl.toHttpUrl().host,
@@ -52,17 +61,39 @@ class AnimeUnity : MainAPI() {
 //        var cookies = emptyMap<String, String>()
     }
 
-    private val sectionNamesList = mainPageOf(
-        "$mainUrl/archivio/" to "In Corso",
-        "$mainUrl/archivio/" to "Popolari",
-        "$mainUrl/archivio/" to "I migliori",
-        "$mainUrl/archivio/" to "In Arrivo",
-//        "$mainUrl/archivio/" to "I migliori doppiati",
-//        "$mainUrl/archivio/" to "In Corso doppiati",
-//        "$mainUrl/archivio/" to "Popolari doppiati",
-//        "$mainUrl/archivio/" to "I migliori doppiati",
-    )
+    private val sectionNamesList = buildSectionNamesList()
     override val mainPage = sectionNamesList
+
+    private fun buildSectionNamesList() = mainPageOf(
+        *buildList {
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_LATEST_EPISODES)) {
+                add("$mainUrl/" to latestEpisodesSectionName)
+            }
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_CALENDAR)) {
+                add("$mainUrl/calendario" to calendarSectionName)
+            }
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_ONGOING)) {
+                add("$mainUrl/archivio/" to "In Corso")
+            }
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_POPULAR)) {
+                add("$mainUrl/archivio/" to "Popolari")
+            }
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_BEST)) {
+                add("$mainUrl/archivio/" to "I migliori")
+            }
+            if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_UPCOMING)) {
+                add("$mainUrl/archivio/" to "In Arrivo")
+            }
+        }.toTypedArray()
+    )
+
+    private fun isSectionEnabled(prefKey: String): Boolean {
+        return sharedPref?.getBoolean(prefKey, true) ?: true
+    }
+
+    private fun shouldShowScore(): Boolean {
+        return sharedPref?.getBoolean(AnimeUnityPlugin.PREF_SHOW_SCORE, true) ?: true
+    }
 
 
     private suspend fun setupHeadersAndCookies() {
@@ -110,8 +141,35 @@ class AnimeUnity : MainAPI() {
             ).apply {
                 addDubStatus(anime.dub == 1 || title.contains("(ITA)"))
                 addPoster(poster)
+                if (shouldShowScore()) {
+                    this.score = Score.from(anime.score, 10)
+                }
             }
 
+        }
+    }
+
+    private suspend fun latestEpisodesResponseBuilder(objectList: List<LatestEpisodeItem>): List<SearchResponse> {
+        return objectList.amap { item ->
+            val anime = item.anime
+            val title = (anime.titleIt ?: anime.titleEng ?: anime.title!!)
+            val poster = getImage(anime.imageUrl, anime.anilistId)
+
+            newAnimeSearchResponse(
+                name = "${title.replace(" (ITA)", "")} - Ep. ${item.number}",
+                url = "$mainUrl/anime/${anime.id}-${anime.slug}",
+                type = when {
+                    anime.type == "TV" -> TvType.Anime
+                    anime.type == "Movie" || anime.episodesCount == 1 -> TvType.AnimeMovie
+                    else -> TvType.OVA
+                }
+            ).apply {
+                addDubStatus(anime.dub == 1 || title.contains("(ITA)"))
+                addPoster(poster)
+                if (shouldShowScore()) {
+                    this.score = Score.from(anime.score, 10)
+                }
+            }
         }
     }
 
@@ -159,6 +217,12 @@ class AnimeUnity : MainAPI() {
     //Get the Homepage
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
 //        val localTag = "$TAG:MainPage"
+        if (request.name == latestEpisodesSectionName) {
+            return getLatestEpisodesMainPage(page)
+        }
+        if (request.name == calendarSectionName) {
+            return getCalendarMainPage(page, request)
+        }
 
         val url = request.data + "get-animes"
         if (!headers.contains("Cookie")) {
@@ -198,6 +262,94 @@ class AnimeUnity : MainAPI() {
                 isHorizontalImages = false
             ), hasNextPage
         )
+    }
+
+    private suspend fun getLatestEpisodesMainPage(page: Int): HomePageResponse {
+        if (page > 1) {
+            return newHomePageResponse(
+                HomePageList(
+                    name = latestEpisodesSectionName,
+                    list = emptyList(),
+                    isHorizontalImages = false
+                ),
+                false
+            )
+        }
+
+        val latestEpisodesJson = app.get("$mainUrl/?page=1").document
+            .selectFirst("#ultimi-episodi layout-items")
+            ?.attr("items-json")
+            .orEmpty()
+
+        val latestEpisodes = latestEpisodesJson
+            .takeIf(String::isNotBlank)
+            ?.let { json ->
+                runCatching { parseJson<LatestEpisodesPage>(json).episodes }.getOrDefault(emptyList())
+            }
+            ?: emptyList()
+
+        return newHomePageResponse(
+            HomePageList(
+                name = latestEpisodesSectionName,
+                list = latestEpisodesResponseBuilder(latestEpisodes),
+                isHorizontalImages = false
+            ),
+            false
+        )
+    }
+
+    private suspend fun getCalendarMainPage(
+        page: Int,
+        request: MainPageRequest,
+    ): HomePageResponse {
+        val currentDay = getCurrentItalianDayName()
+        val calendarTitle = "$calendarSectionName ($currentDay)"
+
+        if (page > 1) {
+            return newHomePageResponse(
+                HomePageList(
+                    name = calendarTitle,
+                    list = emptyList(),
+                    isHorizontalImages = false
+                ),
+                false
+            )
+        }
+
+        val calendarAnime = app.get(request.data).document
+            .select("calendario-item")
+            .mapNotNull { item ->
+                item.attr("a")
+                    .takeIf(String::isNotBlank)
+                    ?.let { animeJson ->
+                        runCatching { parseJson<Anime>(animeJson) }.getOrNull()
+                    }
+            }
+            .filter { normalizeDayName(it.day) == normalizeDayName(currentDay) }
+            .distinctBy { it.id }
+
+        return newHomePageResponse(
+            HomePageList(
+                name = calendarTitle,
+                list = searchResponseBuilder(calendarAnime),
+                isHorizontalImages = false
+            ),
+            false
+        )
+    }
+
+    private fun getCurrentItalianDayName(): String {
+        val formatter = SimpleDateFormat("EEEE", Locale.ITALIAN)
+        return formatter.format(Date()).replaceFirstChar {
+            if (it.isLowerCase()) it.titlecase(Locale.ITALIAN) else it.toString()
+        }
+    }
+
+    private fun normalizeDayName(dayName: String?): String {
+        return Normalizer.normalize(dayName.orEmpty(), Normalizer.Form.NFD)
+            .replace("\\p{M}+".toRegex(), "")
+            .trim()
+            .lowercase(Locale.ROOT)
     }
 
     private fun getDataPerHomeSection(section: String) = when (section) {

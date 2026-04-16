@@ -82,7 +82,7 @@ data class Anime(
     @JsonProperty("type") val type: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("title_eng") val titleEng: String?,
-//    @JsonProperty("day") val day: String?,
+    @JsonProperty("day") val day: String?,
     @JsonProperty("score") val score: String?,
 //    @JsonProperty("studio") val studio: String,
     @JsonProperty("dub") val dub: Int,
@@ -99,7 +99,7 @@ data class Anime(
 data class Episode(
     @JsonProperty("id") val id: Int,
     @JsonProperty("anime_id") val animeId: Int,
-    @JsonProperty("user_id") val userId: Int,
+    @JsonProperty("user_id") val userId: Int?,
     @JsonProperty("number") val number: String,
     @JsonProperty("link") val link: String,
     @JsonProperty("visite") val visite: Int,
@@ -107,6 +107,34 @@ data class Episode(
     @JsonProperty("public") val isPublic: Int,
     @JsonProperty("scws_id") val scwsId: Int,
     @JsonProperty("file_name") val fileName: String?
+)
+
+data class LatestEpisodesPage(
+    @JsonProperty("current_page") val currentPage: Int,
+    @JsonProperty("data") val episodes: List<LatestEpisodeItem>
+)
+
+data class LatestEpisodeItem(
+    @JsonProperty("id") val id: Int,
+    @JsonProperty("anime_id") val animeId: Int,
+    @JsonProperty("user_id") val userId: Int?,
+    @JsonProperty("number") val number: String,
+    @JsonProperty("anime") val anime: LatestEpisodeAnime
+)
+
+data class LatestEpisodeAnime(
+    @JsonProperty("id") val id: Int,
+    @JsonProperty("title") val title: String?,
+    @JsonProperty("imageurl") val imageUrl: String?,
+    @JsonProperty("episodes_count") val episodesCount: Int,
+    @JsonProperty("type") val type: String,
+    @JsonProperty("slug") val slug: String,
+    @JsonProperty("title_eng") val titleEng: String?,
+    @JsonProperty("score") val score: String?,
+    @JsonProperty("dub") val dub: Int,
+    @JsonProperty("cover") val cover: String?,
+    @JsonProperty("anilist_id") val anilistId: Int?,
+    @JsonProperty("title_it") val titleIt: String?
 )
 
 data class AnimeInfo(

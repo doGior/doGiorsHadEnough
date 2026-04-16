@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 15
+version = 16
 
 
 cloudstream {
@@ -23,7 +23,17 @@ cloudstream {
     )
 
     language = "it"
-    requiresResources = false
+    requiresResources = true
 
     iconUrl = "https://www.animeunity.so/apple-touch-icon.png"
+}
+
+android {
+    buildFeatures {
+        buildConfig = true
+    }
+}
+
+dependencies {
+    implementation("com.google.android.material:material:1.12.0")
 }
