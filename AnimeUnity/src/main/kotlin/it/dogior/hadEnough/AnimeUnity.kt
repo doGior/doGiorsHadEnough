@@ -156,7 +156,7 @@ class AnimeUnity(
             val poster = getImage(anime.imageUrl, anime.anilistId)
 
             newAnimeSearchResponse(
-                name = "${title.replace(" (ITA)", "")} - Ep. ${item.number}",
+                name = title.replace(" (ITA)", ""),
                 url = "$mainUrl/anime/${anime.id}-${anime.slug}",
                 type = when {
                     anime.type == "TV" -> TvType.Anime
@@ -164,7 +164,7 @@ class AnimeUnity(
                     else -> TvType.OVA
                 }
             ).apply {
-                addDubStatus(anime.dub == 1 || title.contains("(ITA)"))
+                addDubStatus(anime.dub == 1 || title.contains("(ITA)"), item.number.toIntOrNull())
                 addPoster(poster)
                 if (shouldShowScore()) {
                     this.score = Score.from(anime.score, 10)
