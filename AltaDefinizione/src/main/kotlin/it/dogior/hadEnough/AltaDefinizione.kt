@@ -18,14 +18,16 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.loadExtractor
 import it.dogior.hadEnough.extractors.DroploadExtractor
 import it.dogior.hadEnough.extractors.MySupervideoExtractor
 import okhttp3.FormBody
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class AltaDefinizione : MainAPI() {
-    override var mainUrl = "https://altadefinizionez.skin"
+    override var mainUrl = "https://altadefinizione.autos"
     override var name = "AltaDefinizione"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Documentary)
     override var lang = "it"
@@ -118,6 +120,8 @@ class AltaDefinizione : MainAPI() {
         val plot = content.selectFirst("div.movie_entry-plot")?.text()
             ?.replace("...", "")?.removeSuffix("Leggi tutto")//?.substringAfter("Trama: ")
         val rating = content.selectFirst("span.label.imdb")?.text()//?.substringAfter("IMDb: ")
+        val logo = fixUrlNull(content.selectFirst("img.img-fluid")?.attr("src"))
+
 
         val details = content.select("div.movie_entry-details")
         val genreElements = details.toList().first { it.text().contains("Genere: ") }
@@ -130,6 +134,7 @@ class AltaDefinizione : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
+                this.logoUrl = logo
                 addScore(rating)
             }
         } else {
@@ -150,6 +155,7 @@ class AltaDefinizione : MainAPI() {
                 this.plot = plot
                 this.tags = genres
                 this.year = year?.toIntOrNull()
+                this.logoUrl = logo
                 addScore(rating)
             }
         }
@@ -162,7 +168,6 @@ class AltaDefinizione : MainAPI() {
             val seasonNumber = it.attr("data-season").toIntOrNull()
             val epNumber = it.attr("data-episode").substringAfter("-").toIntOrNull()
             val mirrors = it.select("span").map { m -> m.attr("data-link") }
-            Log.d("BANANA", mirrors.toString())
             val ep = newEpisode(mirrors) {
                 this.season = seasonNumber
                 this.episode = epNumber
@@ -184,9 +189,15 @@ class AltaDefinizione : MainAPI() {
         links.map {
             if (it.contains("dropload.tv")) {
                 DroploadExtractor().getUrl(it, null, subtitleCallback, callback)
-            } else {
+            } else if (it.contains("supervideo.cc")) {
                 MySupervideoExtractor().getUrl(it, null, subtitleCallback, callback)
-//                loadExtractor(it, null, subtitleCallback, callback)
+            } else if (it.contains("vixsrc")) {
+                val imdbID = if (!it.contains("vixsrc")) "" else "tt" + it.substringAfter("/tt").substringBefore("/")
+                val embedPath = JSONObject(app.get("https://vixsrc.to/api/tv/$imdbID/1/1?lang=it").text)["src"]
+                val finalVixSrcUrl = "https://vixsrc.to$embedPath"
+                loadExtractor(finalVixSrcUrl, mainUrl, subtitleCallback, callback)
+            } else{
+                loadExtractor(it, mainUrl, subtitleCallback, callback)
             }
         }
         return false
