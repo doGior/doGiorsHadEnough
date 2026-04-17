@@ -10,10 +10,10 @@ include(
     "AnimeWorld",
     "Arte",
     "CalcioStreaming",
-    "CB01",
+//    "CB01",
     "CorsaroNero",
-    "DaddyLive",
-    "Huhu",
+//    "DaddyLive",
+//    "Huhu",
     "IlCorsaroViola",
     "IPTV",
 //    "OnlineSerieTV",
@@ -21,7 +21,7 @@ include(
     "SimklProvider",
     "StreamingCommunity",
     "TV",
-    "Torrentio",
+//    "Torrentio",
     "Vavoo",
     "YouTube"
 )
