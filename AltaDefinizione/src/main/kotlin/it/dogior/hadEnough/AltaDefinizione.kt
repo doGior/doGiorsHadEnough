@@ -19,8 +19,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.loadExtractor
-import it.dogior.hadEnough.extractors.DroploadExtractor
-import it.dogior.hadEnough.extractors.MySupervideoExtractor
 import okhttp3.FormBody
 import org.json.JSONObject
 import org.jsoup.nodes.Document
@@ -134,6 +132,7 @@ class AltaDefinizione : MainAPI() {
                 this.posterUrl = poster
                 this.plot = plot
                 this.tags = genres
+                this.url
                 this.logoUrl = logo
                 addScore(rating)
             }
@@ -187,18 +186,16 @@ class AltaDefinizione : MainAPI() {
         Log.d("Altadefinizione", "Links: $data")
         val links = parseJson<List<String>>(data)
         links.map {
-            if (it.contains("dropload.tv")) {
-                DroploadExtractor().getUrl(it, null, subtitleCallback, callback)
-            } else if (it.contains("supervideo.cc")) {
-                MySupervideoExtractor().getUrl(it, null, subtitleCallback, callback)
-            } else if (it.contains("vixsrc")) {
-                val imdbID = if (!it.contains("vixsrc")) "" else "tt" + it.substringAfter("/tt").substringBefore("/")
-                val embedPath = JSONObject(app.get("https://vixsrc.to/api/tv/$imdbID/1/1?lang=it").text)["src"]
-                val finalVixSrcUrl = "https://vixsrc.to$embedPath"
-                loadExtractor(finalVixSrcUrl, mainUrl, subtitleCallback, callback)
-            } else{
-                loadExtractor(it, mainUrl, subtitleCallback, callback)
-            }
+            val url = if (it.contains("vixsrc")) {
+                val imdbID = if (!it.contains("vixsrc")) ""
+                    else "tt" + it.substringAfter("/tt").substringBefore("/")
+                val embedPath =
+                    JSONObject(app.get("https://vixsrc.to/api/tv/$imdbID/1/1?lang=it").text).getString(
+                        "src"
+                    )
+                "https://vixsrc.to$embedPath"
+            } else { it }
+            loadExtractor(url, mainUrl, subtitleCallback, callback)
         }
         return false
     }

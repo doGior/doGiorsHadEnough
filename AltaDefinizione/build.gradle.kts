@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 7
+version = 8
 
 
 cloudstream {
@@ -15,12 +15,12 @@ cloudstream {
     * 2: Slow
     * 3: Beta only
     * */
-    status = 1
+    status = 3
 
     tvTypes = listOf("Movie", "TvSeries", "Documentary")
 
     requiresResources = false
     language = "it"
 
-    iconUrl = "https://altadefinizionegratis.fun/templates/Dark/img/favicon.ico"
+    iconUrl = "https://altadefinizione.autos/templates/Dark/img/favicon.ico"
 }
