@@ -1,14 +1,56 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="header_tw">Impostazioni AnimeUnity</string>
-    <string name="sections_label">Sezioni della home</string>
-    <string name="latest_episodes_switch_text">Ultimi Episodi</string>
+    <string name="settings_menu_title">AnimeUnity</string>
+    <string name="settings_menu_home_title">Home</string>
+    <string name="settings_menu_home_summary">Personalizza Home</string>
+    <string name="settings_menu_display_title">Visualizzazione</string>
+    <string name="settings_menu_display_summary">Personalizza Scheda Anime</string>
+    <string name="settings_open_action">Apri</string>
+
+    <string name="site_url_label">Link sito</string>
+    <string name="site_url_hint">Es: animeunity.so</string>
+    <string name="site_url_invalid">Link non valido. Controlla il formato.</string>
+
+    <string name="settings_home_title">Home</string>
+    <string name="section_name_header">Sezione</string>
+    <string name="section_enabled_header">On</string>
+    <string name="section_limit_header">N.</string>
+    <string name="section_move_header">Ord.</string>
+
+    <string name="latest_episodes_switch_text">Ultimi episodi</string>
     <string name="calendar_switch_text">Calendario</string>
-    <string name="ongoing_switch_text">In Corso</string>
+    <string name="ongoing_switch_text">In corso</string>
     <string name="popular_switch_text">Popolari</string>
     <string name="best_switch_text">I migliori</string>
-    <string name="upcoming_switch_text">In Arrivo</string>
-    <string name="display_label">Visualizzazione</string>
-    <string name="score_switch_text">Mostra valutazione</string>
+    <string name="upcoming_switch_text">In arrivo</string>
+    <string name="random_switch_text">Random</string>
+
+    <string name="latest_count_label">Ultimi episodi</string>
+    <string name="ongoing_count_label">In corso</string>
+    <string name="popular_count_label">Popolari</string>
+    <string name="best_count_label">I migliori</string>
+    <string name="upcoming_count_label">In arrivo</string>
+    <string name="random_count_label">Random</string>
+
+    <string name="settings_display_title">Visualizzazione</string>
+    <string name="dub_sub_switch_text">SUB/DUB</string>
+    <string name="episode_number_switch_text">Numero episodio</string>
+    <string name="score_switch_text">Valutazione</string>
+
+    <string name="move_up_action">Sposta su</string>
+    <string name="move_down_action">Sposta giu</string>
+    <string name="save_text">Salva</string>
     <string name="settings_saved">Impostazioni salvate. Riavvia l\'applicazione per applicarle</string>
+    <string name="settings_restart_title">Riavvia applicazione</string>
+    <string name="settings_saved_restart_message">Impostazioni salvate. Vuoi riavviare l\'applicazione ora per applicare subito le modifiche?</string>
+    <string name="site_url_fallback_restart_message">Link non valido: verra usato quello predefinito. Vuoi riavviare l\'applicazione ora per applicare subito le modifiche?</string>
+    <string name="settings_reset_button">Ripristina valori predefiniti</string>
+    <string name="settings_reset_title">Ripristina impostazioni</string>
+    <string name="settings_reset_message">Vuoi ripristinare tutti i valori di AnimeUnity a quelli predefiniti?</string>
+    <string name="settings_reset_confirm">Ripristina</string>
+    <string name="settings_reset_cancel">Annulla</string>
+    <string name="settings_reset_restart_message">Impostazioni ripristinate. Vuoi riavviare l\'applicazione ora per applicare subito i valori predefiniti?</string>
+    <string name="restart_now">Riavvia</string>
+    <string name="restart_later">Piu tardi</string>
+    <string name="restart_unavailable">Impossibile riavviare automaticamente l\'app. Chiudila e riaprila manualmente.</string>
 </resources>
