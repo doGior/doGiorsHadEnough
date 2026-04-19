@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="42dp">
+
+        <TextView
+            android:id="@+id/header_tw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/save_btn"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="@android:color/transparent"
+            android:contentDescription="@string/save_text" />
+    </RelativeLayout>
+
+    <LinearLayout
+        android:id="@+id/display_rows_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/dub_sub_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="2dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp">
+
+            <TextView
+                android:id="@+id/dub_sub_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/dub_sub_switch"
+                android:layout_width="42dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/episode_number_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="2dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp">
+
+            <TextView
+                android:id="@+id/episode_number_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/episode_number_switch"
+                android:layout_width="42dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/score_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp">
+
+            <TextView
+                android:id="@+id/score_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/score_switch"
+                android:layout_width="42dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

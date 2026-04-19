@@ -1,0 +1,500 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="42dp">
+
+        <TextView
+            android:id="@+id/header_tw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/save_btn"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="@android:color/transparent"
+            android:contentDescription="@string/save_text" />
+    </RelativeLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
+
+        <TextView
+            android:id="@+id/section_name_header"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/section_enabled_header"
+            android:layout_width="50dp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/section_limit_header"
+            android:layout_width="55dp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/section_move_header"
+            android:layout_width="74dp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/sections_rows_container"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/latest_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/calendar_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/ongoing_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/popular_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/best_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/upcoming_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/random_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="4dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp">
+
+            <TextView
+                android:id="@+id/row_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/row_switch"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp"
+                android:showText="false"
+                android:switchMinWidth="28dp"
+                android:text="" />
+
+            <EditText
+                android:id="@+id/row_count_input"
+                android:layout_width="45dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="number"
+                android:maxLines="1"
+                android:minHeight="28dp"
+                android:singleLine="true" />
+
+            <ImageButton
+                android:id="@+id/move_up_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="10dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_up_action"
+                android:src="@android:drawable/arrow_up_float" />
+
+            <ImageButton
+                android:id="@+id/move_down_btn"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/move_down_action"
+                android:src="@android:drawable/arrow_down_float" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
