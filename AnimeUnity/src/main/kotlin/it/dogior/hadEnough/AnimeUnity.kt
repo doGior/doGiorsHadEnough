@@ -56,6 +56,7 @@ class AnimeUnity(
         @Suppress("ConstPropertyName")
         const val mainUrl = "https://www.animeunity.so"
         const val ARCHIVE_BATCH_SIZE = 30
+        const val advancedSearchSectionName = "Ricerca avanzata"
         const val latestEpisodesSectionName = "Ultimi Episodi"
         const val calendarSectionName = "Calendario"
         const val randomSectionName = "Random"
@@ -81,11 +82,17 @@ class AnimeUnity(
 
     private fun buildSectionNamesList(): List<MainPageData> {
         val order = AnimeUnityPlugin.getConfiguredSectionOrder(sharedPref)
-        val sections = order.split(",")
+        val sections = buildList {
+            if (AnimeUnityPlugin.isAdvancedSearchEnabled(sharedPref)) {
+                add("advanced")
+            }
+            addAll(order.split(","))
+        }
         
         return mainPageOf(
             *sections.mapNotNull { section ->
                 when (section) {
+                    "advanced" -> "$mainUrl/archivio/" to advancedSearchSectionName
                     "latest" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_LATEST_EPISODES)) "$mainUrl/" to latestEpisodesSectionName else null
                     "calendar" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_CALENDAR)) "$mainUrl/calendario" to calendarSectionName else null
                     "ongoing" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_ONGOING)) "$mainUrl/archivio/" to ongoingSectionName else null
@@ -104,18 +111,27 @@ class AnimeUnity(
     }
 
     private fun getSectionCount(sectionName: String): Int {
-        val key = when (sectionName) {
-            latestEpisodesSectionName -> AnimeUnityPlugin.PREF_LATEST_COUNT
-            calendarSectionName -> AnimeUnityPlugin.PREF_CALENDAR_COUNT
-            ongoingSectionName -> AnimeUnityPlugin.PREF_ONGOING_COUNT
-            popularSectionName -> AnimeUnityPlugin.PREF_POPULAR_COUNT
-            bestSectionName -> AnimeUnityPlugin.PREF_BEST_COUNT
-            upcomingSectionName -> AnimeUnityPlugin.PREF_UPCOMING_COUNT
-            randomSectionName -> AnimeUnityPlugin.PREF_RANDOM_COUNT
+        val (key, defaultCount) = when (sectionName) {
+            advancedSearchSectionName -> AnimeUnityPlugin.PREF_ADVANCED_SEARCH_COUNT to
+                AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT
+            latestEpisodesSectionName -> AnimeUnityPlugin.PREF_LATEST_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            calendarSectionName -> AnimeUnityPlugin.PREF_CALENDAR_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            ongoingSectionName -> AnimeUnityPlugin.PREF_ONGOING_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            popularSectionName -> AnimeUnityPlugin.PREF_POPULAR_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            bestSectionName -> AnimeUnityPlugin.PREF_BEST_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            upcomingSectionName -> AnimeUnityPlugin.PREF_UPCOMING_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            randomSectionName -> AnimeUnityPlugin.PREF_RANDOM_COUNT to
+                AnimeUnityPlugin.DEFAULT_SECTION_COUNT
             else -> return AnimeUnityPlugin.DEFAULT_SECTION_COUNT
         }
-        return (sharedPref?.getInt(key, AnimeUnityPlugin.DEFAULT_SECTION_COUNT)
-            ?: AnimeUnityPlugin.DEFAULT_SECTION_COUNT).coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
+        return (sharedPref?.getInt(key, defaultCount)
+            ?: defaultCount).coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
     }
 
     private fun shouldShowScore(): Boolean {
@@ -269,7 +285,8 @@ class AnimeUnity(
     }
 
     private suspend fun fetchRandomTitles(url: String, sectionCount: Int): Pair<List<Anime>, Int> {
-        val initialResponse = fetchArchiveBatch(url, RequestData(offset = 0))
+        val requestData = RequestData(dubbed = 0)
+        val initialResponse = fetchArchiveBatch(url, requestData.copy(offset = 0))
         val total = initialResponse.total
         val collectedTitles = linkedMapOf<Int, Anime>()
         val requestedOffsets = mutableSetOf<Int>()
@@ -297,7 +314,7 @@ class AnimeUnity(
                 return@repeat
             }
 
-            collectBatch(fetchArchiveBatch(url, RequestData(offset = randomOffset)).titles.orEmpty())
+            collectBatch(fetchArchiveBatch(url, requestData.copy(offset = randomOffset)).titles.orEmpty())
         }
 
         if (collectedTitles.isEmpty()) {
@@ -525,6 +542,7 @@ class AnimeUnity(
     }
 
     private fun getDataPerHomeSection(section: String) = when (section) {
+        advancedSearchSectionName -> AnimeUnityPlugin.getAdvancedSearchRequestData(sharedPref)
         popularSectionName -> RequestData(orderBy = Str("Popolarità"), dubbed = 0)
         upcomingSectionName -> RequestData(status = Str("In Uscita"), dubbed = 0)
         bestSectionName -> RequestData(orderBy = Str("Valutazione"), dubbed = 0)

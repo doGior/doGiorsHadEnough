@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 
 // Sealed class to represent either Boolean or String
@@ -30,21 +31,38 @@ data class RequestData(
     val year: BooleanOrString = BooleanOrString.AsBoolean(false),
     val orderBy: BooleanOrString = BooleanOrString.AsBoolean(false),
     val status: BooleanOrString = BooleanOrString.AsBoolean(false),
-    val genres: BooleanOrString = BooleanOrString.AsBoolean(false),
+    val genres: Any = BooleanOrString.AsBoolean(false),
     /*** Inverno, Primavera, Estate, Autunno ***/
     val season: BooleanOrString = BooleanOrString.AsBoolean(false),
     var offset: Int? = 0,
     val dubbed: Int = 1,
 ){
+    private fun serializeValue(value: Any): Any {
+        return when (value) {
+            is BooleanOrString -> value.getValue()
+            is List<*> -> JSONArray().apply {
+                value.filterIsInstance<ArchiveGenreOption>().forEach { genre ->
+                    put(
+                        JSONObject().apply {
+                            put("id", genre.id)
+                            put("name", genre.name)
+                        }
+                    )
+                }
+            }
+            else -> value
+        }
+    }
+
     private fun toJson(): JSONObject {
         val m = mapOf(
             "title" to title,
-            "type" to type.getValue(),
-            "year" to year.getValue(),
-            "order" to orderBy.getValue(),
-            "status" to status.getValue(),
-            "genres" to genres.getValue(),
-            "season" to season.getValue(),
+            "type" to serializeValue(type),
+            "year" to serializeValue(year),
+            "order" to serializeValue(orderBy),
+            "status" to serializeValue(status),
+            "genres" to serializeValue(genres),
+            "season" to serializeValue(season),
             "dubbed" to dubbed,
             "offset" to offset
         )
@@ -149,6 +167,22 @@ data class AnimeInfo(
 data class Genre(
     @JsonProperty("id") val id: Int,
     @JsonProperty("name") val name: String
+)
+
+data class ArchiveGenreOption(
+    val id: Int,
+    val name: String,
+)
+
+data class AdvancedSearchConfig(
+    val enabled: Boolean,
+    val title: String,
+    val genre: ArchiveGenreOption?,
+    val year: String?,
+    val order: String?,
+    val status: String?,
+    val type: String?,
+    val season: String?,
 )
 
 data class AnilistResponse(

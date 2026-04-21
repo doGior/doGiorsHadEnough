@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp">
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="48dp">
+
+        <TextView
+            android:id="@+id/header_tw"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/save_btn"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="@android:color/transparent"
+            android:contentDescription="@string/save_text" />
+    </RelativeLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:id="@+id/advanced_search_name_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_name_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/advanced_search_name_input"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:hint="@string/advanced_search_name_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_name_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_count_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_count_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/advanced_search_count_input"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:hint="@string/advanced_search_count_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="number"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_count_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_genre_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_genre_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_genre_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_genre_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_genre_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_year_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_year_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_year_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_year_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="number"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_year_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_order_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_order_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_order_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_order_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_order_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_status_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_status_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_status_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_status_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_status_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_type_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_type_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_type_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_type_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_type_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/advanced_search_season_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/advanced_search_season_label"
+                    android:layout_width="92dp"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold" />
+
+                <AutoCompleteTextView
+                    android:id="@+id/advanced_search_season_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:completionThreshold="0"
+                    android:hint="@string/advanced_search_season_hint"
+                    android:imeOptions="actionDone"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:minHeight="44dp"
+                    android:singleLine="true" />
+
+                <ImageButton
+                    android:id="@+id/advanced_search_season_clear"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="6dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="@string/advanced_search_clear_action"
+                    android:padding="4dp"
+                    android:scaleType="centerInside" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

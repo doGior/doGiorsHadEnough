@@ -3,6 +3,7 @@ package it.dogior.hadEnough
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Color
 import android.graphics.drawable.Drawable
 import android.os.Bundle
 import android.text.Editable
@@ -11,6 +12,8 @@ import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AutoCompleteTextView
+import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -23,6 +26,13 @@ import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.CommonActivity.showToast
+
+private data class SpinnerItem<T>(
+    val label: String,
+    val value: T,
+) {
+    override fun toString(): String = label
+}
 
 abstract class AnimeUnityBaseSettingsFragment : BottomSheetDialogFragment() {
 
@@ -132,13 +142,44 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
 
     override val layoutName: String = "settings"
 
-    private fun resetAllSettings(siteUrlInput: EditText?) {
+    private fun setupSiteUrlResetButton(
+        button: ImageButton?,
+        input: EditText?,
+    ) {
+        button ?: return
+        button.setImageDrawable(getDrawable("clear_icon"))
+        button.setOnClickListener {
+            input?.let { siteUrlInput ->
+                siteUrlInput.error = null
+                siteUrlInput.setText(AnimeUnityPlugin.DEFAULT_SITE_URL)
+                siteUrlInput.setSelection(siteUrlInput.text.length)
+            }
+        }
+    }
+
+    private fun updateAdvancedSearchActionState(
+        actionView: TextView?,
+        enabledColor: Int,
+        isEnabled: Boolean,
+    ) {
+        actionView?.setTextColor(if (isEnabled) enabledColor else Color.parseColor("#7A7A7A"))
+        actionView?.alpha = if (isEnabled) 1f else 0.65f
+    }
+
+    private fun resetAllSettings(
+        siteUrlInput: EditText?,
+        advancedSearchSwitch: Switch?,
+        advancedSearchAction: TextView?,
+        advancedSearchActionEnabledColor: Int,
+    ) {
         sharedPref?.edit {
             clear()
         }
 
         siteUrlInput?.error = null
         siteUrlInput?.setText(AnimeUnityPlugin.DEFAULT_SITE_URL)
+        advancedSearchSwitch?.isChecked = false
+        updateAdvancedSearchActionState(advancedSearchAction, advancedSearchActionEnabledColor, false)
 
         promptRestartAfterSave(
             getString("settings_reset_restart_message")
@@ -163,23 +204,45 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
             getString("settings_menu_display_summary")
         view.findViewByName<TextView>("display_settings_action")?.text =
             getString("settings_open_action")
+        view.findViewByName<TextView>("advanced_search_settings_title")?.text =
+            getString("settings_menu_advanced_search_title")
+        view.findViewByName<TextView>("advanced_search_settings_summary")?.text =
+            getString("settings_menu_advanced_search_summary")
+        val advancedSearchAction: TextView? = view.findViewByName("advanced_search_settings_action")
+        advancedSearchAction?.text =
+            getString("settings_open_action")
         view.findViewByName<TextView>("site_url_label")?.text =
             getString("site_url_label")
 
         val homeSettingsCard: View? = view.findViewByName("home_settings_card")
         val displaySettingsCard: View? = view.findViewByName("display_settings_card")
+        val advancedSearchSettingsCard: View? = view.findViewByName("advanced_search_settings_card")
+        val advancedSearchSwitch: Switch? = view.findViewByName("advanced_search_settings_switch")
         val siteUrlContainer: View? = view.findViewByName("site_url_container")
         val siteUrlInput: EditText? = view.findViewByName("site_url_input")
+        val siteUrlClear: ImageButton? = view.findViewByName("site_url_clear")
         val resetSettingsButton: TextView? = view.findViewByName("reset_settings_btn")
+        val advancedSearchActionEnabledColor = advancedSearchAction?.currentTextColor ?: Color.WHITE
 
-        listOf(homeSettingsCard, displaySettingsCard).forEach { card ->
+        listOf(homeSettingsCard, displaySettingsCard, advancedSearchSettingsCard).forEach { card ->
             card?.makeTvCompatible()
         }
         siteUrlContainer?.applyOutlineBackground()
         resetSettingsButton?.makeTvCompatible()
+        resetSettingsButton?.background = getDrawable("outline_danger")
+        resetSettingsButton?.setTextColor(Color.parseColor("#FFFF7F7F"))
 
         siteUrlInput?.hint = getString("site_url_hint")
         siteUrlInput?.setText(AnimeUnityPlugin.getConfiguredSiteUrl(sharedPref))
+        setupSiteUrlResetButton(siteUrlClear, siteUrlInput)
+        advancedSearchSwitch?.text = ""
+        advancedSearchSwitch?.isChecked =
+            sharedPref?.getBoolean(AnimeUnityPlugin.PREF_ENABLE_ADVANCED_SEARCH, false) ?: false
+        updateAdvancedSearchActionState(
+            advancedSearchAction,
+            advancedSearchActionEnabledColor,
+            advancedSearchSwitch?.isChecked == true
+        )
         resetSettingsButton?.text = getString("settings_reset_button")
         siteUrlInput?.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -197,6 +260,16 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
                 }
             }
         })
+        advancedSearchSwitch?.setOnCheckedChangeListener { _, isChecked ->
+            sharedPref?.edit {
+                putBoolean(AnimeUnityPlugin.PREF_ENABLE_ADVANCED_SEARCH, isChecked)
+            }
+            updateAdvancedSearchActionState(
+                advancedSearchAction,
+                advancedSearchActionEnabledColor,
+                isChecked
+            )
+        }
 
         setupSaveButton(view) {
             val rawSiteUrl = siteUrlInput?.text?.toString()
@@ -228,7 +301,12 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
                         ?: "Vuoi ripristinare tutti i valori di AnimeUnity a quelli predefiniti?"
                 )
                 .setPositiveButton(getString("settings_reset_confirm") ?: "Ripristina") { _, _ ->
-                    resetAllSettings(siteUrlInput)
+                    resetAllSettings(
+                        siteUrlInput,
+                        advancedSearchSwitch,
+                        advancedSearchAction,
+                        advancedSearchActionEnabledColor
+                    )
                 }
                 .setNegativeButton(getString("settings_reset_cancel") ?: "Annulla", null)
                 .show()
@@ -246,6 +324,15 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
                 parentFragmentManager,
                 "AnimeUnityDisplaySettings"
             )
+        }
+
+        advancedSearchSettingsCard?.setOnClickListener {
+            if (advancedSearchSwitch?.isChecked == true) {
+                AnimeUnityAdvancedSearchSettingsFragment().show(
+                    parentFragmentManager,
+                    "AnimeUnityAdvancedSearchSettings"
+                )
+            }
         }
     }
 }
@@ -549,6 +636,351 @@ class AnimeUnityDisplaySettingsFragment : AnimeUnityBaseSettingsFragment() {
                         view.findViewByName<Switch>(setting.viewId)?.isChecked ?: setting.defaultValue
                     )
                 }
+            }
+
+            showToast(
+                getString("settings_saved")
+                    ?: "Impostazioni salvate. Riavvia l'applicazione per applicarle"
+            )
+            dismiss()
+        }
+    }
+}
+
+class AnimeUnityAdvancedSearchSettingsFragment : AnimeUnityBaseSettingsFragment() {
+
+    override val layoutName: String = "settings_advanced_search"
+
+    private fun setupSelectAllOnFocus(input: EditText?) {
+        input ?: return
+        input.setOnClickListener {
+            input.post { input.selectAll() }
+        }
+        input.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                input.post { input.selectAll() }
+            }
+        }
+    }
+
+    private fun setupClearButton(
+        button: ImageButton?,
+        onClear: () -> Unit,
+    ) {
+        button ?: return
+        button.setImageDrawable(getDrawable("clear_icon"))
+        button.setOnClickListener { onClear() }
+    }
+
+    private fun <T> bindSelectableInput(
+        input: AutoCompleteTextView?,
+        items: List<SpinnerItem<T?>>,
+        selectedValue: T?,
+    ) {
+        val context = context ?: return
+        input ?: return
+
+        val adapter = ArrayAdapter(context, android.R.layout.simple_dropdown_item_1line, items)
+        input.setAdapter(adapter)
+        input.threshold = 0
+
+        val selectedItem = items.firstOrNull { it.value == selectedValue } ?: items.first()
+        input.setText(selectedItem.label, false)
+        input.setOnClickListener {
+            input.post {
+                input.selectAll()
+                input.showDropDown()
+            }
+        }
+        input.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                input.post {
+                    input.selectAll()
+                    input.showDropDown()
+                }
+            } else {
+                normalizeSelectableInput(input, items)
+            }
+        }
+        input.setOnEditorActionListener { _, _, _ ->
+            normalizeSelectableInput(input, items)
+            false
+        }
+    }
+
+    private fun <T> normalizeSelectableInput(
+        input: AutoCompleteTextView?,
+        items: List<SpinnerItem<T?>>,
+    ) {
+        input ?: return
+
+        val typedValue = input.text?.toString()?.trim().orEmpty()
+        val selectedItem = items.firstOrNull { it.label.equals(typedValue, ignoreCase = true) }
+            ?: items.first()
+
+        if (input.text?.toString() != selectedItem.label) {
+            input.setText(selectedItem.label, false)
+        }
+        input.dismissDropDown()
+    }
+
+    private fun putOptionalString(
+        editor: SharedPreferences.Editor,
+        key: String,
+        value: String?,
+    ) {
+        if (value.isNullOrBlank()) {
+            editor.remove(key)
+        } else {
+            editor.putString(key, value)
+        }
+    }
+
+    private fun getAdvancedSearchCount(): Int {
+        return (sharedPref?.getInt(
+            AnimeUnityPlugin.PREF_ADVANCED_SEARCH_COUNT,
+            AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT,
+        ) ?: AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT)
+            .coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
+    }
+
+    private fun parseAdvancedSearchCount(input: EditText?): Int {
+        return input?.text
+            ?.toString()
+            ?.trim()
+            ?.toIntOrNull()
+            ?.coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
+            ?: AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT
+    }
+
+    private fun setupAdvancedSearchCountInput(input: EditText?) {
+        input ?: return
+
+        input.filters = arrayOf(InputFilter.LengthFilter(3))
+        input.setText(getAdvancedSearchCount().toString())
+        input.setSelection(input.text.length)
+
+        var isUpdating = false
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(s: Editable?) {
+                if (isUpdating) return
+
+                val parsedValue = s?.toString()?.trim()?.toIntOrNull() ?: return
+                if (parsedValue <= AnimeUnityPlugin.MAX_SECTION_COUNT) return
+
+                isUpdating = true
+                input.setText(AnimeUnityPlugin.MAX_SECTION_COUNT.toString())
+                input.setSelection(input.text.length)
+                isUpdating = false
+            }
+        })
+    }
+
+    private fun <T> getSelectedValue(
+        input: AutoCompleteTextView?,
+        items: List<SpinnerItem<T?>>,
+    ): T? {
+        normalizeSelectableInput(input, items)
+        val typedValue = input?.text?.toString()?.trim().orEmpty()
+        return items.firstOrNull { it.label.equals(typedValue, ignoreCase = true) }?.value
+    }
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        view.findViewByName<TextView>("header_tw")?.text =
+            getString("settings_advanced_search_title")
+        view.findViewByName<TextView>("advanced_search_name_label")?.text =
+            getString("advanced_search_name_label")
+        view.findViewByName<TextView>("advanced_search_genre_label")?.text =
+            getString("advanced_search_genre_label")
+        view.findViewByName<TextView>("advanced_search_year_label")?.text =
+            getString("advanced_search_year_label")
+        view.findViewByName<TextView>("advanced_search_order_label")?.text =
+            getString("advanced_search_order_label")
+        view.findViewByName<TextView>("advanced_search_status_label")?.text =
+            getString("advanced_search_status_label")
+        view.findViewByName<TextView>("advanced_search_type_label")?.text =
+            getString("advanced_search_type_label")
+        view.findViewByName<TextView>("advanced_search_season_label")?.text =
+            getString("advanced_search_season_label")
+
+        val nameRow: View? = view.findViewByName("advanced_search_name_row")
+        val countRow: View? = view.findViewByName("advanced_search_count_row")
+        val genreRow: View? = view.findViewByName("advanced_search_genre_row")
+        val yearRow: View? = view.findViewByName("advanced_search_year_row")
+        val orderRow: View? = view.findViewByName("advanced_search_order_row")
+        val statusRow: View? = view.findViewByName("advanced_search_status_row")
+        val typeRow: View? = view.findViewByName("advanced_search_type_row")
+        val seasonRow: View? = view.findViewByName("advanced_search_season_row")
+        val nameInput: EditText? = view.findViewByName("advanced_search_name_input")
+        val countInput: EditText? = view.findViewByName("advanced_search_count_input")
+        val nameClear: ImageButton? = view.findViewByName("advanced_search_name_clear")
+        val countClear: ImageButton? = view.findViewByName("advanced_search_count_clear")
+        view.findViewByName<TextView>("advanced_search_count_label")?.text =
+            getString("advanced_search_count_label")
+        val genreInput: AutoCompleteTextView? = view.findViewByName("advanced_search_genre_spinner")
+        val yearInput: AutoCompleteTextView? = view.findViewByName("advanced_search_year_spinner")
+        val orderInput: AutoCompleteTextView? = view.findViewByName("advanced_search_order_spinner")
+        val statusInput: AutoCompleteTextView? = view.findViewByName("advanced_search_status_spinner")
+        val typeInput: AutoCompleteTextView? = view.findViewByName("advanced_search_type_spinner")
+        val seasonInput: AutoCompleteTextView? = view.findViewByName("advanced_search_season_spinner")
+        val genreClear: ImageButton? = view.findViewByName("advanced_search_genre_clear")
+        val yearClear: ImageButton? = view.findViewByName("advanced_search_year_clear")
+        val orderClear: ImageButton? = view.findViewByName("advanced_search_order_clear")
+        val statusClear: ImageButton? = view.findViewByName("advanced_search_status_clear")
+        val typeClear: ImageButton? = view.findViewByName("advanced_search_type_clear")
+        val seasonClear: ImageButton? = view.findViewByName("advanced_search_season_clear")
+
+        listOf(nameRow, countRow, genreRow, yearRow, orderRow, statusRow, typeRow, seasonRow)
+            .forEach { row -> row?.applyOutlineBackground() }
+
+        val config = AnimeUnityPlugin.getAdvancedSearchConfig(sharedPref)
+        val anyOptionLabel = getString("advanced_search_any_option") ?: "Qualsiasi"
+
+        nameInput?.hint = getString("advanced_search_name_hint")
+        nameInput?.setText(config.title)
+        countInput?.hint = getString("advanced_search_count_hint")
+        genreInput?.hint = getString("advanced_search_genre_hint")
+        yearInput?.hint = getString("advanced_search_year_hint")
+        orderInput?.hint = getString("advanced_search_order_hint")
+        statusInput?.hint = getString("advanced_search_status_hint")
+        typeInput?.hint = getString("advanced_search_type_hint")
+        seasonInput?.hint = getString("advanced_search_season_hint")
+        setupAdvancedSearchCountInput(countInput)
+        setupSelectAllOnFocus(nameInput)
+        setupSelectAllOnFocus(countInput)
+
+        val genreItems = listOf(SpinnerItem<ArchiveGenreOption?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchGenres()
+                .map { SpinnerItem<ArchiveGenreOption?>(it.name, it) }
+        val yearItems = listOf(SpinnerItem<String?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchYearOptions()
+                .map { SpinnerItem<String?>(it, it) }
+        val orderItems = listOf(SpinnerItem<String?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchOrderOptions()
+                .map { SpinnerItem<String?>(it, it) }
+        val statusItems = listOf(SpinnerItem<String?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchStatusOptions()
+                .map { SpinnerItem<String?>(it, it) }
+        val typeItems = listOf(SpinnerItem<String?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchTypeOptions()
+                .map { SpinnerItem<String?>(it, it) }
+        val seasonItems = listOf(SpinnerItem<String?>(anyOptionLabel, null)) +
+            AnimeUnityPlugin.getAdvancedSearchSeasonOptions()
+                .map { SpinnerItem<String?>(it, it) }
+
+        bindSelectableInput(
+            genreInput,
+            genreItems,
+            config.genre,
+        )
+        bindSelectableInput(
+            yearInput,
+            yearItems,
+            config.year,
+        )
+        bindSelectableInput(
+            orderInput,
+            orderItems,
+            config.order,
+        )
+        bindSelectableInput(
+            statusInput,
+            statusItems,
+            config.status,
+        )
+        bindSelectableInput(
+            typeInput,
+            typeItems,
+            config.type,
+        )
+        bindSelectableInput(
+            seasonInput,
+            seasonItems,
+            config.season,
+        )
+
+        setupClearButton(nameClear) {
+            nameInput?.setText("")
+        }
+        setupClearButton(countClear) {
+            countInput?.let { input ->
+                input.setText(AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT.toString())
+                input.setSelection(input.text.length)
+            }
+        }
+        setupClearButton(genreClear) {
+            genreInput?.setText(anyOptionLabel, false)
+            genreInput?.dismissDropDown()
+        }
+        setupClearButton(yearClear) {
+            yearInput?.setText(anyOptionLabel, false)
+            yearInput?.dismissDropDown()
+        }
+        setupClearButton(orderClear) {
+            orderInput?.setText(anyOptionLabel, false)
+            orderInput?.dismissDropDown()
+        }
+        setupClearButton(statusClear) {
+            statusInput?.setText(anyOptionLabel, false)
+            statusInput?.dismissDropDown()
+        }
+        setupClearButton(typeClear) {
+            typeInput?.setText(anyOptionLabel, false)
+            typeInput?.dismissDropDown()
+        }
+        setupClearButton(seasonClear) {
+            seasonInput?.setText(anyOptionLabel, false)
+            seasonInput?.dismissDropDown()
+        }
+
+        setupSaveButton(view) {
+            sharedPref?.edit {
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_TITLE,
+                    nameInput?.text?.toString()?.trim(),
+                )
+                putInt(
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_COUNT,
+                    parseAdvancedSearchCount(countInput),
+                )
+
+                getSelectedValue(genreInput, genreItems)?.let { genre ->
+                    putInt(AnimeUnityPlugin.PREF_ADVANCED_SEARCH_GENRE_ID, genre.id)
+                } ?: remove(AnimeUnityPlugin.PREF_ADVANCED_SEARCH_GENRE_ID)
+
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_YEAR,
+                    getSelectedValue(yearInput, yearItems),
+                )
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_ORDER,
+                    getSelectedValue(orderInput, orderItems),
+                )
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_STATUS,
+                    getSelectedValue(statusInput, statusItems),
+                )
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_TYPE,
+                    getSelectedValue(typeInput, typeItems),
+                )
+                putOptionalString(
+                    this,
+                    AnimeUnityPlugin.PREF_ADVANCED_SEARCH_SEASON,
+                    getSelectedValue(seasonInput, seasonItems),
+                )
             }
 
             showToast(

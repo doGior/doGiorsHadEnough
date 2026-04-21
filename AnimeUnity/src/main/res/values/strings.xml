@@ -5,11 +5,14 @@
     <string name="settings_menu_home_summary">Personalizza Home</string>
     <string name="settings_menu_display_title">Visualizzazione</string>
     <string name="settings_menu_display_summary">Personalizza Scheda Anime</string>
+    <string name="settings_menu_advanced_search_title">Ricerca avanzata</string>
+    <string name="settings_menu_advanced_search_summary">Ricerca Anime per criteri</string>
     <string name="settings_open_action">Apri</string>
 
-    <string name="site_url_label">Link sito</string>
+    <string name="site_url_label">Link</string>
     <string name="site_url_hint">Es: animeunity.so</string>
     <string name="site_url_invalid">Link non valido. Controlla il formato.</string>
+    <string name="site_url_reset_action">Ripristina link predefinito</string>
 
     <string name="settings_home_title">Home</string>
     <string name="section_name_header">Sezione</string>
@@ -33,9 +36,28 @@
     <string name="random_count_label">Random</string>
 
     <string name="settings_display_title">Visualizzazione</string>
+    <string name="settings_advanced_search_title">Ricerca avanzata</string>
     <string name="dub_sub_switch_text">SUB/DUB</string>
     <string name="episode_number_switch_text">Numero episodio</string>
     <string name="score_switch_text">Valutazione</string>
+    <string name="advanced_search_name_label">Nome</string>
+    <string name="advanced_search_name_hint">Nome anime</string>
+    <string name="advanced_search_count_hint">Risultati</string>
+    <string name="advanced_search_count_label">Risultati</string>
+    <string name="advanced_search_genre_label">Genere</string>
+    <string name="advanced_search_genre_hint">Genere</string>
+    <string name="advanced_search_year_label">Anno</string>
+    <string name="advanced_search_year_hint">Anno</string>
+    <string name="advanced_search_order_label">Ordina</string>
+    <string name="advanced_search_order_hint">Ordina</string>
+    <string name="advanced_search_status_label">Stato</string>
+    <string name="advanced_search_status_hint">Stato</string>
+    <string name="advanced_search_type_label">Tipo</string>
+    <string name="advanced_search_type_hint">Tipo</string>
+    <string name="advanced_search_season_label">Stagione</string>
+    <string name="advanced_search_season_hint">Stagione</string>
+    <string name="advanced_search_any_option">Qualsiasi</string>
+    <string name="advanced_search_clear_action">Cancella valore</string>
 
     <string name="move_up_action">Sposta su</string>
     <string name="move_down_action">Sposta giu</string>
