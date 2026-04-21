@@ -21,7 +21,7 @@ cloudstream {
 
     tvTypes = listOf("Movie", "TvSeries", "Torrent", "Documentary")
 
-    requiresResources = true
+    requiresResources = false
     language = "it"
 
     iconUrl = "https://i.imgur.com/OPM9e9p.png"

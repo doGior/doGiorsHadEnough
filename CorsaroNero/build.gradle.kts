@@ -21,7 +21,7 @@ cloudstream {
 
     tvTypes = listOf("Movie", "Torrent")
 
-    requiresResources = true
+    requiresResources = false
     language = "it"
 
     iconUrl = "https://ilcorsaronero.link/assets/images/icon-dca0f2c8f780ee155024c67b63f5ebc5.svg"
