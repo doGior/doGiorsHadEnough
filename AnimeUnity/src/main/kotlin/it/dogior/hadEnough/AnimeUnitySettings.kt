@@ -651,7 +651,10 @@ class AnimeUnityAdvancedSearchSettingsFragment : AnimeUnityBaseSettingsFragment(
 
     override val layoutName: String = "settings_advanced_search"
 
-    private fun setupSelectAllOnFocus(input: EditText?) {
+    private fun setupSelectAllOnFocus(
+        input: EditText?,
+        onFocusLost: (() -> Unit)? = null,
+    ) {
         input ?: return
         input.setOnClickListener {
             input.post { input.selectAll() }
@@ -659,6 +662,8 @@ class AnimeUnityAdvancedSearchSettingsFragment : AnimeUnityBaseSettingsFragment(
         input.setOnFocusChangeListener { _, hasFocus ->
             if (hasFocus) {
                 input.post { input.selectAll() }
+            } else {
+                onFocusLost?.invoke()
             }
         }
     }
@@ -778,6 +783,14 @@ class AnimeUnityAdvancedSearchSettingsFragment : AnimeUnityBaseSettingsFragment(
                 isUpdating = false
             }
         })
+
+        input.setOnEditorActionListener { _, _, _ ->
+            if (input.text?.toString()?.trim().isNullOrEmpty()) {
+                input.setText(AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT.toString())
+                input.setSelection(input.text.length)
+            }
+            false
+        }
     }
 
     private fun <T> getSelectedValue(
@@ -854,7 +867,14 @@ class AnimeUnityAdvancedSearchSettingsFragment : AnimeUnityBaseSettingsFragment(
         seasonInput?.hint = getString("advanced_search_season_hint")
         setupAdvancedSearchCountInput(countInput)
         setupSelectAllOnFocus(nameInput)
-        setupSelectAllOnFocus(countInput)
+        setupSelectAllOnFocus(countInput) {
+            countInput?.let { input ->
+                if (input.text?.toString()?.trim().isNullOrEmpty()) {
+                    input.setText(AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT.toString())
+                    input.setSelection(input.text.length)
+                }
+            }
+        }
 
         val genreItems = listOf(SpinnerItem<ArchiveGenreOption?>(anyOptionLabel, null)) +
             AnimeUnityPlugin.getAdvancedSearchGenres()

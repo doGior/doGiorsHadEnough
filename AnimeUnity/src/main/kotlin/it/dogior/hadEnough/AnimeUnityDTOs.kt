@@ -196,12 +196,45 @@ data class AnilistData(
 data class AnilistMedia(
     @JsonProperty("id") val id: Int,
     @JsonProperty("coverImage") val coverImage: AnilistCoverImage?,
-    @JsonProperty("duration") val duration: Int?
+    @JsonProperty("duration") val duration: Int?,
+    @JsonProperty("trailer") val trailer: AnilistTrailer?
 )
 
 data class AnilistCoverImage(
     @JsonProperty("medium") val medium: String?,
     @JsonProperty("large") val large: String?,
     @JsonProperty("extraLarge") val extraLarge: String?
+)
+
+data class AnilistTrailer(
+    @JsonProperty("id") val id: String?,
+    @JsonProperty("site") val site: String?,
+    @JsonProperty("thumbnail") val thumbnail: String?
+)
+
+data class JikanFullResponse(
+    @JsonProperty("data") val data: JikanAnimeData
+)
+
+data class JikanAnimeData(
+    @JsonProperty("trailer") val trailer: JikanTrailer?
+)
+
+data class JikanSearchResponse(
+    @JsonProperty("data") val data: List<JikanSearchAnime>
+)
+
+data class JikanSearchAnime(
+    @JsonProperty("title") val title: String,
+    @JsonProperty("title_english") val titleEnglish: String?,
+    @JsonProperty("title_japanese") val titleJapanese: String?,
+    @JsonProperty("title_synonyms") val titleSynonyms: List<String>?,
+    @JsonProperty("trailer") val trailer: JikanTrailer?
+)
+
+data class JikanTrailer(
+    @JsonProperty("youtube_id") val youtubeId: String?,
+    @JsonProperty("url") val url: String?,
+    @JsonProperty("embed_url") val embedUrl: String?
 )
 

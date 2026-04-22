@@ -56,7 +56,7 @@ class StreamingCommunity(
     override val hasMainPage = true
 
     companion object {
-        const val DEFAULT_BASE_URL = "https://streamingunity.biz/"
+        const val DEFAULT_BASE_URL = "https://streamingunity.autos/"
         var name = "StreamingCommunity"
         const val TAG = "SCommunity"
 
@@ -67,7 +67,11 @@ class StreamingCommunity(
             val candidate = if ("://" in trimmedValue) trimmedValue else "https://$trimmedValue"
 
             return runCatching {
-                candidate.toHttpUrl().newBuilder()
+                val normalizedUrl = candidate.toHttpUrl()
+                val rewrittenHost = normalizeKnownHost(normalizedUrl.host)
+
+                normalizedUrl.newBuilder()
+                    .host(rewrittenHost)
                     .encodedPath("/")
                     .query(null)
                     .fragment(null)
@@ -86,6 +90,14 @@ class StreamingCommunity(
                 "cdn.$fallbackHost"
             } else {
                 "cdn.$siteHost"
+            }
+        }
+
+        private fun normalizeKnownHost(host: String): String {
+            return when (host.lowercase()) {
+                "streamingunity.biz",
+                "www.streamingunity.biz" -> DEFAULT_BASE_URL.toHttpUrl().host
+                else -> host
             }
         }
 
