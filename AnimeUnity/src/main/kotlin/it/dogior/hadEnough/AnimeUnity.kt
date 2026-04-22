@@ -9,12 +9,14 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageData
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.addDubStatus
@@ -148,6 +150,20 @@ class AnimeUnity(
 
     private fun withoutDubSuffix(title: String): String {
         return title.replace(" (ITA)", "")
+    }
+
+    private fun getShowStatus(status: String?): ShowStatus? {
+        return when (status?.trim()?.lowercase(Locale.ROOT)) {
+            "terminato" -> ShowStatus.Completed
+            "in corso" -> ShowStatus.Ongoing
+            else -> null
+        }
+    }
+
+    private fun getStatusTag(status: String?): String? {
+        val normalizedStatus = status?.trim().orEmpty()
+        if (normalizedStatus.isBlank()) return null
+        return if (getShowStatus(normalizedStatus) == null) "Stato: $normalizedStatus" else null
     }
 
     private fun buildDisplayTitle(title: String, episodeNumber: Int?): String {
@@ -391,6 +407,138 @@ class AnimeUnity(
         } ?: throw IllegalStateException("No valid image found")
     }
 
+    private suspend fun getTrailerUrl(anime: Anime): String? {
+        getAniListTrailer(anime)?.let { return it }
+        return getJikanTrailer(anime)
+    }
+
+    private suspend fun getAniListTrailer(anime: Anime): String? {
+        val searchTitle = anime.titleEng ?: anime.titleIt ?: anime.title
+
+        val (query, variables) = when {
+            anime.anilistId != null -> {
+                """
+                query (${'$'}id: Int) {
+                    Media(id: ${'$'}id, type: ANIME) {
+                        trailer {
+                            id
+                            site
+                        }
+                    }
+                }
+                """.trimIndent() to """{"id":${anime.anilistId}}"""
+            }
+
+            anime.malId != null -> {
+                """
+                query (${'$'}idMal: Int) {
+                    Media(idMal: ${'$'}idMal, type: ANIME) {
+                        trailer {
+                            id
+                            site
+                        }
+                    }
+                }
+                """.trimIndent() to """{"idMal":${anime.malId}}"""
+            }
+
+            !searchTitle.isNullOrBlank() -> {
+                """
+                query (${'$'}search: String) {
+                    Media(search: ${'$'}search, type: ANIME) {
+                        trailer {
+                            id
+                            site
+                        }
+                    }
+                }
+                """.trimIndent() to """{"search":${org.json.JSONObject.quote(searchTitle)}}"""
+            }
+
+            else -> return null
+        }
+
+        val body = mapOf("query" to query, "variables" to variables)
+        val response = runCatching { app.post("https://graphql.anilist.co", data = body).text }.getOrNull()
+            ?: return null
+        val media = runCatching { parseJson<AnilistResponse>(response).data.media }.getOrNull()
+            ?: return null
+
+        return normalizeAniListTrailerUrl(media.trailer)
+    }
+
+    private fun normalizeAniListTrailerUrl(trailer: AnilistTrailer?): String? {
+        if (trailer?.site?.equals("youtube", ignoreCase = true) == true && !trailer.id.isNullOrBlank()) {
+            return "https://www.youtube.com/watch?v=${trailer.id}"
+        }
+
+        return null
+    }
+
+    private fun normalizeTrailerUrl(trailer: JikanTrailer?): String? {
+        val directUrl = trailer?.url?.takeIf(String::isNotBlank)
+        if (directUrl != null) return directUrl
+
+        val youtubeId = trailer?.youtubeId?.takeIf(String::isNotBlank)
+            ?: trailer?.embedUrl
+                ?.substringAfter("/embed/", "")
+                ?.substringBefore("?")
+                ?.substringBefore("/")
+                ?.takeIf(String::isNotBlank)
+
+        if (youtubeId != null) {
+            return "https://www.youtube.com/watch?v=$youtubeId"
+        }
+
+        return trailer?.embedUrl?.takeIf(String::isNotBlank)
+    }
+
+    private fun normalizeJikanTitle(title: String): String {
+        return Normalizer.normalize(title, Normalizer.Form.NFD)
+            .replace("\\p{M}+".toRegex(), "")
+            .lowercase(Locale.ROOT)
+            .replace("[^a-z0-9]+".toRegex(), " ")
+            .trim()
+    }
+
+    private suspend fun getJikanTrailer(anime: Anime): String? {
+        anime.malId?.let { malId ->
+            val url = "https://api.jikan.moe/v4/anime/$malId/full"
+            val response = runCatching { app.get(url).text }.getOrNull() ?: return null
+            val trailer = runCatching { parseJson<JikanFullResponse>(response).data.trailer }.getOrNull()
+            return normalizeTrailerUrl(trailer)
+        }
+
+        val searchTitle = anime.titleEng ?: anime.titleIt ?: anime.title ?: return null
+        val searchUrl = "https://api.jikan.moe/v4/anime".toHttpUrl().newBuilder()
+            .addQueryParameter("q", searchTitle)
+            .addQueryParameter("limit", "5")
+            .build()
+            .toString()
+
+        val response = runCatching { app.get(searchUrl).text }.getOrNull() ?: return null
+        val candidates = runCatching { parseJson<JikanSearchResponse>(response).data }.getOrNull().orEmpty()
+        if (candidates.isEmpty()) return null
+
+        val searchTitles = listOfNotNull(anime.titleIt, anime.titleEng, anime.title)
+            .map { normalizeJikanTitle(it) }
+            .filter { it.isNotBlank() }
+
+        return candidates.firstNotNullOfOrNull { candidate ->
+            val trailerUrl = normalizeTrailerUrl(candidate.trailer) ?: return@firstNotNullOfOrNull null
+            val candidateTitles = buildList {
+                add(candidate.title)
+                candidate.titleEnglish?.let(::add)
+                candidate.titleJapanese?.let(::add)
+                addAll(candidate.titleSynonyms.orEmpty())
+            }.map(::normalizeJikanTitle)
+
+            trailerUrl.takeIf {
+                searchTitles.isEmpty() || searchTitles.any(candidateTitles::contains)
+            }
+        } ?: candidates.firstNotNullOfOrNull { normalizeTrailerUrl(it.trailer) }
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (request.name == latestEpisodesSectionName) {
             return getLatestEpisodesMainPage(page)
@@ -610,6 +758,7 @@ class AnimeUnity(
                 addPoster(poster)
             }
         }
+        val trailerUrl = getTrailerUrl(anime)
 
         return newAnimeLoadResponse(
             name = title.replace(" (ITA)", ""),
@@ -627,9 +776,13 @@ class AnimeUnity(
             addEpisodes(dub, episodes)
             addAniListId(anime.anilistId)
             addMalId(anime.malId)
+            if (trailerUrl != null) {
+                addTrailer(trailerUrl)
+            }
+            this.showStatus = getShowStatus(anime.status)
             this.plot = anime.plot
             val doppiato = if (anime.dub == 1 || title.contains("(ITA)")) "\uD83C\uDDEE\uD83C\uDDF9  Italiano" else "\uD83C\uDDEF\uD83C\uDDF5  Giapponese"
-            this.tags = listOf(doppiato) + anime.genres.map { genre ->
+            this.tags = listOfNotNull(doppiato, getStatusTag(anime.status)) + anime.genres.map { genre ->
                 genre.name.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
             }
             this.comingSoon = anime.status == "In uscita prossimamente"

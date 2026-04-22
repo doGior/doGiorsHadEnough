@@ -148,7 +148,7 @@
 
         <Switch
             android:id="@+id/advanced_search_settings_switch"
-            android:layout_width="42dp"
+            android:layout_width="50dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
             android:minHeight="0dp"
