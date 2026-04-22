@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.konan.properties.Properties
 
 // use an integer for version numbers
-version = 28
+version = 29
 
 
 cloudstream {
@@ -28,7 +28,7 @@ cloudstream {
     requiresResources = true
     language = "it"
 
-    iconUrl = "https://streamingcommunityz.ooo/apple-touch-icon.png?v=2"
+    iconUrl = "https://streamingunity.autos/apple-touch-icon.png?v=2"
 }
 
 android {
