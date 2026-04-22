@@ -7,7 +7,7 @@ version = 28
 cloudstream {
     // All of these properties are optional, you can safely remove them
 
-    description = "TV Shows and Movies from StreamingCommunity (now StreamingUnity)"
+    description = "TV Shows and Movies from StreamingCommunity"
     authors = listOf("doGior")
 
     /**
@@ -28,7 +28,7 @@ cloudstream {
     requiresResources = true
     language = "it"
 
-    iconUrl = "https://streamingunity.biz/apple-touch-icon.png?v=2"
+    iconUrl = "https://streamingcommunityz.ooo/apple-touch-icon.png?v=2"
 }
 
 android {
