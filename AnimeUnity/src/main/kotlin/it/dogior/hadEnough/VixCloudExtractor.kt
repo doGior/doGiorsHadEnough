@@ -9,7 +9,10 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.json.JSONObject
 
-class VixCloudExtractor : ExtractorApi() {
+class VixCloudExtractor(
+    private val sourceName: String = "VixCloud",
+    private val displayName: String = "AnimeUnity",
+) : ExtractorApi() {
     override val mainUrl = "vixcloud.co"
     override val name = "VixCloud"
     override val requiresReferer = false
@@ -34,8 +37,8 @@ class VixCloudExtractor : ExtractorApi() {
 
         callback.invoke(
             newExtractorLink(
-                source = "VixCloud",
-                name = "AnimeUnity",
+                source = sourceName,
+                name = displayName,
                 url = playlistUrl,
                 type = ExtractorLinkType.M3U8
             ) {

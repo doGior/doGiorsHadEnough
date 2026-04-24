@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="settings_menu_title">AnimeUnity</string>
+    <string name="settings_build_info">Commit %1$s | Build %2$s</string>
+    <string name="settings_build_info_commit_only">Commit %1$s</string>
     <string name="settings_menu_home_title">Home</string>
     <string name="settings_menu_home_summary">Personalizza Home</string>
-    <string name="settings_menu_display_title">Visualizzazione</string>
-    <string name="settings_menu_display_summary">Personalizza Scheda Anime</string>
+    <string name="settings_menu_display_title">Preferenze</string>
+    <string name="settings_menu_display_summary">Schede e dettagli anime</string>
     <string name="settings_menu_advanced_search_title">Ricerca avanzata</string>
     <string name="settings_menu_advanced_search_summary">Ricerca Anime per criteri</string>
     <string name="settings_open_action">Apri</string>
@@ -35,9 +37,11 @@
     <string name="upcoming_count_label">In arrivo</string>
     <string name="random_count_label">Random</string>
 
-    <string name="settings_display_title">Visualizzazione</string>
+    <string name="settings_display_title">Preferenze</string>
     <string name="settings_advanced_search_title">Ricerca avanzata</string>
-    <string name="dub_sub_switch_text">SUB/DUB</string>
+    <string name="unify_dub_sub_cards_switch_text">Scheda unica SUB/DUB</string>
+    <string name="dub_sub_switch_text">SUB / DUB</string>
+    <string name="display_options_title">Dettagli scheda</string>
     <string name="episode_number_switch_text">Numero episodio</string>
     <string name="score_switch_text">Valutazione</string>
     <string name="advanced_search_name_label">Nome</string>
@@ -66,6 +70,15 @@
     <string name="settings_restart_title">Riavvia applicazione</string>
     <string name="settings_saved_restart_message">Impostazioni salvate. Vuoi riavviare l\'applicazione ora per applicare subito le modifiche?</string>
     <string name="site_url_fallback_restart_message">Link non valido: verra usato quello predefinito. Vuoi riavviare l\'applicazione ora per applicare subito le modifiche?</string>
+    <string name="settings_feedback_button">Segnalazioni e Suggerimenti</string>
+    <string name="settings_feedback_title">Segnalazioni e Suggerimenti</string>
+    <string name="settings_feedback_message">Vuoi segnalare un Problema o vuoi suggerire un Miglioramento?</string>
+    <string name="settings_feedback_problem_highlight">Problema</string>
+    <string name="settings_feedback_suggestion_highlight">Miglioramento</string>
+    <string name="settings_feedback_problem_action">Segnala un Problema</string>
+    <string name="settings_feedback_suggestion_action">Suggerisci un Miglioramento</string>
+    <string name="settings_feedback_cancel">Annulla</string>
+    <string name="settings_feedback_unavailable">Impossibile aprire GitHub in questo momento.</string>
     <string name="settings_reset_button">Ripristina valori predefiniti</string>
     <string name="settings_reset_title">Ripristina impostazioni</string>
     <string name="settings_reset_message">Vuoi ripristinare tutti i valori di AnimeUnity a quelli predefiniti?</string>

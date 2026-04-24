@@ -32,11 +32,20 @@ class AnimeUnityPlugin : Plugin() {
         const val PREF_UPCOMING_COUNT = "upcomingCount"
         const val PREF_RANDOM_COUNT = "randomCount"
 
+        // Nomi personalizzati per sezione
+        const val PREF_LATEST_TITLE = "latestTitle"
+        const val PREF_CALENDAR_TITLE = "calendarTitle"
+        const val PREF_ONGOING_TITLE = "ongoingTitle"
+        const val PREF_POPULAR_TITLE = "popularTitle"
+        const val PREF_BEST_TITLE = "bestTitle"
+        const val PREF_UPCOMING_TITLE = "upcomingTitle"
+        const val PREF_RANDOM_TITLE = "randomTitle"
+
         // Visualizzazione
+        const val PREF_UNIFY_DUB_SUB_CARDS = "unifyDubSubCards"
         const val PREF_SHOW_DUB_SUB = "showDubSub"
         const val PREF_SHOW_EPISODE_NUMBER = "showEpisodeNumber"
         const val PREF_SHOW_SCORE = "showScore"
-
         const val PREF_SECTION_ORDER = "sectionOrder"
         const val PREF_ENABLE_ADVANCED_SEARCH = "enableAdvancedSearch"
         const val PREF_ADVANCED_SEARCH_TITLE = "advancedSearchTitle"
@@ -53,6 +62,7 @@ class AnimeUnityPlugin : Plugin() {
         const val MAX_SECTION_COUNT = 100
         const val DEFAULT_ADVANCED_SEARCH_COUNT = MAX_SECTION_COUNT
         const val DEFAULT_SECTION_ORDER = "latest,calendar,random,ongoing,popular,best,upcoming"
+        const val DEFAULT_UNIFY_DUB_SUB_CARDS = true
         private const val ARCHIVE_OLDEST_YEAR = 1966
         private val defaultSectionKeys = DEFAULT_SECTION_ORDER.split(",")
         private val validSectionKeys = listOf(
@@ -197,6 +207,24 @@ class AnimeUnityPlugin : Plugin() {
 
         fun getConfiguredSectionOrder(sharedPref: SharedPreferences?): String {
             return getValidatedSectionOrder(sharedPref?.getString(PREF_SECTION_ORDER, null))
+        }
+
+        fun getConfiguredSectionTitle(
+            sharedPref: SharedPreferences?,
+            prefKey: String,
+            fallback: String,
+        ): String {
+            return sharedPref?.getString(prefKey, null)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: fallback
+        }
+
+        fun shouldUseUnifiedDubSubCards(sharedPref: SharedPreferences?): Boolean {
+            return sharedPref?.getBoolean(
+                PREF_UNIFY_DUB_SUB_CARDS,
+                DEFAULT_UNIFY_DUB_SUB_CARDS,
+            ) ?: DEFAULT_UNIFY_DUB_SUB_CARDS
         }
 
         fun getAdvancedSearchGenres(): List<ArchiveGenreOption> {

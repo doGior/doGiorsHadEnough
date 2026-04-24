@@ -79,8 +79,103 @@ class AnimeUnity(
         val hasNextPage: Boolean,
     )
 
+    private data class MainPageSectionData(
+        val key: String,
+        val baseUrl: String,
+    )
+
+    private data class GroupedAnimeCard(
+        val anime: Anime,
+        val hasDub: Boolean,
+    )
+
+    private data class GroupedLatestEpisodeCard(
+        val anime: LatestEpisodeAnime,
+        val hasDub: Boolean,
+        val episodeNumber: String,
+    )
+
+    private data class AnimePageData(
+        val anime: Anime,
+        val relatedAnime: List<Anime>,
+        val episodes: List<Episode>,
+    )
+
+    private data class EpisodeSource(
+        val number: String,
+        val url: String,
+    )
+
+    private data class EpisodePlaybackData(
+        val preferredUrl: String,
+        val subUrl: String?,
+        val dubUrl: String?,
+    )
+
+    private data class PlayerSourceOption(
+        val label: String,
+        val url: String,
+    )
+
     override val mainPage: List<MainPageData>
         get() = buildSectionNamesList()
+
+    private fun encodeMainPageSectionData(sectionKey: String, baseUrl: String): String {
+        return "$sectionKey|$baseUrl"
+    }
+
+    private fun decodeMainPageSectionData(data: String): MainPageSectionData {
+        val separatorIndex = data.indexOf('|')
+        return if (separatorIndex == -1) {
+            MainPageSectionData(key = data, baseUrl = data)
+        } else {
+            MainPageSectionData(
+                key = data.substring(0, separatorIndex),
+                baseUrl = data.substring(separatorIndex + 1),
+            )
+        }
+    }
+
+    private fun getSectionDisplayTitle(sectionKey: String): String {
+        return when (sectionKey) {
+            "latest" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_LATEST_TITLE,
+                latestEpisodesSectionName,
+            )
+            "calendar" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_CALENDAR_TITLE,
+                calendarSectionName,
+            )
+            "ongoing" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_ONGOING_TITLE,
+                ongoingSectionName,
+            )
+            "popular" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_POPULAR_TITLE,
+                popularSectionName,
+            )
+            "best" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_BEST_TITLE,
+                bestSectionName,
+            )
+            "upcoming" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_UPCOMING_TITLE,
+                upcomingSectionName,
+            )
+            "random" -> AnimeUnityPlugin.getConfiguredSectionTitle(
+                sharedPref,
+                AnimeUnityPlugin.PREF_RANDOM_TITLE,
+                randomSectionName,
+            )
+            else -> advancedSearchSectionName
+        }
+    }
 
     private fun buildSectionNamesList(): List<MainPageData> {
         val order = AnimeUnityPlugin.getConfiguredSectionOrder(sharedPref)
@@ -94,14 +189,28 @@ class AnimeUnity(
         return mainPageOf(
             *sections.mapNotNull { section ->
                 when (section) {
-                    "advanced" -> "$mainUrl/archivio/" to advancedSearchSectionName
-                    "latest" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_LATEST_EPISODES)) "$mainUrl/" to latestEpisodesSectionName else null
-                    "calendar" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_CALENDAR)) "$mainUrl/calendario" to calendarSectionName else null
-                    "ongoing" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_ONGOING)) "$mainUrl/archivio/" to ongoingSectionName else null
-                    "popular" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_POPULAR)) "$mainUrl/archivio/" to popularSectionName else null
-                    "best" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_BEST)) "$mainUrl/archivio/" to bestSectionName else null
-                    "upcoming" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_UPCOMING)) "$mainUrl/archivio/" to upcomingSectionName else null
-                    "random" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_RANDOM)) "$mainUrl/archivio/" to randomSectionName else null
+                    "advanced" -> encodeMainPageSectionData("advanced", "$mainUrl/archivio/") to advancedSearchSectionName
+                    "latest" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_LATEST_EPISODES)) {
+                        encodeMainPageSectionData("latest", "$mainUrl/") to getSectionDisplayTitle("latest")
+                    } else null
+                    "calendar" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_CALENDAR)) {
+                        encodeMainPageSectionData("calendar", "$mainUrl/calendario") to getSectionDisplayTitle("calendar")
+                    } else null
+                    "ongoing" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_ONGOING)) {
+                        encodeMainPageSectionData("ongoing", "$mainUrl/archivio/") to getSectionDisplayTitle("ongoing")
+                    } else null
+                    "popular" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_POPULAR)) {
+                        encodeMainPageSectionData("popular", "$mainUrl/archivio/") to getSectionDisplayTitle("popular")
+                    } else null
+                    "best" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_BEST)) {
+                        encodeMainPageSectionData("best", "$mainUrl/archivio/") to getSectionDisplayTitle("best")
+                    } else null
+                    "upcoming" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_UPCOMING)) {
+                        encodeMainPageSectionData("upcoming", "$mainUrl/archivio/") to getSectionDisplayTitle("upcoming")
+                    } else null
+                    "random" -> if (isSectionEnabled(AnimeUnityPlugin.PREF_SHOW_RANDOM)) {
+                        encodeMainPageSectionData("random", "$mainUrl/archivio/") to getSectionDisplayTitle("random")
+                    } else null
                     else -> null
                 }
             }.toTypedArray()
@@ -112,23 +221,23 @@ class AnimeUnity(
         return sharedPref?.getBoolean(prefKey, true) ?: true
     }
 
-    private fun getSectionCount(sectionName: String): Int {
-        val (key, defaultCount) = when (sectionName) {
-            advancedSearchSectionName -> AnimeUnityPlugin.PREF_ADVANCED_SEARCH_COUNT to
+    private fun getSectionCount(sectionKey: String): Int {
+        val (key, defaultCount) = when (sectionKey) {
+            "advanced" -> AnimeUnityPlugin.PREF_ADVANCED_SEARCH_COUNT to
                 AnimeUnityPlugin.DEFAULT_ADVANCED_SEARCH_COUNT
-            latestEpisodesSectionName -> AnimeUnityPlugin.PREF_LATEST_COUNT to
+            "latest" -> AnimeUnityPlugin.PREF_LATEST_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            calendarSectionName -> AnimeUnityPlugin.PREF_CALENDAR_COUNT to
+            "calendar" -> AnimeUnityPlugin.PREF_CALENDAR_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            ongoingSectionName -> AnimeUnityPlugin.PREF_ONGOING_COUNT to
+            "ongoing" -> AnimeUnityPlugin.PREF_ONGOING_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            popularSectionName -> AnimeUnityPlugin.PREF_POPULAR_COUNT to
+            "popular" -> AnimeUnityPlugin.PREF_POPULAR_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            bestSectionName -> AnimeUnityPlugin.PREF_BEST_COUNT to
+            "best" -> AnimeUnityPlugin.PREF_BEST_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            upcomingSectionName -> AnimeUnityPlugin.PREF_UPCOMING_COUNT to
+            "upcoming" -> AnimeUnityPlugin.PREF_UPCOMING_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
-            randomSectionName -> AnimeUnityPlugin.PREF_RANDOM_COUNT to
+            "random" -> AnimeUnityPlugin.PREF_RANDOM_COUNT to
                 AnimeUnityPlugin.DEFAULT_SECTION_COUNT
             else -> return AnimeUnityPlugin.DEFAULT_SECTION_COUNT
         }
@@ -148,8 +257,124 @@ class AnimeUnity(
         return sharedPref?.getBoolean(AnimeUnityPlugin.PREF_SHOW_EPISODE_NUMBER, true) ?: true
     }
 
+    private fun shouldUseUnifiedDubSubCards(): Boolean {
+        return AnimeUnityPlugin.shouldUseUnifiedDubSubCards(sharedPref)
+    }
+
     private fun withoutDubSuffix(title: String): String {
         return title.replace(" (ITA)", "")
+    }
+
+    private fun getAnimeTitle(anime: Anime): String {
+        return anime.titleIt ?: anime.titleEng ?: anime.title!!
+    }
+
+    private fun getAnimeTitle(anime: LatestEpisodeAnime): String {
+        return anime.titleIt ?: anime.titleEng ?: anime.title!!
+    }
+
+    private fun isDubAnime(anime: Anime): Boolean {
+        return anime.dub == 1 || getAnimeTitle(anime).contains("(ITA)")
+    }
+
+    private fun isDubAnime(anime: LatestEpisodeAnime): Boolean {
+        return anime.dub == 1 || getAnimeTitle(anime).contains("(ITA)")
+    }
+
+    private fun Anime.contentKey(): String {
+        return when {
+            anilistId != null -> "anilist:$anilistId"
+            malId != null -> "mal:$malId"
+            else -> "title:${normalizeJikanTitle(withoutDubSuffix(getAnimeTitle(this)))}"
+        }
+    }
+
+    private fun LatestEpisodeAnime.contentKey(): String {
+        return when {
+            anilistId != null -> "anilist:$anilistId"
+            else -> "title:${normalizeJikanTitle(withoutDubSuffix(getAnimeTitle(this)))}"
+        }
+    }
+
+    private fun Anime.cardKey(): String {
+        return if (shouldUseUnifiedDubSubCards()) contentKey() else "anime:$id"
+    }
+
+    private fun preferAnime(primary: Anime, candidate: Anime): Anime {
+        val primaryIsDub = isDubAnime(primary)
+        val candidateIsDub = isDubAnime(candidate)
+
+        return when {
+            primaryIsDub && !candidateIsDub -> candidate
+            !primaryIsDub && candidateIsDub -> primary
+            candidate.episodesCount > primary.episodesCount -> candidate
+            else -> primary
+        }
+    }
+
+    private fun preferAnime(primary: LatestEpisodeAnime, candidate: LatestEpisodeAnime): LatestEpisodeAnime {
+        val primaryIsDub = isDubAnime(primary)
+        val candidateIsDub = isDubAnime(candidate)
+
+        return when {
+            primaryIsDub && !candidateIsDub -> candidate
+            !primaryIsDub && candidateIsDub -> primary
+            candidate.episodesCount > primary.episodesCount -> candidate
+            else -> primary
+        }
+    }
+
+    private fun groupAnimeCards(animes: List<Anime>): List<GroupedAnimeCard> {
+        if (animes.isEmpty()) return emptyList()
+        if (!shouldUseUnifiedDubSubCards()) {
+            return animes.map { anime ->
+                GroupedAnimeCard(
+                    anime = anime,
+                    hasDub = isDubAnime(anime),
+                )
+            }
+        }
+
+        return animes
+            .groupBy { it.contentKey() }
+            .values
+            .map { variants ->
+                GroupedAnimeCard(
+                    anime = variants.reduce { primary, candidate -> preferAnime(primary, candidate) },
+                    hasDub = variants.any { isDubAnime(it) },
+                )
+            }
+    }
+
+    private fun groupLatestEpisodeCards(items: List<LatestEpisodeItem>): List<GroupedLatestEpisodeCard> {
+        if (items.isEmpty()) return emptyList()
+        if (!shouldUseUnifiedDubSubCards()) {
+            return items.map { item ->
+                GroupedLatestEpisodeCard(
+                    anime = item.anime,
+                    hasDub = isDubAnime(item.anime),
+                    episodeNumber = item.number,
+                )
+            }
+        }
+
+        return items
+            .groupBy { it.anime.contentKey() }
+            .values
+            .map { variants ->
+                val latestEpisode = variants.maxWithOrNull(
+                    compareBy<LatestEpisodeItem>(
+                        { parseEpisodeSortValue(it.number) ?: Double.NEGATIVE_INFINITY },
+                        { it.number }
+                    )
+                ) ?: variants.first()
+
+                GroupedLatestEpisodeCard(
+                    anime = variants.map { it.anime }.reduce { primary, candidate -> preferAnime(primary, candidate) },
+                    hasDub = variants.any { isDubAnime(it.anime) },
+                    episodeNumber = latestEpisode.number,
+                )
+            }
     }
 
     private fun getShowStatus(status: String?): ShowStatus? {
@@ -176,18 +401,22 @@ class AnimeUnity(
         }
     }
 
+    private fun getMiniCardDubStatus(hasDub: Boolean): DubStatus {
+        return if (hasDub) DubStatus.Dubbed else DubStatus.Subbed
+    }
+
     private fun applyCardDisplayState(
         response: AnimeSearchResponse,
-        dubbed: Boolean,
+        dubStatus: DubStatus,
         poster: String?,
         score: String?,
         episodeNumber: Int? = null,
     ) {
         if (shouldShowDubSub()) {
             if (shouldShowEpisodeNumber()) {
-                response.addDubStatus(dubbed, episodeNumber)
+                response.addDubStatus(dubStatus, episodeNumber)
             } else {
-                response.addDubStatus(dubbed)
+                response.addDubStatus(dubStatus)
             }
         }
 
@@ -239,8 +468,9 @@ class AnimeUnity(
     }
 
     private suspend fun searchResponseBuilder(objectList: List<Anime>, episodeNumber: Int? = null): List<SearchResponse> {
-        return objectList.amap { anime ->
-            val title = (anime.titleIt ?: anime.titleEng ?: anime.title!!)
+        return groupAnimeCards(objectList).amap { entry ->
+            val anime = entry.anime
+            val title = getAnimeTitle(anime)
             val poster = getImage(anime.imageUrl, anime.anilistId)
 
             newAnimeSearchResponse(
@@ -254,7 +484,7 @@ class AnimeUnity(
             ).apply {
                 applyCardDisplayState(
                     response = this,
-                    dubbed = anime.dub == 1 || title.contains("(ITA)"),
+                    dubStatus = getMiniCardDubStatus(entry.hasDub),
                     poster = poster,
                     score = anime.score,
                     episodeNumber = episodeNumber
@@ -274,19 +504,20 @@ class AnimeUnity(
         page: Int,
         sectionCount: Int,
     ): ArchivePageResult {
-        val pageStartOffset = (page - 1) * sectionCount
         val collectedTitles = mutableListOf<Anime>()
-        var nextOffset = pageStartOffset
+        val uniqueContentKeys = linkedSetOf<String>()
+        var nextOffset = (page - 1) * sectionCount
         var total = 0
 
-        while (collectedTitles.size < sectionCount) {
+        while (uniqueContentKeys.size < sectionCount) {
             val responseObject = fetchArchiveBatch(url, requestData.copy(offset = nextOffset))
             total = responseObject.total
 
             val batchTitles = responseObject.titles.orEmpty()
             if (batchTitles.isEmpty()) break
 
-            collectedTitles += batchTitles.take(sectionCount - collectedTitles.size)
+            collectedTitles += batchTitles
+            batchTitles.forEach { uniqueContentKeys += it.cardKey() }
             nextOffset += batchTitles.size
 
             if (nextOffset >= total || batchTitles.size < ARCHIVE_BATCH_SIZE) {
@@ -296,7 +527,7 @@ class AnimeUnity(
 
         return ArchivePageResult(
             titles = collectedTitles,
-            hasNextPage = total > pageStartOffset + collectedTitles.size,
+            hasNextPage = nextOffset < total,
         )
     }
 
@@ -341,13 +572,13 @@ class AnimeUnity(
     }
 
     private suspend fun latestEpisodesResponseBuilder(objectList: List<LatestEpisodeItem>): List<SearchResponse> {
-        return objectList.amap { item ->
-            val anime = item.anime
-            val title = (anime.titleIt ?: anime.titleEng ?: anime.title!!)
+        return groupLatestEpisodeCards(objectList).amap { entry ->
+            val anime = entry.anime
+            val title = getAnimeTitle(anime)
             val poster = getImage(anime.imageUrl, anime.anilistId)
 
             newAnimeSearchResponse(
-                name = buildDisplayTitle(title, item.number.toIntOrNull()),
+                name = buildDisplayTitle(title, entry.episodeNumber.toIntOrNull()),
                 url = "$mainUrl/anime/${anime.id}-${anime.slug}",
                 type = when {
                     anime.type == "TV" -> TvType.Anime
@@ -357,10 +588,10 @@ class AnimeUnity(
             ).apply {
                 applyCardDisplayState(
                     response = this,
-                    dubbed = anime.dub == 1 || title.contains("(ITA)"),
+                    dubStatus = getMiniCardDubStatus(entry.hasDub),
                     poster = poster,
                     score = anime.score,
-                    episodeNumber = item.number.toIntOrNull()
+                    episodeNumber = entry.episodeNumber.toIntOrNull()
                 )
             }
         }
@@ -384,6 +615,165 @@ class AnimeUnity(
             } catch (_: Exception) {}
         }
         return anilistId?.let { getAnilistPoster(it) }
+    }
+
+    private fun getAnimeUrl(anime: Anime): String {
+        return "$mainUrl/anime/${anime.id}-${anime.slug}"
+    }
+
+    private fun getEpisodeUrl(anime: Anime, episode: Episode): String {
+        return "${getAnimeUrl(anime)}/${episode.id}"
+    }
+
+    private fun parseEpisodeSortValue(number: String?): Double? {
+        return number
+            ?.trim()
+            ?.replace(',', '.')
+            ?.toDoubleOrNull()
+    }
+
+    private fun buildEpisodeDisplayName(number: String): String {
+        return "Episodio $number"
+    }
+
+    private fun buildPlayerSourceOptions(playbackData: EpisodePlaybackData): List<PlayerSourceOption> {
+        val orderedSources = mutableListOf<PlayerSourceOption>()
+        val seenUrls = linkedSetOf<String>()
+
+        fun addSource(url: String?, label: String) {
+            val normalizedUrl = url?.takeIf(String::isNotBlank) ?: return
+            if (seenUrls.add(normalizedUrl)) {
+                orderedSources += PlayerSourceOption(label = label, url = normalizedUrl)
+            }
+        }
+
+        when (playbackData.preferredUrl) {
+            playbackData.dubUrl -> {
+                addSource(playbackData.dubUrl, "[DUB]")
+                addSource(playbackData.subUrl, "[SUB]")
+            }
+            playbackData.subUrl -> {
+                addSource(playbackData.subUrl, "[SUB]")
+                addSource(playbackData.dubUrl, "[DUB]")
+            }
+            else -> {
+                addSource(playbackData.preferredUrl, "[SOURCE]")
+                addSource(playbackData.dubUrl, "[DUB]")
+                addSource(playbackData.subUrl, "[SUB]")
+            }
+        }
+
+        return orderedSources
+    }
+
+    private fun buildEpisodeSourceMap(anime: Anime?, episodes: List<Episode>): LinkedHashMap<String, EpisodeSource> {
+        val sourceAnime = anime ?: return linkedMapOf()
+        val sourceMap = linkedMapOf<String, EpisodeSource>()
+
+        episodes.forEach { episode ->
+            val rawNumber = episode.number.trim()
+            sourceMap.putIfAbsent(
+                rawNumber,
+                EpisodeSource(
+                    number = rawNumber,
+                    url = getEpisodeUrl(sourceAnime, episode),
+                )
+            )
+        }
+
+        return sourceMap
+    }
+
+    private fun buildMergedEpisodes(
+        primaryEpisodes: LinkedHashMap<String, EpisodeSource>,
+        fallbackEpisodes: LinkedHashMap<String, EpisodeSource>,
+        subEpisodes: LinkedHashMap<String, EpisodeSource>,
+        dubEpisodes: LinkedHashMap<String, EpisodeSource>,
+        fallbackNamePrefix: String? = null,
+    ): List<com.lagradost.cloudstream3.Episode> {
+        return (primaryEpisodes.keys + fallbackEpisodes.keys)
+            .distinct()
+            .sortedWith(
+                compareBy<String>(
+                    { parseEpisodeSortValue(it) ?: Double.POSITIVE_INFINITY },
+                    { it }
+                )
+            )
+            .map { episodeNumber ->
+                val source = primaryEpisodes[episodeNumber] ?: fallbackEpisodes[episodeNumber]!!
+                val isFallbackEpisode = primaryEpisodes[episodeNumber] == null
+                val playbackData = EpisodePlaybackData(
+                    preferredUrl = source.url,
+                    subUrl = subEpisodes[episodeNumber]?.url,
+                    dubUrl = dubEpisodes[episodeNumber]?.url,
+                )
+                newEpisode(playbackData) {
+                    this.episode = source.number.toIntOrNull()
+                    if (isFallbackEpisode && fallbackNamePrefix != null) {
+                        this.name = "$fallbackNamePrefix${buildEpisodeDisplayName(source.number)}"
+                    } else if (this.episode == null) {
+                        this.name = buildEpisodeDisplayName(source.number)
+                    }
+                }
+            }
+    }
+
+    private suspend fun parseAnimePageData(animePage: org.jsoup.nodes.Document): AnimePageData {
+        val relatedAnimeJsonArray = animePage.select("layout-items").attr("items-json")
+        val relatedAnime = relatedAnimeJsonArray
+            .takeIf(String::isNotBlank)
+            ?.let { runCatching { parseJson<List<Anime>>(it) }.getOrDefault(emptyList()) }
+            ?: emptyList()
+
+        val videoPlayer = animePage.select("video-player")
+        val anime = parseJson<Anime>(videoPlayer.attr("anime"))
+        val initialEpisodes = parseJson<List<Episode>>(videoPlayer.attr("episodes"))
+        val totalEpisodes = videoPlayer.attr("episodes_count").toIntOrNull() ?: initialEpisodes.size
+
+        return AnimePageData(
+            anime = anime,
+            relatedAnime = relatedAnime,
+            episodes = getAllEpisodes(anime, initialEpisodes, totalEpisodes),
+        )
+    }
+
+    private suspend fun fetchAnimePageData(url: String): AnimePageData {
+        val animePage = app.get(url).document
+        return parseAnimePageData(animePage)
+    }
+
+    private suspend fun getAllEpisodes(
+        anime: Anime,
+        initialEpisodes: List<Episode>,
+        totalEpisodes: Int,
+    ): List<Episode> {
+        val episodes = initialEpisodes.toMutableList()
+        val isEpisodeNumberMultipleOfRange = totalEpisodes % 120 == 0
+        val range = if (isEpisodeNumberMultipleOfRange) totalEpisodes / 120 else (totalEpisodes / 120) + 1
+
+        if (totalEpisodes > 120) {
+            for (i in 2..range) {
+                val endRange = if (i == range) totalEpisodes else i * 120
+                val infoUrl = "$mainUrl/info_api/${anime.id}/1?start_range=${1 + (i - 1) * 120}&end_range=${endRange}"
+                val info = app.get(infoUrl).text
+                val animeInfo = parseJson<AnimeInfo>(info)
+                episodes.addAll(animeInfo.episodes)
+            }
+        }
+
+        return episodes
+    }
+
+    private suspend fun findAnimeVariants(currentAnime: Anime): List<Anime> {
+        val searchTitle = withoutDubSuffix(getAnimeTitle(currentAnime))
+        val responseObject = fetchArchiveBatch(
+            "$mainUrl/archivio/get-animes",
+            RequestData(title = searchTitle, dubbed = 0)
+        )
+
+        return (responseObject.titles.orEmpty() + currentAnime)
+            .filter { it.contentKey() == currentAnime.contentKey() }
+            .distinctBy(Anime::id)
     }
 
     private suspend fun getAnilistPoster(anilistId: Int): String {
@@ -540,21 +930,23 @@ class AnimeUnity(
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (request.name == latestEpisodesSectionName) {
-            return getLatestEpisodesMainPage(page)
+        val sectionData = decodeMainPageSectionData(request.data)
+
+        if (sectionData.key == "latest") {
+            return getLatestEpisodesMainPage(page, request.name)
         }
-        if (request.name.startsWith(calendarSectionName)) {
-            return getCalendarMainPage(page, request)
+        if (sectionData.key == "calendar") {
+            return getCalendarMainPage(page, request.name, sectionData.baseUrl)
         }
-        if (request.name == randomSectionName) {
-            return getRandomMainPage(page)
+        if (sectionData.key == "random") {
+            return getRandomMainPage(page, request.name, sectionData.baseUrl)
         }
 
-        val url = request.data + "get-animes"
+        val url = sectionData.baseUrl + "get-animes"
         ensureHeadersAndCookies()
 
-        val requestData = getDataPerHomeSection(request.name)
-        val sectionCount = getSectionCount(request.name)
+        val requestData = getDataPerHomeSection(sectionData.key)
+        val sectionCount = getSectionCount(sectionData.key)
         val archivePage = fetchArchiveSectionPage(url, requestData, page, sectionCount)
         return newHomePageResponse(
             HomePageList(
@@ -570,11 +962,11 @@ class AnimeUnity(
         )
     }
 
-    private suspend fun getLatestEpisodesMainPage(page: Int): HomePageResponse {
-        val sectionCount = getSectionCount(latestEpisodesSectionName)
+    private suspend fun getLatestEpisodesMainPage(page: Int, sectionTitle: String): HomePageResponse {
+        val sectionCount = getSectionCount("latest")
         if (page > 1) {
             return newHomePageResponse(
-                HomePageList(name = latestEpisodesSectionName, list = emptyList(), isHorizontalImages = false),
+                HomePageList(name = sectionTitle, list = emptyList(), isHorizontalImages = false),
                 false
             )
         }
@@ -594,7 +986,7 @@ class AnimeUnity(
 
         return newHomePageResponse(
             HomePageList(
-                name = latestEpisodesSectionName,
+                name = sectionTitle,
                 list = latestEpisodesResponseBuilder(latestEpisodes),
                 isHorizontalImages = false
             ),
@@ -602,10 +994,14 @@ class AnimeUnity(
         )
     }
 
-    private suspend fun getCalendarMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    private suspend fun getCalendarMainPage(
+        page: Int,
+        sectionTitle: String,
+        requestUrl: String,
+    ): HomePageResponse {
         val currentDay = getCurrentItalianDayName()
-        val calendarTitle = "$calendarSectionName ($currentDay)"
-        val sectionCount = getSectionCount(calendarSectionName)
+        val calendarTitle = "$sectionTitle ($currentDay)"
+        val sectionCount = getSectionCount("calendar")
 
         if (page > 1) {
             return newHomePageResponse(
@@ -614,7 +1010,7 @@ class AnimeUnity(
             )
         }
 
-        val calendarAnime = app.get(request.data).document
+        val calendarAnime = app.get(requestUrl).document
             .select("calendario-item")
             .mapNotNull { item ->
                 val animeJson = item.attr("a")
@@ -629,7 +1025,7 @@ class AnimeUnity(
                     null
                 }
             }
-            .distinctBy { it.first.id }
+            .distinctBy { it.first.contentKey() }
             .take(sectionCount)
 
         return newHomePageResponse(
@@ -658,16 +1054,20 @@ class AnimeUnity(
             ?.plus(1)
     }
 
-    private suspend fun getRandomMainPage(page: Int): HomePageResponse {
-        val url = "$mainUrl/archivio/get-animes"
+    private suspend fun getRandomMainPage(
+        page: Int,
+        sectionTitle: String,
+        requestUrl: String,
+    ): HomePageResponse {
+        val url = "${requestUrl}get-animes"
         ensureHeadersAndCookies()
 
-        val sectionCount = getSectionCount(randomSectionName)
+        val sectionCount = getSectionCount("random")
         val (titles, total) = fetchRandomTitles(url, sectionCount)
 
         return newHomePageResponse(
             HomePageList(
-                name = randomSectionName,
+                name = sectionTitle,
                 list = searchResponseBuilder(titles),
                 isHorizontalImages = false
             ),
@@ -690,11 +1090,11 @@ class AnimeUnity(
     }
 
     private fun getDataPerHomeSection(section: String) = when (section) {
-        advancedSearchSectionName -> AnimeUnityPlugin.getAdvancedSearchRequestData(sharedPref)
-        popularSectionName -> RequestData(orderBy = Str("Popolarità"), dubbed = 0)
-        upcomingSectionName -> RequestData(status = Str("In Uscita"), dubbed = 0)
-        bestSectionName -> RequestData(orderBy = Str("Valutazione"), dubbed = 0)
-        ongoingSectionName -> RequestData(orderBy = Str("Popolarità"), status = Str("In Corso"), dubbed = 0)
+        "advanced" -> AnimeUnityPlugin.getAdvancedSearchRequestData(sharedPref)
+        "popular" -> RequestData(orderBy = Str("Popolarità"), dubbed = 0)
+        "upcoming" -> RequestData(status = Str("In Uscita"), dubbed = 0)
+        "best" -> RequestData(orderBy = Str("Valutazione"), dubbed = 0)
+        "ongoing" -> RequestData(orderBy = Str("Popolarità"), status = Str("In Corso"), dubbed = 0)
         else -> RequestData()
     }
 
@@ -714,78 +1114,125 @@ class AnimeUnity(
     override suspend fun load(url: String): LoadResponse {
         ensureHeadersAndCookies(forceReset = true)
         val animePage = app.get(url).document
+        val currentPageData = parseAnimePageData(animePage)
+        val currentAnime = currentPageData.anime
+        val shouldMergeVariants = shouldUseUnifiedDubSubCards()
+        val variants = if (shouldMergeVariants) findAnimeVariants(currentAnime) else listOf(currentAnime)
 
-        val relatedAnimeJsonArray = animePage.select("layout-items").attr("items-json")
-        val relatedAnime = parseJson<List<Anime>>(relatedAnimeJsonArray)
+        val subAnime = variants.firstOrNull { !isDubAnime(it) } ?: currentAnime.takeIf { !isDubAnime(it) }
+        val dubAnime = variants.firstOrNull { isDubAnime(it) } ?: currentAnime.takeIf { isDubAnime(it) }
 
-        val videoPlayer = animePage.select("video-player")
-        val anime = parseJson<Anime>(videoPlayer.attr("anime"))
-
-        val eps = parseJson<List<Episode>>(videoPlayer.attr("episodes"))
-        val totalEps = videoPlayer.attr("episodes_count").toInt()
-        val isEpNumberMultipleOfRange = totalEps % 120 == 0
-        val range = if (isEpNumberMultipleOfRange) totalEps / 120 else (totalEps / 120) + 1
-        
-        val episodes = eps.map {
-            newEpisode("$url/${it.id}") { this.episode = it.number.toIntOrNull() }
-        }.toMutableList()
-
-        if (totalEps > 120) {
-            for (i in 2..range) {
-                val endRange = if (i == range) totalEps else i * 120
-                val infoUrl = "$mainUrl/info_api/${anime.id}/1?start_range=${1 + (i - 1) * 120}&end_range=${endRange}"
-                val info = app.get(infoUrl).text
-                val animeInfo = parseJson<AnimeInfo>(info)
-                episodes.addAll(animeInfo.episodes.map {
-                    newEpisode("$url/${it.id}") { this.episode = it.number.toIntOrNull() }
-                })
-            }
+        val subPageData = when {
+            subAnime == null -> null
+            subAnime.id == currentAnime.id -> currentPageData
+            !shouldMergeVariants -> null
+            else -> fetchAnimePageData(getAnimeUrl(subAnime))
         }
-        val title = anime.titleIt ?: anime.titleEng ?: anime.title!!
-        val relatedAnimes = relatedAnime.amap {
-            val relatedTitle = (it.titleIt ?: it.titleEng ?: it.title!!)
-            val poster = getImage(it.imageUrl, it.anilistId)
+
+        val dubPageData = when {
+            dubAnime == null -> null
+            dubAnime.id == currentAnime.id -> currentPageData
+            !shouldMergeVariants -> null
+            else -> fetchAnimePageData(getAnimeUrl(dubAnime))
+        }
+
+        val primaryAnime = subPageData?.anime ?: dubPageData?.anime ?: currentAnime
+        val title = getAnimeTitle(primaryAnime)
+        val relatedAnimes = groupAnimeCards(currentPageData.relatedAnime).amap { entry ->
+            val anime = entry.anime
+            val relatedTitle = getAnimeTitle(anime)
+            val poster = getImage(anime.imageUrl, anime.anilistId)
             newAnimeSearchResponse(
                 name = withoutDubSuffix(relatedTitle),
-                url = "$mainUrl/anime/${it.id}-${it.slug}",
-                type = if (it.type == "TV") TvType.Anime
-                else if (it.type == "Movie" || it.episodesCount == 1) TvType.AnimeMovie
+                url = "$mainUrl/anime/${anime.id}-${anime.slug}",
+                type = if (anime.type == "TV") TvType.Anime
+                else if (anime.type == "Movie" || anime.episodesCount == 1) TvType.AnimeMovie
                 else TvType.OVA
             ) {
                 if (shouldShowDubSub()) {
-                    addDubStatus(it.dub == 1 || relatedTitle.contains("(ITA)"))
+                    addDubStatus(getMiniCardDubStatus(entry.hasDub))
                 }
                 addPoster(poster)
             }
         }
-        val trailerUrl = getTrailerUrl(anime)
+
+        val subEpisodeMap = buildEpisodeSourceMap(subPageData?.anime, subPageData?.episodes.orEmpty())
+        val dubEpisodeMap = buildEpisodeSourceMap(dubPageData?.anime, dubPageData?.episodes.orEmpty())
+        val subEpisodes = if (shouldMergeVariants) {
+            buildMergedEpisodes(
+                primaryEpisodes = subEpisodeMap,
+                fallbackEpisodes = dubEpisodeMap,
+                subEpisodes = subEpisodeMap,
+                dubEpisodes = dubEpisodeMap,
+            )
+        } else {
+            buildMergedEpisodes(
+                primaryEpisodes = subEpisodeMap,
+                fallbackEpisodes = linkedMapOf(),
+                subEpisodes = subEpisodeMap,
+                dubEpisodes = linkedMapOf(),
+            )
+        }
+        val dubEpisodes = if (shouldMergeVariants) {
+            buildMergedEpisodes(
+                primaryEpisodes = dubEpisodeMap,
+                fallbackEpisodes = subEpisodeMap,
+                subEpisodes = subEpisodeMap,
+                dubEpisodes = dubEpisodeMap,
+                fallbackNamePrefix = "[SUB] - ",
+            )
+        } else {
+            buildMergedEpisodes(
+                primaryEpisodes = dubEpisodeMap,
+                fallbackEpisodes = linkedMapOf(),
+                subEpisodes = linkedMapOf(),
+                dubEpisodes = dubEpisodeMap,
+            )
+        }
+        val hasSub = subEpisodeMap.isNotEmpty()
+        val hasDub = dubEpisodeMap.isNotEmpty()
+        val trailerUrl = getTrailerUrl(primaryAnime)
 
         return newAnimeLoadResponse(
             name = title.replace(" (ITA)", ""),
-            url = url,
-            type = if (anime.type == "TV") TvType.Anime
-            else if (anime.type == "Movie" || anime.episodesCount == 1) TvType.AnimeMovie
+            url = getAnimeUrl(primaryAnime),
+            type = if (primaryAnime.type == "TV") TvType.Anime
+            else if (primaryAnime.type == "Movie" || primaryAnime.episodesCount == 1) TvType.AnimeMovie
             else TvType.OVA,
         ) {
-            this.posterUrl = getImage(anime.imageUrl, anime.anilistId)
-            anime.cover?.let { this.backgroundPosterUrl = getBanner(it) }
-            this.year = anime.date.toInt()
-            addScore(anime.score)
-            addDuration(anime.episodesLength.toString() + " minuti")
-            val dub = if (anime.dub == 1) DubStatus.Dubbed else DubStatus.Subbed
-            addEpisodes(dub, episodes)
-            addAniListId(anime.anilistId)
-            addMalId(anime.malId)
+            this.posterUrl = getImage(primaryAnime.imageUrl, primaryAnime.anilistId)
+            primaryAnime.cover?.let { this.backgroundPosterUrl = getBanner(it) }
+            this.year = primaryAnime.date.toIntOrNull()
+            addScore(primaryAnime.score)
+            addDuration(primaryAnime.episodesLength.toString() + " minuti")
+            when {
+                hasSub && hasDub -> {
+                    addEpisodes(DubStatus.Subbed, subEpisodes)
+                    addEpisodes(DubStatus.Dubbed, dubEpisodes)
+                }
+                hasDub -> {
+                    addEpisodes(DubStatus.Dubbed, dubEpisodes)
+                }
+                hasSub -> {
+                    addEpisodes(DubStatus.Subbed, subEpisodes)
+                }
+            }
+            addAniListId(primaryAnime.anilistId)
+            addMalId(primaryAnime.malId)
             if (trailerUrl != null) {
                 addTrailer(trailerUrl)
             }
-            this.showStatus = getShowStatus(anime.status)
-            this.plot = anime.plot
-            val doppiato = if (anime.dub == 1 || title.contains("(ITA)")) "\uD83C\uDDEE\uD83C\uDDF9  Italiano" else "\uD83C\uDDEF\uD83C\uDDF5  Giapponese"
-            this.tags = listOfNotNull(doppiato, getStatusTag(anime.status)) + anime.genres.map { genre ->
+            this.showStatus = getShowStatus(primaryAnime.status)
+            this.plot = primaryAnime.plot
+            val audioTag = when {
+                hasSub && hasDub -> "\uD83C\uDDEE\uD83C\uDDF9  Italiano / \uD83C\uDDEF\uD83C\uDDF5  Giapponese"
+                hasDub -> "\uD83C\uDDEE\uD83C\uDDF9  Italiano"
+                else -> "\uD83C\uDDEF\uD83C\uDDF5  Giapponese"
+            }
+            this.tags = listOfNotNull(audioTag, getStatusTag(primaryAnime.status)) + primaryAnime.genres.map { genre ->
                 genre.name.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
             }
-            this.comingSoon = anime.status == "In uscita prossimamente"
+            this.comingSoon = primaryAnime.status == "In uscita prossimamente"
             this.recommendations = relatedAnimes
         }
     }
@@ -806,14 +1253,30 @@ class AnimeUnity(
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val document = app.get(data).document
-        val sourceUrl = document.select("video-player").attr("embed_url")
-        VixCloudExtractor().getUrl(
-            url = sourceUrl,
-            referer = mainUrl,
-            subtitleCallback = subtitleCallback,
-            callback = callback
-        )
+        val playbackData = runCatching { parseJson<EpisodePlaybackData>(data) }.getOrNull()
+        val playerSources = playbackData?.let(::buildPlayerSourceOptions)
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(PlayerSourceOption(label = "[SOURCE]", url = data))
+
+        val shouldLabelSources = playerSources.size > 1
+
+        playerSources.forEach { playerSource ->
+            val document = app.get(playerSource.url).document
+            val sourceUrl = document.select("video-player").attr("embed_url")
+            if (sourceUrl.isBlank()) return@forEach
+
+            val sourceSuffix = if (shouldLabelSources) " ${playerSource.label}" else ""
+            VixCloudExtractor(
+                sourceName = "VixCloud$sourceSuffix",
+                displayName = "AnimeUnity$sourceSuffix",
+            ).getUrl(
+                url = sourceUrl,
+                referer = mainUrl,
+                subtitleCallback = subtitleCallback,
+                callback = callback
+            )
+        }
+
         return true
     }
 }

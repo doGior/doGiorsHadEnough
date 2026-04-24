@@ -89,11 +89,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -149,11 +156,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -209,11 +223,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -269,11 +290,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -329,11 +357,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -389,11 +424,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -449,11 +491,18 @@
             android:paddingEnd="4dp"
             android:paddingBottom="4dp">
 
-            <TextView
+            <EditText
                 android:id="@+id/row_label"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:gravity="start|center_vertical"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:singleLine="true"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 

@@ -5,8 +5,12 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.text.Editable
+import android.text.style.ForegroundColorSpan
 import android.text.InputFilter
 import android.text.TextWatcher
 import android.view.LayoutInflater
@@ -142,6 +146,122 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
 
     override val layoutName: String = "settings"
 
+    private fun buildFeedbackDialogMessage(): SpannableStringBuilder {
+        val message = SpannableStringBuilder(
+            getString("settings_feedback_message")
+                ?: "Vuoi segnalare un Problema o vuoi suggerire un Miglioramento?"
+        )
+
+        val problemText = getString("settings_feedback_problem_highlight") ?: "Problema"
+        val suggestionText =
+            getString("settings_feedback_suggestion_highlight") ?: "Miglioramento"
+
+        val problemIndex = message.indexOf(problemText)
+        if (problemIndex >= 0) {
+            message.setSpan(
+                ForegroundColorSpan(Color.parseColor("#FFFF7F7F")),
+                problemIndex,
+                problemIndex + problemText.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+
+        val suggestionIndex = message.indexOf(suggestionText)
+        if (suggestionIndex >= 0) {
+            message.setSpan(
+                ForegroundColorSpan(Color.parseColor("#FF7CFF9D")),
+                suggestionIndex,
+                suggestionIndex + suggestionText.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+
+        return message
+    }
+
+    private fun openFeedbackPage(titlePrefix: String) {
+        val context = context ?: return
+        val issuesUrl =
+            "https://github.com/doGior/doGiorsHadEnough/issues/new?title=${Uri.encode(titlePrefix)}"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(issuesUrl))
+
+        runCatching { startActivity(intent) }
+            .onFailure {
+                showToast(
+                    getString("settings_feedback_unavailable")
+                        ?: "Impossibile aprire GitHub in questo momento."
+                )
+            }
+    }
+
+    private fun showFeedbackDialog() {
+        val context = context ?: return
+        val layoutId = plugin.resources?.getIdentifier(
+            "settings_feedback_dialog",
+            "layout",
+            BuildConfig.LIBRARY_PACKAGE_NAME
+        ) ?: return
+        val dialogView = layoutInflater.inflate(plugin.resources?.getLayout(layoutId), null, false)
+
+        dialogView.findViewByName<TextView>("feedback_dialog_title")?.text =
+            getString("settings_feedback_title") ?: "Segnalazioni e Suggerimenti"
+        dialogView.findViewByName<TextView>("feedback_dialog_message")?.text =
+            buildFeedbackDialogMessage()
+
+        val dialog = AlertDialog.Builder(context)
+            .setView(dialogView)
+            .create()
+
+        dialogView.findViewByName<TextView>("feedback_problem_btn")?.apply {
+            makeTvCompatible()
+            background = getDrawable("outline_danger")
+            setTextColor(Color.parseColor("#FFFF7F7F"))
+            text = getString("settings_feedback_problem_action") ?: "Segnala un Problema"
+            setOnClickListener {
+                dialog.dismiss()
+                openFeedbackPage("AnimeUnity [problema]: ")
+            }
+        }
+
+        dialogView.findViewByName<TextView>("feedback_suggestion_btn")?.apply {
+            makeTvCompatible()
+            background = getDrawable("outline_success")
+            setTextColor(Color.parseColor("#FF7CFF9D"))
+            text = getString("settings_feedback_suggestion_action")
+                ?: "Suggerisci un Miglioramento"
+            setOnClickListener {
+                dialog.dismiss()
+                openFeedbackPage("AnimeUnity [suggerimento]: ")
+            }
+        }
+
+        dialogView.findViewByName<TextView>("feedback_cancel_btn")?.apply {
+            makeTvCompatible()
+            background = getDrawable("outline")
+            setTextColor(Color.parseColor("#FFE6E6E6"))
+            text = getString("settings_feedback_cancel") ?: "Annulla"
+            setOnClickListener { dialog.dismiss() }
+        }
+
+        dialog.show()
+    }
+
+    private fun getBuildInfoText(): String? {
+        val rawCommit = BuildConfig.BUILD_COMMIT_SHA.trim()
+        val rawBuildCompletedAt = BuildConfig.BUILD_COMPLETED_AT_ROME.trim()
+        val shortCommit = rawCommit.takeIf { it.isNotEmpty() && it != "unknown" }?.take(7)
+            ?: return null
+
+        return if (rawBuildCompletedAt.isNotEmpty()) {
+            (getString("settings_build_info") ?: "Commit %1\$s | Build %2\$s").format(
+                shortCommit,
+                rawBuildCompletedAt
+            )
+        } else {
+            (getString("settings_build_info_commit_only") ?: "Commit %1\$s").format(shortCommit)
+        }
+    }
+
     private fun setupSiteUrlResetButton(
         button: ImageButton?,
         input: EditText?,
@@ -192,6 +312,11 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
 
         view.findViewByName<TextView>("header_tw")?.text =
             getString("settings_menu_title")
+        view.findViewByName<TextView>("header_build_info")?.apply {
+            val buildInfoText = getBuildInfoText()
+            text = buildInfoText
+            visibility = if (buildInfoText.isNullOrBlank()) View.GONE else View.VISIBLE
+        }
         view.findViewByName<TextView>("home_settings_title")?.text =
             getString("settings_menu_home_title")
         view.findViewByName<TextView>("home_settings_summary")?.text =
@@ -221,6 +346,7 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
         val siteUrlContainer: View? = view.findViewByName("site_url_container")
         val siteUrlInput: EditText? = view.findViewByName("site_url_input")
         val siteUrlClear: ImageButton? = view.findViewByName("site_url_clear")
+        val reportFeedbackButton: TextView? = view.findViewByName("report_feedback_btn")
         val resetSettingsButton: TextView? = view.findViewByName("reset_settings_btn")
         val advancedSearchActionEnabledColor = advancedSearchAction?.currentTextColor ?: Color.WHITE
 
@@ -228,7 +354,10 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
             card?.makeTvCompatible()
         }
         siteUrlContainer?.applyOutlineBackground()
+        reportFeedbackButton?.makeTvCompatible()
         resetSettingsButton?.makeTvCompatible()
+        reportFeedbackButton?.background = getDrawable("outline_feedback")
+        reportFeedbackButton?.setTextColor(Color.parseColor("#FF9ED0FF"))
         resetSettingsButton?.background = getDrawable("outline_danger")
         resetSettingsButton?.setTextColor(Color.parseColor("#FFFF7F7F"))
 
@@ -243,6 +372,7 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
             advancedSearchActionEnabledColor,
             advancedSearchSwitch?.isChecked == true
         )
+        reportFeedbackButton?.text = getString("settings_feedback_button")
         resetSettingsButton?.text = getString("settings_reset_button")
         siteUrlInput?.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -312,6 +442,10 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
                 .show()
         }
 
+        reportFeedbackButton?.setOnClickListener {
+            showFeedbackDialog()
+        }
+
         homeSettingsCard?.setOnClickListener {
             AnimeUnityHomeSettingsFragment().show(
                 parentFragmentManager,
@@ -345,10 +479,20 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
         val key: String,
         val rowId: String,
         val labelStringName: String,
+        val titlePrefKey: String,
         val switchPrefKey: String,
         val countPrefKey: String?,
         val defaultEnabled: Boolean = true,
     )
+
+    private fun getSectionTitle(sectionRow: SectionRow): String {
+        val defaultTitle = getString(sectionRow.labelStringName).orEmpty()
+        return AnimeUnityPlugin.getConfiguredSectionTitle(
+            sharedPref,
+            sectionRow.titlePrefKey,
+            defaultTitle,
+        )
+    }
 
     private fun getCount(prefKey: String): Int {
         return (sharedPref?.getInt(prefKey, AnimeUnityPlugin.DEFAULT_SECTION_COUNT)
@@ -444,6 +588,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "latest",
                 rowId = "latest_row",
                 labelStringName = "latest_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_LATEST_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_LATEST_EPISODES,
                 countPrefKey = AnimeUnityPlugin.PREF_LATEST_COUNT,
             ),
@@ -451,6 +596,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "calendar",
                 rowId = "calendar_row",
                 labelStringName = "calendar_switch_text",
+                titlePrefKey = AnimeUnityPlugin.PREF_CALENDAR_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_CALENDAR,
                 countPrefKey = AnimeUnityPlugin.PREF_CALENDAR_COUNT,
             ),
@@ -458,6 +604,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "ongoing",
                 rowId = "ongoing_row",
                 labelStringName = "ongoing_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_ONGOING_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_ONGOING,
                 countPrefKey = AnimeUnityPlugin.PREF_ONGOING_COUNT,
             ),
@@ -465,6 +612,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "popular",
                 rowId = "popular_row",
                 labelStringName = "popular_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_POPULAR_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_POPULAR,
                 countPrefKey = AnimeUnityPlugin.PREF_POPULAR_COUNT,
             ),
@@ -472,6 +620,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "best",
                 rowId = "best_row",
                 labelStringName = "best_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_BEST_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_BEST,
                 countPrefKey = AnimeUnityPlugin.PREF_BEST_COUNT,
             ),
@@ -479,6 +628,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "upcoming",
                 rowId = "upcoming_row",
                 labelStringName = "upcoming_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_UPCOMING_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_UPCOMING,
                 countPrefKey = AnimeUnityPlugin.PREF_UPCOMING_COUNT,
             ),
@@ -486,6 +636,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 key = "random",
                 rowId = "random_row",
                 labelStringName = "random_count_label",
+                titlePrefKey = AnimeUnityPlugin.PREF_RANDOM_TITLE,
                 switchPrefKey = AnimeUnityPlugin.PREF_SHOW_RANDOM,
                 countPrefKey = AnimeUnityPlugin.PREF_RANDOM_COUNT,
             ),
@@ -504,8 +655,11 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
             val rowView = rowViewByKey.getValue(sectionRow.key)
             rowView.applyOutlineBackground()
 
-            rowView.findViewByName<TextView>("row_label")?.text =
-                getString(sectionRow.labelStringName)
+            rowView.findViewByName<EditText>("row_label")?.apply {
+                setText(getSectionTitle(sectionRow))
+                setSelection(text.length)
+                hint = getString(sectionRow.labelStringName)
+            }
 
             val switchView = rowView.findViewByName<Switch>("row_switch")
             switchView?.text = ""
@@ -561,6 +715,14 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                             parseCount(rowView.findViewByName("row_count_input"))
                         )
                     }
+
+                    val titleInput = rowView.findViewByName<EditText>("row_label")
+                    val trimmedTitle = titleInput?.text?.toString()?.trim().orEmpty()
+                    if (trimmedTitle.isEmpty()) {
+                        remove(sectionRow.titlePrefKey)
+                    } else {
+                        putString(sectionRow.titlePrefKey, trimmedTitle)
+                    }
                 }
             }
 
@@ -592,8 +754,19 @@ class AnimeUnityDisplaySettingsFragment : AnimeUnityBaseSettingsFragment() {
 
         view.findViewByName<TextView>("header_tw")?.text =
             getString("settings_display_title")
+        view.findViewByName<View>("display_options_card")?.applyOutlineBackground()
+        view.findViewByName<TextView>("display_options_title")?.text =
+            getString("display_options_title")
 
         val switchSettings = listOf(
+            SwitchSetting(
+                AnimeUnityPlugin.PREF_UNIFY_DUB_SUB_CARDS,
+                "unify_dub_sub_cards_row",
+                "unify_dub_sub_cards_label",
+                "unify_dub_sub_cards_switch",
+                "unify_dub_sub_cards_switch_text",
+                AnimeUnityPlugin.DEFAULT_UNIFY_DUB_SUB_CARDS,
+            ),
             SwitchSetting(
                 AnimeUnityPlugin.PREF_SHOW_DUB_SUB,
                 "dub_sub_row",
