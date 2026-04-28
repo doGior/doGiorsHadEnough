@@ -329,6 +329,12 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
             getString("settings_menu_display_summary")
         view.findViewByName<TextView>("display_settings_action")?.text =
             getString("settings_open_action")
+        view.findViewByName<TextView>("cache_settings_title")?.text =
+            getString("settings_menu_cache_title")
+        view.findViewByName<TextView>("cache_settings_summary")?.text =
+            getString("settings_menu_cache_summary")
+        view.findViewByName<TextView>("cache_settings_action")?.text =
+            getString("settings_open_action")
         view.findViewByName<TextView>("advanced_search_settings_title")?.text =
             getString("settings_menu_advanced_search_title")
         view.findViewByName<TextView>("advanced_search_settings_summary")?.text =
@@ -341,6 +347,7 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
 
         val homeSettingsCard: View? = view.findViewByName("home_settings_card")
         val displaySettingsCard: View? = view.findViewByName("display_settings_card")
+        val cacheSettingsCard: View? = view.findViewByName("cache_settings_card")
         val advancedSearchSettingsCard: View? = view.findViewByName("advanced_search_settings_card")
         val advancedSearchSwitch: Switch? = view.findViewByName("advanced_search_settings_switch")
         val siteUrlContainer: View? = view.findViewByName("site_url_container")
@@ -350,7 +357,7 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
         val resetSettingsButton: TextView? = view.findViewByName("reset_settings_btn")
         val advancedSearchActionEnabledColor = advancedSearchAction?.currentTextColor ?: Color.WHITE
 
-        listOf(homeSettingsCard, displaySettingsCard, advancedSearchSettingsCard).forEach { card ->
+        listOf(homeSettingsCard, displaySettingsCard, cacheSettingsCard, advancedSearchSettingsCard).forEach { card ->
             card?.makeTvCompatible()
         }
         siteUrlContainer?.applyOutlineBackground()
@@ -460,6 +467,13 @@ class AnimeUnitySettings : AnimeUnityBaseSettingsFragment() {
             )
         }
 
+        cacheSettingsCard?.setOnClickListener {
+            AnimeUnityCacheSettingsFragment().show(
+                parentFragmentManager,
+                "AnimeUnityCacheSettings"
+            )
+        }
+
         advancedSearchSettingsCard?.setOnClickListener {
             if (advancedSearchSwitch?.isChecked == true) {
                 AnimeUnityAdvancedSearchSettingsFragment().show(
@@ -494,18 +508,28 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
         )
     }
 
-    private fun getCount(prefKey: String): Int {
-        return (sharedPref?.getInt(prefKey, AnimeUnityPlugin.DEFAULT_SECTION_COUNT)
-            ?: AnimeUnityPlugin.DEFAULT_SECTION_COUNT).coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
+    private fun getDefaultCount(prefKey: String): Int {
+        return if (prefKey == AnimeUnityPlugin.PREF_RANDOM_COUNT) {
+            AnimeUnityPlugin.DEFAULT_RANDOM_COUNT
+        } else {
+            AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+        }
     }
 
-    private fun parseCount(input: EditText?): Int {
+    private fun getCount(prefKey: String): Int {
+        val defaultCount = getDefaultCount(prefKey)
+        return (sharedPref?.getInt(prefKey, defaultCount)
+            ?: defaultCount).coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
+    }
+
+    private fun parseCount(input: EditText?, prefKey: String): Int {
+        val defaultCount = getDefaultCount(prefKey)
         return input?.text
             ?.toString()
             ?.trim()
             ?.toIntOrNull()
             ?.coerceIn(1, AnimeUnityPlugin.MAX_SECTION_COUNT)
-            ?: AnimeUnityPlugin.DEFAULT_SECTION_COUNT
+            ?: defaultCount
     }
 
     private fun setupCountInput(input: EditText?, prefKey: String) {
@@ -585,7 +609,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
 
         val sectionRows = listOf(
             SectionRow(
-                key = "latest",
+                key = AnimeUnitySections.LATEST,
                 rowId = "latest_row",
                 labelStringName = "latest_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_LATEST_TITLE,
@@ -593,7 +617,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_LATEST_COUNT,
             ),
             SectionRow(
-                key = "calendar",
+                key = AnimeUnitySections.CALENDAR,
                 rowId = "calendar_row",
                 labelStringName = "calendar_switch_text",
                 titlePrefKey = AnimeUnityPlugin.PREF_CALENDAR_TITLE,
@@ -601,7 +625,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_CALENDAR_COUNT,
             ),
             SectionRow(
-                key = "ongoing",
+                key = AnimeUnitySections.ONGOING,
                 rowId = "ongoing_row",
                 labelStringName = "ongoing_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_ONGOING_TITLE,
@@ -609,7 +633,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_ONGOING_COUNT,
             ),
             SectionRow(
-                key = "popular",
+                key = AnimeUnitySections.POPULAR,
                 rowId = "popular_row",
                 labelStringName = "popular_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_POPULAR_TITLE,
@@ -617,7 +641,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_POPULAR_COUNT,
             ),
             SectionRow(
-                key = "best",
+                key = AnimeUnitySections.BEST,
                 rowId = "best_row",
                 labelStringName = "best_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_BEST_TITLE,
@@ -625,7 +649,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_BEST_COUNT,
             ),
             SectionRow(
-                key = "upcoming",
+                key = AnimeUnitySections.UPCOMING,
                 rowId = "upcoming_row",
                 labelStringName = "upcoming_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_UPCOMING_TITLE,
@@ -633,7 +657,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                 countPrefKey = AnimeUnityPlugin.PREF_UPCOMING_COUNT,
             ),
             SectionRow(
-                key = "random",
+                key = AnimeUnitySections.RANDOM,
                 rowId = "random_row",
                 labelStringName = "random_count_label",
                 titlePrefKey = AnimeUnityPlugin.PREF_RANDOM_TITLE,
@@ -712,7 +736,7 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                     sectionRow.countPrefKey?.let { prefKey ->
                         putInt(
                             prefKey,
-                            parseCount(rowView.findViewByName("row_count_input"))
+                            parseCount(rowView.findViewByName("row_count_input"), prefKey)
                         )
                     }
 
@@ -731,6 +755,67 @@ class AnimeUnityHomeSettingsFragment : AnimeUnityBaseSettingsFragment() {
                     ?: "Impostazioni salvate. Riavvia l'applicazione per applicarle"
             )
             dismiss()
+        }
+    }
+}
+
+class AnimeUnityCacheSettingsFragment : AnimeUnityBaseSettingsFragment() {
+
+    override val layoutName: String = "settings_cache"
+
+    private fun formatBytes(bytes: Long): String {
+        val mb = bytes / (1024.0 * 1024.0)
+        return String.format(java.util.Locale.ITALY, "%.1f MB", mb)
+    }
+
+    private fun updateStats(view: View) {
+        AnimeUnityCache.init(view.context.applicationContext)
+        val stats = AnimeUnityCache.stats()
+        view.findViewByName<TextView>("cache_stats_summary")?.text =
+            (getString("settings_cache_stats_summary")
+                ?: "%1\$d elementi | %2\$d schede anime | %3\$d pagine anime | %4\$d scaduti | %5\$s").format(
+                stats.entryCount,
+                stats.detailEntryCount,
+                stats.animePageEntryCount,
+                stats.expiredEntryCount,
+                formatBytes(stats.totalBytes),
+            )
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        view.findViewByName<TextView>("header_tw")?.text =
+            getString("settings_cache_title")
+        view.findViewByName<View>("cache_stats_card")?.applyOutlineBackground()
+        view.findViewByName<TextView>("cache_stats_title")?.text =
+            getString("settings_cache_stats_title")
+
+        val clearCacheButton: TextView? = view.findViewByName("clear_cache_btn")
+        clearCacheButton?.apply {
+            makeTvCompatible()
+            background = getDrawable("outline_danger")
+            setTextColor(Color.parseColor("#FFFF7F7F"))
+            text = getString("settings_cache_clear_button")
+        }
+
+        updateStats(view)
+
+        clearCacheButton?.setOnClickListener {
+            val context = context ?: return@setOnClickListener
+            AlertDialog.Builder(context)
+                .setTitle(getString("settings_cache_clear_title") ?: "Svuota cache")
+                .setMessage(
+                    getString("settings_cache_clear_message")
+                        ?: "Vuoi eliminare i dati salvati di AnimeUnity?"
+                )
+                .setPositiveButton(getString("settings_cache_clear_confirm") ?: "Svuota") { _, _ ->
+                    AnimeUnity.clearAllCaches()
+                    updateStats(view)
+                    showToast(getString("settings_cache_cleared") ?: "Cache svuotata")
+                }
+                .setNegativeButton(getString("settings_reset_cancel") ?: "Annulla", null)
+                .show()
         }
     }
 }
