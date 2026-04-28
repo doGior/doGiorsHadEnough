@@ -7,6 +7,8 @@
     <string name="settings_menu_home_summary">Personalizza Home</string>
     <string name="settings_menu_display_title">Preferenze</string>
     <string name="settings_menu_display_summary">Schede e dettagli anime</string>
+    <string name="settings_menu_cache_title">Cache</string>
+    <string name="settings_menu_cache_summary">Gestisci dati salvati e refresh</string>
     <string name="settings_menu_advanced_search_title">Ricerca avanzata</string>
     <string name="settings_menu_advanced_search_summary">Ricerca Anime per criteri</string>
     <string name="settings_open_action">Apri</string>
@@ -38,6 +40,14 @@
     <string name="random_count_label">Random</string>
 
     <string name="settings_display_title">Preferenze</string>
+    <string name="settings_cache_title">Cache</string>
+    <string name="settings_cache_stats_title">Spazio cache</string>
+    <string name="settings_cache_stats_summary">%1$d elementi | %2$d schede anime | %3$d pagine anime | %4$d scaduti | %5$s</string>
+    <string name="settings_cache_clear_button">Svuota cache</string>
+    <string name="settings_cache_clear_title">Svuota cache</string>
+    <string name="settings_cache_clear_message">Vuoi eliminare i dati salvati di AnimeUnity? La prossima apertura ricarichera tutto dal server.</string>
+    <string name="settings_cache_clear_confirm">Svuota</string>
+    <string name="settings_cache_cleared">Cache svuotata</string>
     <string name="settings_advanced_search_title">Ricerca avanzata</string>
     <string name="unify_dub_sub_cards_switch_text">Scheda unica SUB/DUB</string>
     <string name="dub_sub_switch_text">SUB / DUB</string>

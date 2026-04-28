@@ -7,19 +7,19 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-// Sealed class to represent either Boolean or String
 sealed class BooleanOrString {
-    data class AsBoolean(val value: Boolean) : BooleanOrString(){
+    data class AsBoolean(val value: Boolean) : BooleanOrString() {
         override fun toString(): String {
             return value.toString()
         }
     }
+
     data class AsString(val value: String) : BooleanOrString()
 
-    fun getValue(): Any {
+    fun toJsonValue(): Any {
         return when (this) {
-            is AsBoolean -> this.value // Access boolean value
-            is AsString -> this.value  // Access string value
+            is AsBoolean -> value
+            is AsString -> value
         }
     }
 }
@@ -34,12 +34,12 @@ data class RequestData(
     val genres: Any = BooleanOrString.AsBoolean(false),
     /*** Inverno, Primavera, Estate, Autunno ***/
     val season: BooleanOrString = BooleanOrString.AsBoolean(false),
-    var offset: Int? = 0,
+    val offset: Int? = 0,
     val dubbed: Int = 1,
-){
+) {
     private fun serializeValue(value: Any): Any {
         return when (value) {
-            is BooleanOrString -> value.getValue()
+            is BooleanOrString -> value.toJsonValue()
             is List<*> -> JSONArray().apply {
                 value.filterIsInstance<ArchiveGenreOption>().forEach { genre ->
                     put(
@@ -94,6 +94,7 @@ data class Anime(
     @JsonProperty("plot") val plot: String,
     @JsonProperty("date") val date: String,
     @JsonProperty("episodes_count") val episodesCount: Int,
+    @JsonProperty("real_episodes_count") val realEpisodesCount: Int?,
     @JsonProperty("episodes_length") val episodesLength: Int,
     @JsonProperty("status") val status: String,
 //    @JsonProperty("imageurl_cover") val imageUrlCover: String?,
@@ -145,6 +146,7 @@ data class LatestEpisodeAnime(
     @JsonProperty("title") val title: String?,
     @JsonProperty("imageurl") val imageUrl: String?,
     @JsonProperty("episodes_count") val episodesCount: Int,
+    @JsonProperty("real_episodes_count") val realEpisodesCount: Int?,
     @JsonProperty("type") val type: String,
     @JsonProperty("slug") val slug: String,
     @JsonProperty("title_eng") val titleEng: String?,
@@ -238,3 +240,25 @@ data class JikanTrailer(
     @JsonProperty("embed_url") val embedUrl: String?
 )
 
+data class AniZipMetadata(
+    @JsonProperty("episodes") val episodes: Map<String, AniZipEpisode>?,
+    @JsonProperty("mappings") val mappings: AniZipMappings?
+)
+
+data class AniZipMappings(
+    @JsonProperty("mal_id") val malId: Int?,
+    @JsonProperty("anilist_id") val anilistId: Int?,
+    @JsonProperty("kitsu_id") val kitsuId: Int?
+)
+
+data class AniZipEpisode(
+    @JsonProperty("episode") val episode: String?,
+    @JsonProperty("airDate") val airDate: String?,
+    @JsonProperty("airDateUtc") val airDateUtc: String?,
+    @JsonProperty("runtime") val runtime: Int?,
+    @JsonProperty("image") val image: String?,
+    @JsonProperty("title") val title: Map<String, String?>?,
+    @JsonProperty("overview") val overview: String?,
+    @JsonProperty("summary") val summary: String?,
+    @JsonProperty("rating") val rating: String?
+)
