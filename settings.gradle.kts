@@ -15,7 +15,7 @@ include(
 //    "DaddyLive",
 //    "Huhu",
     "IlCorsaroViola",
-    "Hub",
+//    "Hub",
     "IPTV",
 //    "OnlineSerieTV",
     "Nebula",
