@@ -56,6 +56,8 @@ class AnimeUnityPlugin : Plugin() {
         const val PREF_ADVANCED_SEARCH_TYPE = "advancedSearchType"
         const val PREF_ADVANCED_SEARCH_SEASON = "advancedSearchSeason"
         const val PREF_ADVANCED_SEARCH_COUNT = "advancedSearchCount"
+        const val PREF_CACHE_MAX_ENTRIES = "cacheMaxEntries"
+        const val PREF_CACHE_MAX_SIZE_MB = "cacheMaxSizeMb"
 
         const val DEFAULT_SITE_URL = "https://www.animeunity.so/"
         const val DEFAULT_SECTION_COUNT = 30
@@ -64,6 +66,12 @@ class AnimeUnityPlugin : Plugin() {
         const val DEFAULT_ADVANCED_SEARCH_COUNT = MAX_SECTION_COUNT
         const val DEFAULT_SECTION_ORDER = AnimeUnitySections.DEFAULT_ORDER
         const val DEFAULT_UNIFY_DUB_SUB_CARDS = true
+        const val DEFAULT_CACHE_MAX_ENTRIES = 1000
+        const val MIN_CACHE_MAX_ENTRIES = 50
+        const val MAX_CACHE_MAX_ENTRIES = 10000
+        const val DEFAULT_CACHE_MAX_SIZE_MB = 250
+        const val MIN_CACHE_MAX_SIZE_MB = 16
+        const val MAX_CACHE_MAX_SIZE_MB = 2048
         private const val ARCHIVE_OLDEST_YEAR = 1966
         private val defaultSectionKeys = AnimeUnitySections.defaultOrderKeys
         private val validSectionKeys = AnimeUnitySections.validKeys
@@ -303,6 +311,22 @@ class AnimeUnityPlugin : Plugin() {
             )
         }
 
+        fun getCacheMaxEntries(sharedPref: SharedPreferences?): Int {
+            return (sharedPref?.getInt(PREF_CACHE_MAX_ENTRIES, DEFAULT_CACHE_MAX_ENTRIES)
+                ?: DEFAULT_CACHE_MAX_ENTRIES)
+                .coerceIn(MIN_CACHE_MAX_ENTRIES, MAX_CACHE_MAX_ENTRIES)
+        }
+
+        fun getCacheMaxSizeMb(sharedPref: SharedPreferences?): Int {
+            return (sharedPref?.getInt(PREF_CACHE_MAX_SIZE_MB, DEFAULT_CACHE_MAX_SIZE_MB)
+                ?: DEFAULT_CACHE_MAX_SIZE_MB)
+                .coerceIn(MIN_CACHE_MAX_SIZE_MB, MAX_CACHE_MAX_SIZE_MB)
+        }
+
+        fun getCacheMaxBytes(sharedPref: SharedPreferences?): Long {
+            return getCacheMaxSizeMb(sharedPref) * 1024L * 1024L
+        }
+
         internal var activePlugin: AnimeUnityPlugin? = null
         internal var activeSharedPref: SharedPreferences? = null
     }
@@ -310,8 +334,8 @@ class AnimeUnityPlugin : Plugin() {
     private var sharedPref: SharedPreferences? = null
 
     override fun load(context: Context) {
-        AnimeUnityCache.init(context.applicationContext)
         sharedPref = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        AnimeUnityCache.init(context.applicationContext, sharedPref)
         activePlugin = this
         activeSharedPref = sharedPref
 

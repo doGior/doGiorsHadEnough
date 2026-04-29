@@ -1,6 +1,7 @@
 package it.dogior.hadEnough
 
 import android.content.Context
+import android.content.SharedPreferences
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -8,7 +9,7 @@ import java.security.MessageDigest
 object AnimeUnityCache {
     private const val CACHE_SCHEMA = 1
     private const val CACHE_FILE_EXTENSION = "json"
-    private const val MAX_CACHE_BYTES = 250L * 1024L * 1024L
+    private const val DEFAULT_CACHE_DIRECTORY_NAME = "animeunity_cache"
     private const val MAX_DETAIL_ENTRIES = 750
 
     const val NAMESPACE_HOME = "home"
@@ -33,8 +34,23 @@ object AnimeUnityCache {
         val totalBytes: Long,
     )
 
+    data class CacheEntrySnapshot(
+        val fileName: String,
+        val key: String,
+        val namespace: String,
+        val createdAtMs: Long,
+        val updatedAtMs: Long,
+        val expiresAtMs: Long,
+        val lastAccessedAtMs: Long,
+        val priority: Int,
+        val pinned: Boolean,
+        val isExpired: Boolean,
+        val sizeBytes: Long,
+        val payload: String,
+    )
+
     private data class CacheFileMeta(
-        val file: File,
+        val fileName: String,
         val namespace: String,
         val lastAccessedAtMs: Long,
         val priority: Int,
@@ -43,32 +59,61 @@ object AnimeUnityCache {
         val sizeBytes: Long,
     )
 
-    @Volatile
-    private var cacheDirectory: File? = null
+    private data class StorageFileMeta(
+        val fileName: String,
+        val lastModifiedAtMs: Long,
+        val sizeBytes: Long,
+    )
 
-    fun init(context: Context) {
-        cacheDirectory = File(context.filesDir, "animeunity_cache").apply {
-            mkdirs()
+    private interface CacheStorage {
+        fun ensureReady()
+        fun readText(fileName: String): String?
+        fun writeText(fileName: String, text: String): Boolean
+        fun deleteFile(fileName: String): Boolean
+        fun touchFile(fileName: String, timestampMs: Long)
+        fun listFiles(): List<StorageFileMeta>
+    }
+
+    @Volatile
+    private var cacheStorage: CacheStorage? = null
+
+    @Volatile
+    private var maxCacheBytes: Long = AnimeUnityPlugin.DEFAULT_CACHE_MAX_SIZE_MB * 1024L * 1024L
+
+    @Volatile
+    private var maxCacheEntries: Int = AnimeUnityPlugin.DEFAULT_CACHE_MAX_ENTRIES
+
+    private val cacheFileNameRegex = Regex("^[0-9a-f]{64}\\.$CACHE_FILE_EXTENSION$")
+
+    fun init(context: Context, sharedPref: SharedPreferences? = AnimeUnityPlugin.activeSharedPref) {
+        synchronized(this) {
+            maxCacheEntries = AnimeUnityPlugin.getCacheMaxEntries(sharedPref)
+            maxCacheBytes = AnimeUnityPlugin.getCacheMaxBytes(sharedPref)
+            cacheStorage = FileCacheStorage(
+                File(context.applicationContext.filesDir, DEFAULT_CACHE_DIRECTORY_NAME)
+            ).apply {
+                ensureReady()
+            }
+            trimIfNeeded()
         }
     }
 
     fun read(key: String, allowExpired: Boolean = false): CacheRecord? {
-        val file = getCacheFile(key) ?: return null
-        if (!file.exists()) return null
-
         return synchronized(this) {
-            val json = readValidatedJson(file, expectedKey = key)
+            val storage = cacheStorage ?: return@synchronized null
+            val fileName = cacheFileName(key)
+            val json = readValidatedJson(storage, fileName, expectedKey = key)
                 ?: return@synchronized null
 
             val now = System.currentTimeMillis()
             val expiresAtMs = json.optLong("expiresAtMs", 0L)
             val isExpired = expiresAtMs > 0L && now >= expiresAtMs
             if (isExpired && !allowExpired) {
-                file.delete()
+                storage.deleteFile(fileName)
                 return@synchronized null
             }
 
-            file.setLastModified(now)
+            storage.touchFile(fileName, now)
 
             CacheRecord(
                 payload = json.optString("payload"),
@@ -89,13 +134,13 @@ object AnimeUnityCache {
         priority: Int = 0,
         pinned: Boolean = false,
     ) {
-        val file = getCacheFile(key) ?: return
         val now = System.currentTimeMillis()
         val expiration = expiresAtMs ?: (now + ttlMs)
 
         synchronized(this) {
-            file.parentFile?.mkdirs()
-            val createdAtMs = readValidatedJson(file, expectedKey = key)
+            val storage = cacheStorage ?: return
+            val fileName = cacheFileName(key)
+            val createdAtMs = readValidatedJson(storage, fileName, expectedKey = key)
                 ?.optLong("createdAtMs", now)
                 ?: now
             val json = JSONObject().apply {
@@ -111,7 +156,7 @@ object AnimeUnityCache {
                 put("payload", payload)
             }
 
-            if (writeJsonFile(file, json)) {
+            if (storage.writeText(fileName, json.toString())) {
                 trimIfNeeded()
             }
         }
@@ -119,14 +164,16 @@ object AnimeUnityCache {
 
     fun remove(key: String) {
         synchronized(this) {
-            getCacheFile(key)?.delete()
+            cacheStorage?.deleteFile(cacheFileName(key))
         }
     }
 
     fun clear() {
         synchronized(this) {
-            cacheDirectory?.deleteRecursively()
-            cacheDirectory?.mkdirs()
+            val storage = cacheStorage ?: return
+            storage.listFiles().forEach { file ->
+                storage.deleteFile(file.fileName)
+            }
         }
     }
 
@@ -143,53 +190,96 @@ object AnimeUnityCache {
         }
     }
 
-    private fun getCacheFile(key: String): File? {
-        val directory = cacheDirectory ?: return null
-        val hash = sha256(key)
-        return File(directory, "$hash.$CACHE_FILE_EXTENSION")
+    fun entries(): List<CacheEntrySnapshot> {
+        return synchronized(this) {
+            val storage = cacheStorage ?: return@synchronized emptyList()
+            val now = System.currentTimeMillis()
+
+            storage.listFiles().mapNotNull { file ->
+                val json = readValidatedJson(storage, file.fileName) ?: return@mapNotNull null
+                val expiresAtMs = json.optLong("expiresAtMs", 0L)
+                CacheEntrySnapshot(
+                    fileName = file.fileName,
+                    key = json.optString("key"),
+                    namespace = json.optString("namespace"),
+                    createdAtMs = json.optLong("createdAtMs", file.lastModifiedAtMs),
+                    updatedAtMs = json.optLong("updatedAtMs", file.lastModifiedAtMs),
+                    expiresAtMs = expiresAtMs,
+                    lastAccessedAtMs = maxOf(
+                        json.optLong("lastAccessedAtMs", 0L),
+                        file.lastModifiedAtMs,
+                    ),
+                    priority = json.optInt("priority", 0),
+                    pinned = json.optBoolean("pinned", false),
+                    isExpired = expiresAtMs > 0L && now >= expiresAtMs,
+                    sizeBytes = file.sizeBytes,
+                    payload = json.optString("payload"),
+                )
+            }.sortedWith(
+                compareByDescending<CacheEntrySnapshot> { it.lastAccessedAtMs }
+                    .thenBy { it.namespace }
+                    .thenBy { it.key }
+            )
+        }
+    }
+
+    private fun cacheFileName(key: String): String {
+        return "${sha256(key)}.$CACHE_FILE_EXTENSION"
     }
 
     private fun readAllMeta(): List<CacheFileMeta> {
-        val directory = cacheDirectory ?: return emptyList()
-        val files = directory.listFiles { file ->
-            file.isFile && file.extension == CACHE_FILE_EXTENSION
-        } ?: return emptyList()
+        val storage = cacheStorage ?: return emptyList()
         val now = System.currentTimeMillis()
 
-        return files.mapNotNull { file ->
-            val json = readValidatedJson(file) ?: return@mapNotNull null
+        return storage.listFiles().mapNotNull { file ->
+            val json = readValidatedJson(storage, file.fileName) ?: return@mapNotNull null
             val expiresAtMs = json.optLong("expiresAtMs", 0L)
 
             CacheFileMeta(
-                file = file,
+                fileName = file.fileName,
                 namespace = json.optString("namespace"),
-                lastAccessedAtMs = maxOf(json.optLong("lastAccessedAtMs", 0L), file.lastModified()),
+                lastAccessedAtMs = maxOf(
+                    json.optLong("lastAccessedAtMs", 0L),
+                    file.lastModifiedAtMs,
+                ),
                 priority = json.optInt("priority", 0),
                 pinned = json.optBoolean("pinned", false),
                 isExpired = expiresAtMs > 0L && now >= expiresAtMs,
-                sizeBytes = file.length(),
+                sizeBytes = file.sizeBytes,
             )
         }
     }
 
     private fun trimIfNeeded() {
+        val storage = cacheStorage ?: return
         val entries = readAllMeta()
+        var totalEntries = entries.size
         var totalBytes = entries.sumOf { it.sizeBytes }
         var detailEntries = entries.count { it.namespace == NAMESPACE_DETAIL }
-        if (totalBytes <= MAX_CACHE_BYTES && detailEntries <= MAX_DETAIL_ENTRIES) return
+        if (
+            totalEntries <= maxCacheEntries &&
+            totalBytes <= maxCacheBytes &&
+            detailEntries <= MAX_DETAIL_ENTRIES
+        ) {
+            return
+        }
 
         fun needsTrim(): Boolean {
-            return totalBytes > MAX_CACHE_BYTES || detailEntries > MAX_DETAIL_ENTRIES
+            return totalEntries > maxCacheEntries ||
+                totalBytes > maxCacheBytes ||
+                detailEntries > MAX_DETAIL_ENTRIES
         }
 
         fun trim(candidates: List<CacheFileMeta>) {
             for (entry in candidates) {
-                val shouldTrimByBytes = totalBytes > MAX_CACHE_BYTES
+                val shouldTrimByEntries = totalEntries > maxCacheEntries
+                val shouldTrimByBytes = totalBytes > maxCacheBytes
                 val shouldTrimByDetailCount =
                     detailEntries > MAX_DETAIL_ENTRIES && entry.namespace == NAMESPACE_DETAIL
-                if (!shouldTrimByBytes && !shouldTrimByDetailCount) break
+                if (!shouldTrimByEntries && !shouldTrimByBytes && !shouldTrimByDetailCount) break
 
-                if (entry.file.delete()) {
+                if (storage.deleteFile(entry.fileName)) {
+                    totalEntries -= 1
                     totalBytes -= entry.sizeBytes
                     if (entry.namespace == NAMESPACE_DETAIL) detailEntries -= 1
                 }
@@ -224,24 +314,29 @@ object AnimeUnityCache {
         }
     }
 
-    private fun readValidatedJson(file: File, expectedKey: String? = null): JSONObject? {
-        val json = runCatching { JSONObject(file.readText()) }.getOrNull()
+    private fun readValidatedJson(
+        storage: CacheStorage,
+        fileName: String,
+        expectedKey: String? = null,
+    ): JSONObject? {
+        val text = storage.readText(fileName)
+        val json = runCatching { JSONObject(text ?: return null) }.getOrNull()
         if (json == null) {
-            file.delete()
+            storage.deleteFile(fileName)
             return null
         }
 
         val hasExpectedSchema = json.optInt("schema") == CACHE_SCHEMA
         val hasExpectedKey = expectedKey == null || json.optString("key") == expectedKey
         if (!hasExpectedSchema || !hasExpectedKey) {
-            file.delete()
+            storage.deleteFile(fileName)
             return null
         }
 
         return json
     }
 
-    private fun writeJsonFile(file: File, json: JSONObject): Boolean {
+    private fun writeJsonFile(file: File, text: String): Boolean {
         val parent = file.parentFile ?: return false
         parent.mkdirs()
 
@@ -251,7 +346,7 @@ object AnimeUnityCache {
         return try {
             tmpFile.delete()
             backupFile.delete()
-            tmpFile.writeText(json.toString())
+            tmpFile.writeText(text)
 
             val hadExistingFile = file.exists()
             if (hadExistingFile && !file.renameTo(backupFile)) {
@@ -280,5 +375,44 @@ object AnimeUnityCache {
         val bytes = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    private class FileCacheStorage(
+        private val directory: File,
+    ) : CacheStorage {
+        override fun ensureReady() {
+            directory.mkdirs()
+        }
+
+        override fun readText(fileName: String): String? {
+            val file = File(directory, fileName)
+            if (!file.exists() || !file.isFile) return null
+            return runCatching { file.readText() }.getOrNull()
+        }
+
+        override fun writeText(fileName: String, text: String): Boolean {
+            return writeJsonFile(File(directory, fileName), text)
+        }
+
+        override fun deleteFile(fileName: String): Boolean {
+            val file = File(directory, fileName)
+            return !file.exists() || file.delete()
+        }
+
+        override fun touchFile(fileName: String, timestampMs: Long) {
+            File(directory, fileName).takeIf { it.exists() }?.setLastModified(timestampMs)
+        }
+
+        override fun listFiles(): List<StorageFileMeta> {
+            return directory.listFiles { file ->
+                file.isFile && cacheFileNameRegex.matches(file.name)
+            }?.map { file ->
+                StorageFileMeta(
+                    fileName = file.name,
+                    lastModifiedAtMs = file.lastModified(),
+                    sizeBytes = file.length(),
+                )
+            }.orEmpty()
+        }
     }
 }

@@ -37,13 +37,10 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -165,7 +162,6 @@ class AnimeUnity(
             ExpiringMemoryCache<String, String>(EXTERNAL_CACHE_TTL_MS, 128)
         private val playerEmbedUrlCache =
             ExpiringMemoryCache<String, String>(PLAYER_EMBED_CACHE_TTL_MS, 256)
-        private val revalidatingKeys = mutableSetOf<String>()
         private val randomSessionSeenIds = mutableMapOf<String, MutableSet<Int>>()
         private val homeSectionConfigs = listOf(
             HomeSectionConfig(
@@ -234,7 +230,7 @@ class AnimeUnity(
             AnimeUnitySections.BEST,
             AnimeUnitySections.UPCOMING,
         )
-        private val staleWhileRevalidateSectionKeys = setOf(
+        private val networkFirstHomeSectionKeys = setOf(
             AnimeUnitySections.LATEST,
             AnimeUnitySections.ONGOING,
             AnimeUnitySections.POPULAR,
@@ -250,9 +246,6 @@ class AnimeUnity(
             anilistPosterCache.clear()
             trailerUrlCache.clear()
             playerEmbedUrlCache.clear()
-            synchronized(revalidatingKeys) {
-                revalidatingKeys.clear()
-            }
             synchronized(randomSessionSeenIds) {
                 randomSessionSeenIds.clear()
             }
@@ -590,28 +583,12 @@ class AnimeUnity(
         }
     }
 
-    private fun shouldUseStaleWhileRevalidate(sectionKey: String): Boolean {
-        return sectionKey in staleWhileRevalidateSectionKeys
-    }
-
-    private fun ArchivePageResult.firstIdentity(): String? {
-        val anime = titles.firstOrNull() ?: return null
-        return "${anime.id}:${anime.slug}:${anime.episodesCount}:${anime.realEpisodesCount}:${anime.score}"
-    }
-
-    private fun List<LatestEpisodeItem>.firstIdentity(): String? {
-        val item = firstOrNull() ?: return null
-        return "${item.id}:${item.animeId}:${item.number}:${item.anime.score}"
+    private fun shouldUseNetworkFirstHomeCache(sectionKey: String): Boolean {
+        return sectionKey in networkFirstHomeSectionKeys
     }
 
     private fun AnimeLoadCacheData.primaryAnime(): Anime {
         return subPageData?.anime ?: dubPageData?.anime ?: currentPageData.anime
-    }
-
-    private fun AnimeLoadCacheData.totalEpisodeCount(): Int {
-        val subCount = subPageData?.episodes?.size ?: 0
-        val dubCount = dubPageData?.episodes?.size ?: 0
-        return maxOf(subCount, dubCount, currentPageData.episodes.size)
     }
 
     private fun buildAnimeLoadFingerprint(
@@ -701,6 +678,33 @@ class AnimeUnity(
         )
     }
 
+    private fun writeHomeDiskCache(
+        cacheKey: String,
+        sectionKey: String,
+        payload: Any,
+    ) {
+        writeDiskCache(
+            key = cacheKey,
+            namespace = AnimeUnityCache.NAMESPACE_HOME,
+            payload = payload,
+            ttlMs = getHomeCacheTtlMs(sectionKey),
+            expiresAtMs = getHomeCacheExpirationMs(sectionKey),
+            priority = getHomeCachePriority(sectionKey),
+        )
+    }
+
+    private suspend fun <T> fetchDataWithCacheFallback(
+        cachedValue: T?,
+        fetch: suspend () -> T,
+    ): T {
+        return try {
+            fetch()
+        } catch (throwable: Throwable) {
+            if (throwable is CancellationException) throw throwable
+            cachedValue ?: throw throwable
+        }
+    }
+
     private inline fun <T> runCatchingCancellable(block: () -> T): Result<T> {
         return try {
             Result.success(block())
@@ -751,26 +755,6 @@ class AnimeUnity(
                 }
             }
         }.awaitAll()
-    }
-
-    @OptIn(DelicateCoroutinesApi::class)
-    private fun revalidateInBackground(
-        key: String,
-        block: suspend () -> Unit,
-    ) {
-        synchronized(revalidatingKeys) {
-            if (!revalidatingKeys.add(key)) return
-        }
-
-        GlobalScope.launch(Dispatchers.IO) {
-            try {
-                block()
-            } finally {
-                synchronized(revalidatingKeys) {
-                    revalidatingKeys.remove(key)
-                }
-            }
-        }
     }
 
     private fun withoutDubSuffix(title: String): String {
@@ -1894,23 +1878,24 @@ class AnimeUnity(
         }
 
         val sectionCount = getSectionCount(sectionData.key)
-        val allowStaleCache = shouldUseStaleWhileRevalidate(sectionData.key)
-        val cachedArchivePage = readDiskCache<ArchivePageResult>(cacheKey, allowExpired = allowStaleCache)
-        if (cachedArchivePage != null) {
-            if (allowStaleCache) {
-                revalidateArchiveMainPage(cacheKey, sectionData, page)
-            }
+        val useNetworkFirstCache = shouldUseNetworkFirstHomeCache(sectionData.key)
+        val cachedArchivePage = readDiskCacheRecord<ArchivePageResult>(
+            cacheKey,
+            allowExpired = useNetworkFirstCache,
+        )?.first
+
+        if (cachedArchivePage != null && !useNetworkFirstCache) {
             return buildArchiveHomePageResponse(sectionTitle, cachedArchivePage, sectionCount)
         }
 
-        val archivePage = fetchArchiveMainPageData(sectionData, page, sectionCount)
-        writeDiskCache(
-            key = cacheKey,
-            namespace = AnimeUnityCache.NAMESPACE_HOME,
-            payload = archivePage,
-            ttlMs = getHomeCacheTtlMs(sectionData.key),
-            priority = getHomeCachePriority(sectionData.key),
-        )
+        val archivePage = fetchDataWithCacheFallback(cachedArchivePage) {
+            fetchArchiveMainPageData(sectionData, page, sectionCount)
+        }
+        if (archivePage.titles.isEmpty() && cachedArchivePage != null && cachedArchivePage.titles.isNotEmpty()) {
+            return buildArchiveHomePageResponse(sectionTitle, cachedArchivePage, sectionCount)
+        }
+
+        writeHomeDiskCache(cacheKey, sectionData.key, archivePage)
         return buildArchiveHomePageResponse(sectionTitle, archivePage, sectionCount)
     }
 
@@ -1939,30 +1924,6 @@ class AnimeUnity(
         return fetchArchiveSectionPage(url, requestData, page, sectionCount)
     }
 
-    private fun revalidateArchiveMainPage(
-        cacheKey: String,
-        sectionData: MainPageSectionData,
-        page: Int,
-    ) {
-        val cachedFirstIdentity = readDiskCache<ArchivePageResult>(
-            cacheKey,
-            allowExpired = true,
-        )?.firstIdentity()
-
-        revalidateInBackground(cacheKey) {
-            val freshArchivePage = fetchArchiveMainPageData(sectionData, page)
-            if (freshArchivePage.firstIdentity() != cachedFirstIdentity) {
-                writeDiskCache(
-                    key = cacheKey,
-                    namespace = AnimeUnityCache.NAMESPACE_HOME,
-                    payload = freshArchivePage,
-                    ttlMs = getHomeCacheTtlMs(sectionData.key),
-                    priority = getHomeCachePriority(sectionData.key),
-                )
-            }
-        }
-    }
-
     private suspend fun getLatestEpisodesMainPage(
         page: Int,
         sectionTitle: String,
@@ -1973,23 +1934,19 @@ class AnimeUnity(
             return emptyHomePageResponse(sectionTitle)
         }
 
-        val cachedLatestEpisodes = readDiskCache<List<LatestEpisodeItem>>(
+        val cachedLatestEpisodes = readDiskCacheRecord<List<LatestEpisodeItem>>(
             cacheKey,
             allowExpired = true,
-        )
-        if (cachedLatestEpisodes != null) {
-            revalidateLatestEpisodes(cacheKey)
+        )?.first
+
+        val latestEpisodes = fetchDataWithCacheFallback(cachedLatestEpisodes) {
+            fetchLatestEpisodes()
+        }
+        if (latestEpisodes.isEmpty() && !cachedLatestEpisodes.isNullOrEmpty()) {
             return buildLatestEpisodesHomePageResponse(sectionTitle, cachedLatestEpisodes, sectionCount)
         }
 
-        val latestEpisodes = fetchLatestEpisodes()
-        writeDiskCache(
-            key = cacheKey,
-            namespace = AnimeUnityCache.NAMESPACE_HOME,
-            payload = latestEpisodes,
-            ttlMs = LATEST_CACHE_TTL_MS,
-            priority = getHomeCachePriority(AnimeUnitySections.LATEST),
-        )
+        writeHomeDiskCache(cacheKey, AnimeUnitySections.LATEST, latestEpisodes)
         return buildLatestEpisodesHomePageResponse(sectionTitle, latestEpisodes, sectionCount)
     }
 
@@ -2018,26 +1975,6 @@ class AnimeUnity(
             ?: emptyList()
     }
 
-    private fun revalidateLatestEpisodes(cacheKey: String) {
-        val cachedFirstIdentity = readDiskCache<List<LatestEpisodeItem>>(
-            cacheKey,
-            allowExpired = true,
-        )?.firstIdentity()
-
-        revalidateInBackground(cacheKey) {
-            val freshEpisodes = fetchLatestEpisodes()
-            if (freshEpisodes.firstIdentity() != cachedFirstIdentity) {
-                writeDiskCache(
-                    key = cacheKey,
-                    namespace = AnimeUnityCache.NAMESPACE_HOME,
-                    payload = freshEpisodes,
-                    ttlMs = LATEST_CACHE_TTL_MS,
-                    priority = getHomeCachePriority(AnimeUnitySections.LATEST),
-                )
-            }
-        }
-    }
-
     private suspend fun getCalendarMainPage(
         page: Int,
         sectionTitle: String,
@@ -2058,14 +1995,7 @@ class AnimeUnity(
         }
 
         val calendarAnime = fetchCalendarAnime(requestUrl, currentDay)
-        writeDiskCache(
-            key = cacheKey,
-            namespace = AnimeUnityCache.NAMESPACE_HOME,
-            payload = calendarAnime,
-            ttlMs = DAY_MS,
-            expiresAtMs = getHomeCacheExpirationMs(AnimeUnitySections.CALENDAR),
-            priority = getHomeCachePriority(AnimeUnitySections.CALENDAR),
-        )
+        writeHomeDiskCache(cacheKey, AnimeUnitySections.CALENDAR, calendarAnime)
 
         return buildCalendarHomePageResponse(calendarTitle, calendarAnime, sectionCount)
     }
@@ -2188,33 +2118,32 @@ class AnimeUnity(
     override suspend fun load(url: String): LoadResponse {
         val cacheKeys = loadCacheKeys(url)
         val cacheKey = cacheKeys.first()
-        animeLoadDataCache.get(cacheKey)?.let { cachedLoadData ->
-            return buildAnimeLoadResponse(cachedLoadData)
-        }
-
-        val cachedData = cacheKeys.firstNotNullOfOrNull { candidateKey ->
+        val memoryCachedLoadData = animeLoadDataCache.get(cacheKey)
+        val diskCachedData = cacheKeys.firstNotNullOfOrNull { candidateKey ->
             readDiskCacheRecord<AnimeLoadCacheData>(
                 candidateKey,
                 allowExpired = true,
             )?.let { candidateKey to it }
         }
-        if (cachedData != null) {
-            val (resolvedCacheKey, cachedRecord) = cachedData
-            val (loadData, record) = cachedRecord
-            val isCompleted = getShowStatus(loadData.primaryAnime().status) == ShowStatus.Completed
-            if (!record.isExpired || !isCompleted) {
-                animeLoadDataCache.put(cacheKey, loadData)
-                if (resolvedCacheKey != cacheKey) {
-                    writeAnimeLoadCacheData(cacheKey, loadData)
-                }
-                if (!isCompleted) {
-                    revalidateAnimeLoad(cacheKey, url, loadData)
-                }
-                return buildAnimeLoadResponse(loadData)
+
+        val cachedLoadData = memoryCachedLoadData ?: diskCachedData?.second?.first
+        val isCachedRecordExpired = diskCachedData?.second?.second?.isExpired ?: false
+        val isCachedCompleted = cachedLoadData
+            ?.let { getShowStatus(it.primaryAnime().status) == ShowStatus.Completed }
+            ?: false
+
+        if (cachedLoadData != null && isCachedCompleted && !isCachedRecordExpired) {
+            animeLoadDataCache.put(cacheKey, cachedLoadData)
+            val resolvedCacheKey = diskCachedData?.first
+            if (resolvedCacheKey != null && resolvedCacheKey != cacheKey) {
+                writeAnimeLoadCacheData(cacheKey, cachedLoadData)
             }
+            return buildAnimeLoadResponse(cachedLoadData)
         }
 
-        val loadData = fetchAnimeLoadCacheData(url, forceRefresh = false)
+        val loadData = fetchDataWithCacheFallback(cachedLoadData) {
+            fetchAnimeLoadCacheData(url, forceRefresh = true)
+        }
         writeAnimeLoadCacheData(cacheKey, loadData)
         return buildAnimeLoadResponse(loadData)
     }
@@ -2295,22 +2224,6 @@ class AnimeUnity(
             priority = if (isCompleted) CACHE_PRIORITY_IMPORTANT else CACHE_PRIORITY_DETAIL,
             pinned = true,
         )
-    }
-
-    private fun revalidateAnimeLoad(
-        cacheKey: String,
-        url: String,
-        cachedData: AnimeLoadCacheData,
-    ) {
-        revalidateInBackground(cacheKey) {
-            val freshData = fetchAnimeLoadCacheData(url, forceRefresh = true)
-            if (
-                freshData.totalEpisodeCount() != cachedData.totalEpisodeCount() ||
-                freshData.fingerprint != cachedData.fingerprint
-            ) {
-                writeAnimeLoadCacheData(cacheKey, freshData)
-            }
-        }
     }
 
     private suspend fun buildAnimeLoadResponse(loadData: AnimeLoadCacheData): LoadResponse {
