@@ -32,33 +32,27 @@ val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
 // use an integer for version numbers
-version = 24
-
+version = 1
 
 cloudstream {
-    // All of these properties are optional, you can safely remove them
-
-    description = "Anime from AnimeUnity"
-    authors = listOf("doGior")
+    description = "Lavori in corso."
+    authors = listOf("Italiani")
 
     /**
-    * Status int as the following:
-    * 0: Down
-    * 1: Ok
-    * 2: Slow
-    * 3: Beta only
-    * */
+     * Status int as the following:
+     * 0: Down
+     * 1: Ok
+     * 2: Slow
+     * 3: Beta only
+     * */
     status = 1
-    tvTypes = listOf(
-        "AnimeMovie",
-        "Anime",
-        "OVA",
-    )
 
+    tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie")
+
+    requiresResources = false
     language = "it"
-    requiresResources = true
 
-    iconUrl = "https://www.animeunity.so/apple-touch-icon.png"
+    iconUrl = "https://www.themoviedb.org/favicon.ico"
 }
 
 android {
@@ -74,8 +68,4 @@ android {
             escapeBuildConfigString(buildCompletedAtRome)
         )
     }
-}
-
-dependencies {
-    implementation("com.google.android.material:material:1.12.0")
 }
