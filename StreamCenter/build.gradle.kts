@@ -49,7 +49,7 @@ cloudstream {
 
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie")
 
-    requiresResources = false
+    requiresResources = true
     language = "it"
 
     iconUrl = "https://www.themoviedb.org/favicon.ico"
@@ -68,4 +68,9 @@ android {
             escapeBuildConfigString(buildCompletedAtRome)
         )
     }
+}
+
+dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation("com.google.android.material:material:1.12.0")
 }
