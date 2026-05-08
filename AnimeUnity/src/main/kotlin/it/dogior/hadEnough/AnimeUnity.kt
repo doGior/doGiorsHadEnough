@@ -124,6 +124,8 @@ class AnimeUnity(
         const val bestSectionName = "I migliori"
         const val upcomingSectionName = "In Arrivo"
         const val noEpisodeDescription = "Nessuna descrizione"
+        private const val AUDIO_DUB = "DUB"
+        private const val AUDIO_SUB = "SUB"
         
         var name = "AnimeUnity"
         var headers = mapOf(
@@ -323,6 +325,7 @@ class AnimeUnity(
         val preferredUrl: String,
         val subUrl: String?,
         val dubUrl: String?,
+        val preferredAudio: String? = null,
     )
 
     private data class AnimeLoadCacheData(
@@ -588,7 +591,7 @@ class AnimeUnity(
     }
 
     private fun AnimeLoadCacheData.primaryAnime(): Anime {
-        return subPageData?.anime ?: dubPageData?.anime ?: currentPageData.anime
+        return currentPageData.anime
     }
 
     private fun buildAnimeLoadFingerprint(
@@ -1459,6 +1462,14 @@ class AnimeUnity(
         return malId != null || anilistId != null || kitsuId != null
     }
 
+    private fun normalizeAudioPreference(audio: String?): String? {
+        return when (audio?.trim()?.uppercase(Locale.ROOT)) {
+            AUDIO_DUB -> AUDIO_DUB
+            AUDIO_SUB -> AUDIO_SUB
+            else -> null
+        }
+    }
+
     private fun buildPlayerSourceOptions(playbackData: EpisodePlaybackData): List<PlayerSourceOption> {
         val orderedSources = mutableListOf<PlayerSourceOption>()
         val seenUrls = linkedSetOf<String>()
@@ -1470,19 +1481,31 @@ class AnimeUnity(
             }
         }
 
-        when (playbackData.preferredUrl) {
-            playbackData.dubUrl -> {
+        when (normalizeAudioPreference(playbackData.preferredAudio)) {
+            AUDIO_DUB -> {
                 addSource(playbackData.dubUrl, "[DUB]")
                 addSource(playbackData.subUrl, "[SUB]")
-            }
-            playbackData.subUrl -> {
-                addSource(playbackData.subUrl, "[SUB]")
-                addSource(playbackData.dubUrl, "[DUB]")
-            }
-            else -> {
                 addSource(playbackData.preferredUrl, "[SOURCE]")
-                addSource(playbackData.dubUrl, "[DUB]")
+            }
+            AUDIO_SUB -> {
                 addSource(playbackData.subUrl, "[SUB]")
+                addSource(playbackData.dubUrl, "[DUB]")
+                addSource(playbackData.preferredUrl, "[SOURCE]")
+            }
+            else -> when (playbackData.preferredUrl) {
+                playbackData.dubUrl -> {
+                    addSource(playbackData.dubUrl, "[DUB]")
+                    addSource(playbackData.subUrl, "[SUB]")
+                }
+                playbackData.subUrl -> {
+                    addSource(playbackData.subUrl, "[SUB]")
+                    addSource(playbackData.dubUrl, "[DUB]")
+                }
+                else -> {
+                    addSource(playbackData.preferredUrl, "[SOURCE]")
+                    addSource(playbackData.dubUrl, "[DUB]")
+                    addSource(playbackData.subUrl, "[SUB]")
+                }
             }
         }
 
@@ -1539,6 +1562,7 @@ class AnimeUnity(
         episodes: LinkedHashMap<String, EpisodeSource>,
         subEpisodes: LinkedHashMap<String, EpisodeSource>,
         dubEpisodes: LinkedHashMap<String, EpisodeSource>,
+        preferredAudio: String,
         episodeMetadataIndex: EpisodeMetadataIndex,
         episodeFallbackPosterUrl: String?,
     ): List<com.lagradost.cloudstream3.Episode> {
@@ -1557,6 +1581,7 @@ class AnimeUnity(
                     preferredUrl = source.url,
                     subUrl = subEpisodes[episodeNumber]?.url,
                     dubUrl = dubEpisodes[episodeNumber]?.url,
+                    preferredAudio = preferredAudio,
                 )
                 newEpisode(playbackData) {
                     this.episode = source.number.toIntOrNull()
@@ -2182,7 +2207,7 @@ class AnimeUnity(
             subPageDeferred.await() to dubPageDeferred.await()
         }
 
-        val primaryAnime = subPageData?.anime ?: dubPageData?.anime ?: currentAnime
+        val primaryAnime = currentAnime
         val primaryMalId = primaryAnime.malId ?: variants.firstNotNullOfOrNull { it.malId }
         val primaryAniListId = primaryAnime.anilistId ?: variants.firstNotNullOfOrNull { it.anilistId }
         val (episodeMetadata, trailerUrl) = coroutineScope {
@@ -2268,6 +2293,7 @@ class AnimeUnity(
             episodes = subEpisodeMap,
             subEpisodes = subEpisodeMap,
             dubEpisodes = dubEpisodeMap,
+            preferredAudio = AUDIO_SUB,
             episodeMetadataIndex = episodeMetadataIndex,
             episodeFallbackPosterUrl = episodeFallbackPosterUrl,
         )
@@ -2275,6 +2301,7 @@ class AnimeUnity(
             episodes = dubEpisodeMap,
             subEpisodes = subEpisodeMap,
             dubEpisodes = dubEpisodeMap,
+            preferredAudio = AUDIO_DUB,
             episodeMetadataIndex = episodeMetadataIndex,
             episodeFallbackPosterUrl = episodeFallbackPosterUrl,
         )
@@ -2295,6 +2322,10 @@ class AnimeUnity(
             addScore(primaryAnime.score)
             addDuration(primaryAnime.episodesLength.toString() + " minuti")
             when {
+                hasSub && hasDub && isDubAnime(primaryAnime) -> {
+                    addEpisodes(DubStatus.Dubbed, dubEpisodes)
+                    addEpisodes(DubStatus.Subbed, subEpisodes)
+                }
                 hasSub && hasDub -> {
                     addEpisodes(DubStatus.Subbed, subEpisodes)
                     addEpisodes(DubStatus.Dubbed, dubEpisodes)
@@ -2367,7 +2398,11 @@ class AnimeUnity(
                 }
             }
         }
-        runLimitedAsync(concurrency = 2, *sourceTasks.toTypedArray())
+        if (playerSources.size > 1) {
+            sourceTasks.forEach { it() }
+        } else {
+            runLimitedAsync(concurrency = 1, *sourceTasks.toTypedArray())
+        }
 
         return true
     }

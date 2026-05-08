@@ -9,7 +9,10 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 
-class StreamCenterVixSrcExtractor : ExtractorApi() {
+class StreamCenterVixSrcExtractor(
+    private val sourceName: String = "VixSrc",
+    private val displayName: String = "StreamingCommunity - VixSrc",
+) : ExtractorApi() {
     override val mainUrl = "vixsrc.to"
     override val name = "StreamCenterVixSrc"
     override val requiresReferer = false
@@ -24,8 +27,8 @@ class StreamCenterVixSrcExtractor : ExtractorApi() {
         this.referer = referer
         callback(
             newExtractorLink(
-                source = "VixSrc",
-                name = "StreamingCommunity - VixSrc",
+                source = sourceName,
+                name = displayName,
                 url = getPlaylistLink(url),
                 type = ExtractorLinkType.M3U8,
             ) {

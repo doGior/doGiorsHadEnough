@@ -24,6 +24,7 @@ data class StreamCenterStreamingSource(
     val key: String,
     val title: String,
     val summary: String,
+    val defaultBaseUrl: String,
     val defaultEnabled: Boolean = true,
 )
 
@@ -33,14 +34,17 @@ class StreamCenterPlugin : Plugin() {
         const val PREFS_NAME = "StreamCenter"
         const val PREF_SHOW_HOME_SCORE = "showHomeScore"
         const val PREF_HOME_ORDER = "homeOrder"
+        const val PREF_SOURCE_ORDER = "sourceOrder"
         const val PREF_SOURCE_ANIMEUNITY = "sourceAnimeUnity"
         const val PREF_SOURCE_ANIMEWORLD = "sourceAnimeWorld"
+        const val PREF_SOURCE_ANIMESATURN = "sourceAnimeSaturn"
         const val PREF_SOURCE_HENTAIWORLD = "sourceHentaiWorld"
+        const val PREF_SOURCE_HENTAISATURN = "sourceHentaiSaturn"
         const val PREF_SOURCE_STREAMINGCOMMUNITY = "sourceStreamingCommunity"
 
-        const val DEFAULT_HOME_COUNT = 24
-        const val MIN_HOME_COUNT = 6
-        const val MAX_HOME_COUNT = 60
+        const val DEFAULT_HOME_COUNT = 20
+        const val MIN_HOME_COUNT = 1
+        const val MAX_HOME_COUNT = 20
 
         private const val TMDB_URL = "https://www.themoviedb.org"
 
@@ -115,21 +119,37 @@ class StreamCenterPlugin : Plugin() {
                 key = PREF_SOURCE_STREAMINGCOMMUNITY,
                 title = "StreamingCommunity",
                 summary = "Film e serie TV",
+                defaultBaseUrl = "https://streamingunity.dog/",
             ),
             StreamCenterStreamingSource(
                 key = PREF_SOURCE_ANIMEUNITY,
                 title = "AnimeUnity",
                 summary = "Anime sub/dub tramite ID AniList o MAL",
+                defaultBaseUrl = "https://www.animeunity.so",
             ),
             StreamCenterStreamingSource(
                 key = PREF_SOURCE_ANIMEWORLD,
                 title = "AnimeWorld",
                 summary = "Anime sub/dub tramite ID AniList o MAL",
+                defaultBaseUrl = "https://www.animeworld.ac",
+            ),
+            StreamCenterStreamingSource(
+                key = PREF_SOURCE_ANIMESATURN,
+                title = "AnimeSaturn",
+                summary = "Anime sub/dub tramite ID AniList o MAL",
+                defaultBaseUrl = "https://www.animesaturn.cx",
             ),
             StreamCenterStreamingSource(
                 key = PREF_SOURCE_HENTAIWORLD,
                 title = "HentaiWorld",
                 summary = "Fonte 18+ potrebbe non funzionare sempre",
+                defaultBaseUrl = "https://www.hentaiworld.me",
+            ),
+            StreamCenterStreamingSource(
+                key = PREF_SOURCE_HENTAISATURN,
+                title = "HentaiSaturn",
+                summary = "Fonte 18+ tramite ID AniList o MAL quando disponibile",
+                defaultBaseUrl = "https://www.hentaisaturn.tv",
             ),
         )
 
@@ -143,6 +163,35 @@ class StreamCenterPlugin : Plugin() {
         fun isStreamingSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
             val source = streamingSources.firstOrNull { it.key == prefKey } ?: return true
             return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
+        }
+
+        fun getStreamingSourcesInPriority(sharedPref: SharedPreferences?): List<StreamCenterStreamingSource> {
+            val byKey = streamingSources.associateBy { it.key }
+            val orderedKeys = sharedPref
+                ?.getString(PREF_SOURCE_ORDER, null)
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it in byKey }
+                ?.distinct()
+                .orEmpty()
+            val normalizedOrder = orderedKeys + streamingSources.map { it.key }.filterNot { it in orderedKeys }
+            return normalizedOrder.mapNotNull { byKey[it] }
+        }
+
+        fun getEnabledStreamingSourcesInPriority(sharedPref: SharedPreferences?): List<StreamCenterStreamingSource> {
+            return getStreamingSourcesInPriority(sharedPref).filter {
+                isStreamingSourceEnabled(sharedPref, it.key)
+            }
+        }
+
+        fun getSourceBaseUrl(sharedPref: SharedPreferences?, prefKey: String): String {
+            val source = streamingSources.firstOrNull { it.key == prefKey }
+                ?: return ""
+            return sharedPref
+                ?.getString(sourceUrlKey(prefKey), null)
+                ?.trim()
+                ?.normalizeBaseUrl()
+                ?: source.defaultBaseUrl.normalizeBaseUrl()
         }
 
         fun isHomeSectionEnabled(
@@ -218,8 +267,20 @@ class StreamCenterPlugin : Plugin() {
         fun sectionEnabledKey(sectionKey: String): String = "home_${sectionKey}_enabled"
         fun sectionTitleKey(sectionKey: String): String = "home_${sectionKey}_title"
         fun sectionCountKey(sectionKey: String): String = "home_${sectionKey}_count"
+        fun sourceUrlKey(sourceKey: String): String = "${sourceKey}_baseUrl"
 
         fun defaultHomeOrder(): String = homeSections.joinToString(",") { it.key }
+        fun defaultSourceOrder(): String = streamingSources.joinToString(",") { it.key }
+
+        private fun String.normalizeBaseUrl(): String {
+            val cleaned = trim()
+            val withScheme = if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
+                cleaned
+            } else {
+                "https://$cleaned"
+            }
+            return withScheme.trimEnd('/')
+        }
 
         fun getDefaultHomeSectionTitle(sectionKey: String): String {
             return when (sectionKey) {

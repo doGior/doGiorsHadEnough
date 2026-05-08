@@ -3,12 +3,14 @@ package it.dogior.hadEnough
 import android.content.SharedPreferences
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
+import com.lagradost.cloudstream3.ActorRole
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addAniListId
+import com.lagradost.cloudstream3.LoadResponse.Companion.addDuration
 import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
@@ -97,12 +99,23 @@ class StreamCenter(
     private val anilistGraphqlUrl = "https://graphql.anilist.co"
     private val anilistSectionPrefix = "anilist:"
     private val anilistOnlyPath = "/anilist/"
-    private val animeUnityUrl = "https://www.animeunity.so"
-    private val animeWorldUrl = "https://www.animeworld.ac"
-    private val hentaiWorldUrl = "https://www.hentaiworld.me"
+    private val animeUnityUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
+    private val animeWorldUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)
+    private val animeSaturnUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)
+    private val hentaiWorldUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_HENTAIWORLD)
+    private val hentaiSaturnUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_HENTAISATURN)
     private val animeListMappingUrl = "https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json"
-    private val streamingCommunityRootUrl = "https://streamingunity.dog/"
-    private val streamingCommunityMainUrl = "${streamingCommunityRootUrl}it"
+    private val streamingCommunityRootUrl: String
+        get() = StreamCenterPlugin
+            .getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
+            .trimEnd('/') + "/"
+    private val streamingCommunityMainUrl: String
+        get() = "${streamingCommunityRootUrl}it"
     private val anilistHomePageSize = 24
     private val headers = mapOf(
         "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.5,en;q=0.3",
@@ -112,8 +125,7 @@ class StreamCenter(
         "Accept" to "application/json",
         "Content-Type" to "application/json;charset=utf-8",
     )
-    private val animeUnityHeaders = mutableMapOf(
-        "Host" to "www.animeunity.so",
+    private val animeUnitySessionHeaders = mutableMapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
     )
     private var streamingCommunityInertiaVersion = ""
@@ -166,6 +178,7 @@ class StreamCenter(
         val showHomeScores = StreamCenterPlugin.shouldShowHomeScore(sharedPref)
         val limit = StreamCenterPlugin.getHomeSectionCount(sharedPref, request.data)
         val isAnimeSection = isAnimeSection(request.data)
+        val isTvCalendarSection = isTmdbTvCalendarSection(request.data)
         val doc = getTmdbDocument(request.data, page = page, cacheProfile = TmdbCacheProfile.Home)
         val items = parseMediaCards(
             doc = doc,
@@ -173,6 +186,8 @@ class StreamCenter(
             excludeAnime = !isAnimeSection,
             fetchMissingScores = showHomeScores,
             showScores = showHomeScores,
+            maxItems = limit,
+            includeTvCalendarEpisode = isTvCalendarSection,
         )
         return newHomePageResponse(
             HomePageList(
@@ -242,9 +257,12 @@ class StreamCenter(
         val resolvedSources = resolveLoadSources(metadata, isTvSeries, isAnime, animeSyncIds)
         val anilistMetadata = resolvedSources.anilistMetadata
         val myAnimeListMetadata = resolvedSources.myAnimeListMetadata
+        val aniZipMetadata = resolvedSources.aniZipMetadata
         val animeUnitySources = resolvedSources.animeUnitySources
         val animeWorldSources = resolvedSources.animeWorldSources
+        val animeSaturnSources = resolvedSources.animeSaturnSources
         val hentaiWorldSources = resolvedSources.hentaiWorldSources
+        val hentaiSaturnSources = resolvedSources.hentaiSaturnSources
         val streamingCommunityTitle = resolvedSources.streamingCommunityTitle
         val typeTags = if (isAnime) listOf("Anime") else emptyList()
         val tags = (typeTags + metadata.tags).distinctBy { it.lowercase(Locale.ROOT) }
@@ -264,23 +282,30 @@ class StreamCenter(
                 actualUrl = actualUrl,
                 animeUnitySources = animeUnitySources,
                 animeWorldSources = animeWorldSources,
+                animeSaturnSources = animeSaturnSources,
                 hentaiWorldSources = hentaiWorldSources,
+                hentaiSaturnSources = hentaiSaturnSources,
                 targetSeason = selectedSeason,
                 streamingCommunityEpisodes = streamingCommunityEpisodes,
+                aniZipMetadata = if (isAnime) aniZipMetadata else null,
             )
             val animeSourceEpisodes = if (isAnime && animeSelection != null) {
                 buildAnimeSourceEpisodes(
                     animeUnitySources = animeUnitySources,
                     animeWorldSources = animeWorldSources,
+                    animeSaturnSources = animeSaturnSources,
                     hentaiWorldSources = hentaiWorldSources,
+                    hentaiSaturnSources = hentaiSaturnSources,
                     seasonNumber = animeSelection.displaySeason ?: selectedSeason,
                     tmdbEpisodes = tmdbEpisodes,
+                    aniZipMetadata = aniZipMetadata,
                 )
             } else {
                 emptyList()
             }
             val episodes = animeSourceEpisodes.ifEmpty { tmdbEpisodes }
             val primarySyncIds = pickPrimaryAnimeSyncIds(animeSyncIds)
+            val hasDubSources = hasAnimeDubSources(animeUnitySources, animeWorldSources, animeSaturnSources)
 
             if (isAnime) {
                 newAnimeLoadResponse(
@@ -298,7 +323,11 @@ class StreamCenter(
                     this.contentRating = metadata.contentRating
                     this.showStatus = metadata.showStatus
                     this.comingSoon = metadata.comingSoon
+                    metadata.duration?.let { addDuration("$it minuti") }
                     addEpisodes(DubStatus.Subbed, episodes)
+                    if (hasDubSources) {
+                        addEpisodes(DubStatus.Dubbed, episodes)
+                    }
                     addSeasonNames(buildAnimeSeasonData(episodes))
                     metadata.tmdbId?.let { addTMDbId(it) }
                     primarySyncIds?.anilistId?.let { addAniListId(it) }
@@ -333,7 +362,9 @@ class StreamCenter(
                 tmdbUrl = actualUrl,
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
+                animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 hentaiWorld = hentaiWorldSources.flatMap { it.firstPlaybacks() },
+                hentaiSaturn = hentaiSaturnSources.flatMap { it.firstPlaybacks() },
                 streamingCommunity = streamingCommunityTitle?.toStreamingCommunityMoviePlayback(),
             )
             val primarySyncIds = animeSyncIds.firstOrNull()
@@ -380,9 +411,12 @@ class StreamCenter(
         if (isAnime) {
             val useAnimeUnity = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
             val useAnimeWorld = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)
+            val useAnimeSaturn = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)
             val useHentaiWorld = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAIWORLD)
+            val useHentaiSaturn = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAISATURN)
             val anilistDeferred = async(Dispatchers.IO) { fetchAnilistMetadataSafely(animeSyncIds) }
             val myAnimeListDeferred = async(Dispatchers.IO) { fetchMyAnimeListMetadata(animeSyncIds) }
+            val aniZipDeferred = async(Dispatchers.IO) { fetchAniZipMetadata(animeSyncIds) }
             val animeUnityDeferred = if (useAnimeUnity) {
                 async(Dispatchers.IO) { fetchAnimeUnitySources(metadata, animeSyncIds) }
             } else {
@@ -396,9 +430,23 @@ class StreamCenter(
             } else {
                 null
             }
+            val animeSaturnDeferred = if (useAnimeSaturn) {
+                async(Dispatchers.IO) {
+                    fetchAnimeSaturnSources(metadata, anilistMetadata, animeSyncIds)
+                }
+            } else {
+                null
+            }
             val hentaiWorldDeferred = if (useHentaiWorld) {
                 async(Dispatchers.IO) {
                     fetchHentaiWorldSources(metadata, anilistMetadata)
+                }
+            } else {
+                null
+            }
+            val hentaiSaturnDeferred = if (useHentaiSaturn) {
+                async(Dispatchers.IO) {
+                    fetchHentaiSaturnSources(metadata, anilistMetadata, animeSyncIds)
                 }
             } else {
                 null
@@ -407,9 +455,12 @@ class StreamCenter(
             ResolvedLoadSources(
                 anilistMetadata = anilistMetadata,
                 myAnimeListMetadata = myAnimeListDeferred.await(),
+                aniZipMetadata = aniZipDeferred.await(),
                 animeUnitySources = animeUnityDeferred?.await().orEmpty(),
                 animeWorldSources = animeWorldDeferred?.await().orEmpty(),
+                animeSaturnSources = animeSaturnDeferred?.await().orEmpty(),
                 hentaiWorldSources = hentaiWorldDeferred?.await().orEmpty(),
+                hentaiSaturnSources = hentaiSaturnDeferred?.await().orEmpty(),
             )
         } else {
             if (!isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)) {
@@ -430,12 +481,12 @@ class StreamCenter(
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
         val playbackData = runCatching { parseJson<StreamCenterPlaybackData>(data) }.getOrNull()
-        val sourceTasks = mutableListOf<suspend () -> Boolean>()
+        val sourceTasks = mutableListOf<StreamCenterSourceTask>()
 
         playbackData?.animeUnity
             ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) }
             ?.let { animeUnityPlayback ->
-                sourceTasks += {
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) {
                     loadAnimeUnityLinks(
                         playbackData = animeUnityPlayback,
                         subtitleCallback = subtitleCallback,
@@ -446,7 +497,7 @@ class StreamCenter(
 
         if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) {
             playbackData?.animeWorld.orEmpty().forEach { animeWorldPlayback ->
-                sourceTasks += {
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD) {
                     loadAnimeWorldLink(
                         playbackData = animeWorldPlayback,
                         subtitleCallback = subtitleCallback,
@@ -456,11 +507,39 @@ class StreamCenter(
             }
         }
 
+        if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) {
+            playbackData?.animeSaturn.orEmpty().forEach { animeSaturnPlayback ->
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN) {
+                    loadSaturnLink(
+                        source = "AnimeSaturn",
+                        baseUrl = animeSaturnUrl,
+                        cacheProfile = TmdbCacheProfile.AnimeSaturnPlayer,
+                        playbackData = animeSaturnPlayback,
+                        callback = callback,
+                    )
+                }
+            }
+        }
+
         if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAIWORLD)) {
             playbackData?.hentaiWorld.orEmpty().forEach { hentaiWorldPlayback ->
-                sourceTasks += {
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_HENTAIWORLD) {
                     loadHentaiWorldLink(
                         playbackData = hentaiWorldPlayback,
+                        callback = callback,
+                    )
+                }
+            }
+        }
+
+        if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAISATURN)) {
+            playbackData?.hentaiSaturn.orEmpty().forEach { hentaiSaturnPlayback ->
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_HENTAISATURN) {
+                    loadSaturnLink(
+                        source = "HentaiSaturn",
+                        baseUrl = hentaiSaturnUrl,
+                        cacheProfile = TmdbCacheProfile.HentaiSaturnPlayer,
+                        playbackData = hentaiSaturnPlayback,
                         callback = callback,
                     )
                 }
@@ -470,7 +549,7 @@ class StreamCenter(
         playbackData?.streamingCommunity
             ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) }
             ?.let { streamingCommunityPlayback ->
-                sourceTasks += {
+                sourceTasks += StreamCenterSourceTask(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) {
                     loadStreamingCommunityLinks(
                         playbackData = streamingCommunityPlayback,
                         subtitleCallback = subtitleCallback,
@@ -479,7 +558,24 @@ class StreamCenter(
                 }
             }
 
-        return runParallelSourceTasks(sourceTasks)
+        return runPrioritizedSourceTasks(sourceTasks)
+    }
+
+    private suspend fun runPrioritizedSourceTasks(tasks: List<StreamCenterSourceTask>): Boolean {
+        if (tasks.isEmpty()) return false
+        val sourceOrder = StreamCenterPlugin.getEnabledStreamingSourcesInPriority(sharedPref).map { it.key }
+        var foundAny = false
+        sourceOrder.forEach { sourceKey ->
+            val group = tasks.filter { it.sourceKey == sourceKey }.map { it.task }
+            if (group.isNotEmpty()) {
+                foundAny = runParallelSourceTasks(group) || foundAny
+            }
+        }
+        val remaining = tasks.filter { task -> sourceOrder.none { it == task.sourceKey } }.map { it.task }
+        if (remaining.isNotEmpty()) {
+            foundAny = runParallelSourceTasks(remaining) || foundAny
+        }
+        return foundAny
     }
 
     private suspend fun runParallelSourceTasks(tasks: List<suspend () -> Boolean>): Boolean {
@@ -528,9 +624,18 @@ class StreamCenter(
         val resolvedSources = coroutineScope {
             val useAnimeUnity = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
             val useAnimeWorld = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)
+            val useAnimeSaturn = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)
             val useHentaiWorld = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAIWORLD)
+            val useHentaiSaturn = isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_HENTAISATURN)
             val myAnimeListDeferred = async(Dispatchers.IO) {
                 metadata.malId?.let { fetchMyAnimeListMetadata(fallbackSyncIds) }
+            }
+            val aniZipDeferred = async(Dispatchers.IO) {
+                fetchAniZipMetadata(
+                    syncIds = sourceSyncIds,
+                    anilistId = metadata.anilistId,
+                    malId = metadata.malId,
+                )
             }
             val animeUnityDeferred = if (useAnimeUnity) {
                 async(Dispatchers.IO) {
@@ -546,9 +651,23 @@ class StreamCenter(
             } else {
                 null
             }
+            val animeSaturnDeferred = if (useAnimeSaturn) {
+                async(Dispatchers.IO) {
+                    fetchAnimeSaturnSources(streamCenterMetadata, anilistMetadata, sourceSyncIds)
+                }
+            } else {
+                null
+            }
             val hentaiWorldDeferred = if (useHentaiWorld) {
                 async(Dispatchers.IO) {
                     fetchHentaiWorldSources(streamCenterMetadata, anilistMetadata)
+                }
+            } else {
+                null
+            }
+            val hentaiSaturnDeferred = if (useHentaiSaturn) {
+                async(Dispatchers.IO) {
+                    fetchHentaiSaturnSources(streamCenterMetadata, anilistMetadata, sourceSyncIds)
                 }
             } else {
                 null
@@ -557,22 +676,30 @@ class StreamCenter(
             ResolvedLoadSources(
                 anilistMetadata = anilistMetadata,
                 myAnimeListMetadata = myAnimeListDeferred.await(),
+                aniZipMetadata = aniZipDeferred.await(),
                 animeUnitySources = animeUnityDeferred?.await().orEmpty(),
                 animeWorldSources = animeWorldDeferred?.await().orEmpty(),
+                animeSaturnSources = animeSaturnDeferred?.await().orEmpty(),
                 hentaiWorldSources = hentaiWorldDeferred?.await().orEmpty(),
+                hentaiSaturnSources = hentaiSaturnDeferred?.await().orEmpty(),
             )
         }
         val myAnimeListMetadata = resolvedSources.myAnimeListMetadata
+        val aniZipMetadata = resolvedSources.aniZipMetadata
         val animeUnitySources = resolvedSources.animeUnitySources
         val animeWorldSources = resolvedSources.animeWorldSources
+        val animeSaturnSources = resolvedSources.animeSaturnSources
         val hentaiWorldSources = resolvedSources.hentaiWorldSources
+        val hentaiSaturnSources = resolvedSources.hentaiSaturnSources
         val sourceUrl = "$mainUrl${anilistOnlyPath}${metadata.anilistId}"
 
         return if (isMovie) {
             val playbackData = StreamCenterPlaybackData(
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
+                animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 hentaiWorld = hentaiWorldSources.flatMap { it.firstPlaybacks() },
+                hentaiSaturn = hentaiSaturnSources.flatMap { it.firstPlaybacks() },
             )
             newMovieLoadResponse(
                 metadata.title,
@@ -587,6 +714,9 @@ class StreamCenter(
                 this.year = metadata.year
                 this.duration = metadata.duration
                 this.actors = myAnimeListMetadata?.characters.orEmpty()
+                this.recommendations = metadata.recommendations
+                this.contentRating = if (metadata.isAdult) "18+" else null
+                this.comingSoon = metadata.status == "NOT_YET_RELEASED"
                 metadata.malId?.let { addMalId(it) }
                 addAniListId(metadata.anilistId)
                 myAnimeListMetadata?.trailerUrl?.let { addTrailer(it) }
@@ -596,12 +726,16 @@ class StreamCenter(
             val episodes = buildAnimeSourceEpisodes(
                 animeUnitySources = animeUnitySources,
                 animeWorldSources = animeWorldSources,
+                animeSaturnSources = animeSaturnSources,
                 hentaiWorldSources = hentaiWorldSources,
+                hentaiSaturnSources = hentaiSaturnSources,
                 seasonNumber = null,
                 tmdbEpisodes = emptyList(),
+                aniZipMetadata = aniZipMetadata,
             ).ifEmpty {
-                buildAnilistFallbackEpisodes(metadata)
+                buildAnilistFallbackEpisodes(metadata, aniZipMetadata)
             }
+            val hasDubSources = hasAnimeDubSources(animeUnitySources, animeWorldSources, animeSaturnSources)
             newAnimeLoadResponse(
                 metadata.title,
                 sourceUrl,
@@ -613,9 +747,15 @@ class StreamCenter(
                 this.tags = listOf("Anime") + metadata.tags
                 this.year = metadata.year
                 this.actors = myAnimeListMetadata?.characters.orEmpty()
+                this.recommendations = metadata.recommendations
+                this.contentRating = if (metadata.isAdult) "18+" else null
                 this.showStatus = mapAnilistShowStatus(metadata.status)
                 this.comingSoon = metadata.status == "NOT_YET_RELEASED"
+                metadata.duration?.let { addDuration("$it minuti") }
                 addEpisodes(DubStatus.Subbed, episodes)
+                if (hasDubSources) {
+                    addEpisodes(DubStatus.Dubbed, episodes)
+                }
                 addSeasonNames(buildAnimeSeasonData(episodes))
                 metadata.malId?.let { addMalId(it) }
                 addAniListId(metadata.anilistId)
@@ -714,6 +854,17 @@ class StreamCenter(
         val title: String,
         val poster: String?,
         val score: String?,
+        val calendarEpisode: Int? = null,
+    )
+
+    private data class TmdbCalendarEpisode(
+        val label: String,
+        val episodeNumber: Int?,
+    )
+
+    private data class TmdbCalendarCardMetadata(
+        val score: String?,
+        val episode: TmdbCalendarEpisode?,
     )
 
     private data class AnilistMetadata(
@@ -737,12 +888,30 @@ class StreamCenter(
         val duration: Int?,
         val episodes: Int?,
         val status: String?,
+        val isAdult: Boolean,
         val tags: List<String>,
+        val recommendations: List<SearchResponse>,
     )
 
     private data class MyAnimeListMetadata(
         val trailerUrl: String?,
         val characters: List<ActorData>,
+    )
+
+    private data class AniZipMetadata(
+        val fallbackPoster: String?,
+        val episodes: Map<Int, AniZipEpisodeMetadata>,
+    ) {
+        fun episode(number: Int?): AniZipEpisodeMetadata? = number?.let(episodes::get)
+    }
+
+    private data class AniZipEpisodeMetadata(
+        val title: String?,
+        val overview: String?,
+        val image: String?,
+        val runtime: Int?,
+        val score: Score?,
+        val airDate: String?,
     )
 
     private data class AnilistSeason(
@@ -757,6 +926,7 @@ class StreamCenter(
         Search(12L * 60L * 60L * 1000L),
         Detail(7L * 24L * 60L * 60L * 1000L),
         Seasons(24L * 60L * 60L * 1000L),
+        TvCalendarEpisode(12L * 60L * 60L * 1000L),
         Recommendations(7L * 24L * 60L * 60L * 1000L),
         AnilistHome(12L * 60L * 60L * 1000L),
         AnilistSearch(12L * 60L * 60L * 1000L),
@@ -769,9 +939,15 @@ class StreamCenter(
         AnimeWorldSearch(24L * 60L * 60L * 1000L),
         AnimeWorldDetail(24L * 60L * 60L * 1000L),
         AnimeWorldPlayer(60L * 60L * 1000L),
+        AnimeSaturnSearch(24L * 60L * 60L * 1000L),
+        AnimeSaturnDetail(24L * 60L * 60L * 1000L),
+        AnimeSaturnPlayer(60L * 60L * 1000L),
         HentaiWorldSearch(24L * 60L * 60L * 1000L),
         HentaiWorldDetail(24L * 60L * 60L * 1000L),
         HentaiWorldPlayer(60L * 60L * 1000L),
+        HentaiSaturnSearch(24L * 60L * 60L * 1000L),
+        HentaiSaturnDetail(24L * 60L * 60L * 1000L),
+        HentaiSaturnPlayer(60L * 60L * 1000L),
         TmdbScore(7L * 24L * 60L * 60L * 1000L),
         StreamingCommunitySession(24L * 60L * 60L * 1000L),
         StreamingCommunitySearch(6L * 60L * 60L * 1000L),
@@ -928,16 +1104,26 @@ class StreamCenter(
         val tmdbUrl: String? = null,
         val animeUnity: AnimeUnityPlaybackData? = null,
         val animeWorld: List<AnimeWorldPlaybackData> = emptyList(),
+        val animeSaturn: List<SaturnPlaybackData> = emptyList(),
         val hentaiWorld: List<HentaiWorldPlaybackData> = emptyList(),
+        val hentaiSaturn: List<SaturnPlaybackData> = emptyList(),
         val streamingCommunity: StreamingCommunityPlaybackData? = null,
+    )
+
+    private data class StreamCenterSourceTask(
+        val sourceKey: String,
+        val task: suspend () -> Boolean,
     )
 
     private data class ResolvedLoadSources(
         val anilistMetadata: AnilistMetadata? = null,
         val myAnimeListMetadata: MyAnimeListMetadata? = null,
+        val aniZipMetadata: AniZipMetadata? = null,
         val animeUnitySources: List<AnimeUnityTitleSources> = emptyList(),
         val animeWorldSources: List<AnimeWorldTitleSources> = emptyList(),
+        val animeSaturnSources: List<SaturnTitleSources> = emptyList(),
         val hentaiWorldSources: List<HentaiWorldTitleSources> = emptyList(),
+        val hentaiSaturnSources: List<SaturnTitleSources> = emptyList(),
         val streamingCommunityTitle: StreamingCommunityTitle? = null,
     )
 
@@ -955,6 +1141,12 @@ class StreamCenter(
 
     private data class HentaiWorldPlaybackData(
         val watchUrl: String,
+    )
+
+    private data class SaturnPlaybackData(
+        val label: String,
+        val episodeUrl: String,
+        val watchUrl: String? = null,
     )
 
     private data class StreamingCommunityTitle(
@@ -1063,6 +1255,19 @@ class StreamCenter(
         val title: String,
     )
 
+    private data class SaturnSearchItem(
+        val url: String,
+        val title: String,
+        val isDub: Boolean,
+    )
+
+    private data class SaturnPageData(
+        val searchItem: SaturnSearchItem,
+        val anilistId: Int?,
+        val malId: Int?,
+        val episodeSources: Map<String, SaturnPlaybackData>,
+    )
+
     private data class HentaiWorldTitleSources(
         val sources: Map<String, HentaiWorldPlaybackData>,
     ) {
@@ -1078,6 +1283,31 @@ class StreamCenter(
 
         fun episodeNumbers(): List<String> {
             return sources.keys
+                .distinct()
+                .sortedWith(compareBy({ it.toDoubleOrNull() ?: Double.POSITIVE_INFINITY }, { it }))
+        }
+    }
+
+    private data class SaturnTitleSources(
+        val syncIds: AnimeSyncIds?,
+        val subSources: Map<String, SaturnPlaybackData>,
+        val dubSources: Map<String, SaturnPlaybackData> = emptyMap(),
+    ) {
+        fun playbacksForEpisode(number: String?): List<SaturnPlaybackData> {
+            val normalizedNumber = normalizeAnimeUnityEpisodeNumber(number) ?: return emptyList()
+            val sources = mutableListOf<SaturnPlaybackData>()
+            subSources[normalizedNumber]?.let(sources::add)
+            dubSources[normalizedNumber]?.let(sources::add)
+            return sources.distinctBy { "${it.label}:${it.episodeUrl}:${it.watchUrl}" }
+        }
+
+        fun firstPlaybacks(): List<SaturnPlaybackData> {
+            val firstNumber = episodeNumbers().firstOrNull() ?: return emptyList()
+            return playbacksForEpisode(firstNumber)
+        }
+
+        fun episodeNumbers(): List<String> {
+            return (subSources.keys + dubSources.keys)
                 .distinct()
                 .sortedWith(compareBy({ it.toDoubleOrNull() ?: Double.POSITIVE_INFINITY }, { it }))
         }
@@ -1366,6 +1596,7 @@ class StreamCenter(
                     status
                     episodes
                     duration
+                    isAdult
                     description(asHtml: false)
                     genres
                     startDate {
@@ -1383,6 +1614,28 @@ class StreamCenter(
                     }
                     bannerImage
                     averageScore
+                    recommendations {
+                        edges {
+                            node {
+                                mediaRecommendation {
+                                    id
+                                    idMal
+                                    format
+                                    title {
+                                        userPreferred
+                                        english
+                                        romaji
+                                        native
+                                    }
+                                    coverImage {
+                                        extraLarge
+                                        large
+                                    }
+                                    averageScore
+                                }
+                            }
+                        }
+                    }
                 }
             }
         """.trimIndent()
@@ -1533,6 +1786,7 @@ class StreamCenter(
                         airingAt_lesser: ${'$'}end,
                         sort: TIME
                     ) {
+                        episode
                         media {
                             id
                             idMal
@@ -1597,7 +1851,8 @@ class StreamCenter(
                         ?: continue
                     val format = mediaJson.optNullableString("format") ?: continue
                     if (format !in section.formats) continue
-                    val item = mediaJson.toAnilistMedia() ?: continue
+                    val episode = schedules.optJSONObject(index)?.optNullableInt("episode")
+                    val item = mediaJson.toAnilistMedia(calendarEpisode = episode) ?: continue
                     if (seen.add(item.anilistId)) {
                         add(item)
                     }
@@ -1608,7 +1863,7 @@ class StreamCenter(
         }.getOrDefault(emptyList<AnilistMedia>() to false)
     }
 
-    private fun JSONObject.toAnilistMedia(): AnilistMedia? {
+    private fun JSONObject.toAnilistMedia(calendarEpisode: Int? = null): AnilistMedia? {
         val anilistId = optNullableInt("id") ?: return null
         val titleJson = optJSONObject("title")
         val title = titleJson?.let { title ->
@@ -1631,6 +1886,7 @@ class StreamCenter(
             title = title,
             poster = cover,
             score = optNullableInt("averageScore")?.toDecimalScore(),
+            calendarEpisode = calendarEpisode?.takeIf { it > 0 },
         )
     }
 
@@ -1671,8 +1927,32 @@ class StreamCenter(
             duration = optNullableInt("duration"),
             episodes = optNullableInt("episodes"),
             status = optNullableString("status"),
+            isAdult = optBoolean("isAdult", false),
             tags = genres,
+            recommendations = parseAnilistRecommendations(),
         )
+    }
+
+    private fun JSONObject.parseAnilistRecommendations(): List<SearchResponse> {
+        val edges = optJSONObject("recommendations")
+            ?.optJSONArray("edges")
+            ?: return emptyList()
+
+        return buildList {
+            for (index in 0 until edges.length()) {
+                val media = edges
+                    .optJSONObject(index)
+                    ?.optJSONObject("node")
+                    ?.optJSONObject("mediaRecommendation")
+                    ?.toAnilistMedia()
+                    ?: continue
+                add(
+                    media.toAnilistOnlySearchResponse(
+                        tvType = if (media.isMovieFormat()) TvType.AnimeMovie else TvType.Anime,
+                    )
+                )
+            }
+        }.distinctBy { it.url }
     }
 
     private suspend fun fetchAnilistMetadata(syncIds: List<AnimeSyncIds>): AnilistMetadata? {
@@ -1782,6 +2062,109 @@ class StreamCenter(
         return metadata.also { myAnimeListMetadataMemoryCache[cacheKey] = it }
     }
 
+    private suspend fun fetchAniZipMetadata(
+        syncIds: List<AnimeSyncIds>,
+        anilistId: Int? = null,
+        malId: Int? = null,
+    ): AniZipMetadata? {
+        val candidates = buildList {
+            anilistId?.let { add("anilist_id" to it.toString()) }
+            malId?.let { add("mal_id" to it.toString()) }
+            syncIds.forEach { syncId ->
+                syncId.anilistId?.let { add("anilist_id" to it.toString()) }
+                syncId.malId?.let { add("mal_id" to it.toString()) }
+            }
+        }.distinct()
+
+        for ((key, value) in candidates) {
+            val cacheKey = "ANIZIP:$key:$value"
+            aniZipMetadataMemoryCache[cacheKey]?.let { return it }
+            val metadata = runCatching {
+                val text = getCachedText(cacheKey, TmdbCacheProfile.AnimeMappings) {
+                    app.get(
+                        "https://api.ani.zip/mappings?$key=$value",
+                        headers = mapOf("Accept" to "application/json"),
+                        cacheTime = TmdbCacheProfile.AnimeMappings.cacheMinutes,
+                        cacheUnit = TimeUnit.MINUTES,
+                    ).text
+                }
+                parseAniZipMetadata(text)
+            }.getOrNull()
+
+            if (metadata != null) {
+                aniZipMetadataMemoryCache[cacheKey] = metadata
+                return metadata
+            }
+        }
+
+        return null
+    }
+
+    private fun parseAniZipMetadata(text: String?): AniZipMetadata? {
+        if (text.isNullOrBlank()) return null
+        return runCatching {
+            val root = JSONObject(text)
+            val fallbackPoster = root.optJSONArray("images")?.preferredAniZipImage()
+            val episodesJson = root.optJSONObject("episodes") ?: return@runCatching null
+            val episodes = mutableMapOf<Int, AniZipEpisodeMetadata>()
+
+            episodesJson.keys().forEach { key ->
+                val episodeJson = episodesJson.optJSONObject(key) ?: return@forEach
+                val episodeNumber = episodeJson.optNullableString("episode")?.toEpisodeNumber()
+                    ?: key.toEpisodeNumber()
+                    ?: return@forEach
+                val runtime = episodeJson.optNullableInt("runtime")
+                    ?: episodeJson.optNullableInt("length")
+                episodes[episodeNumber] = AniZipEpisodeMetadata(
+                    title = episodeJson.optJSONObject("title")?.preferredAniZipText(),
+                    overview = cleanText(episodeJson.optNullableString("overview")),
+                    image = episodeJson.optNullableString("image"),
+                    runtime = runtime,
+                    score = episodeJson.optNullableString("rating")?.toAniZipScore(),
+                    airDate = episodeJson.optNullableString("airdate"),
+                )
+            }
+
+            AniZipMetadata(
+                fallbackPoster = fallbackPoster,
+                episodes = episodes,
+            ).takeIf { it.episodes.isNotEmpty() || it.fallbackPoster != null }
+        }.getOrNull()
+    }
+
+    private fun JSONArray.preferredAniZipImage(): String? {
+        val images = buildList {
+            for (index in 0 until length()) {
+                optJSONObject(index)?.let(::add)
+            }
+        }
+        return images.firstNotNullOfOrNull { image ->
+            image.takeIf { it.optNullableString("coverType").equals("Poster", ignoreCase = true) }
+                ?.optNullableString("url")
+        } ?: images.firstNotNullOfOrNull { it.optNullableString("url") }
+    }
+
+    private fun JSONObject.preferredAniZipText(): String? {
+        return listOf("it", "en", "x-jat", "ja", "jp", "romaji")
+            .firstNotNullOfOrNull { key -> optNullableString(key) }
+            ?: keys().asSequence()
+                .mapNotNull { key -> optNullableString(key) }
+                .firstOrNull()
+    }
+
+    private fun String.toEpisodeNumber(): Int? {
+        val numeric = trim().replace(',', '.').toDoubleOrNull() ?: return null
+        val whole = numeric.toInt()
+        return whole.takeIf { numeric == whole.toDouble() }
+    }
+
+    private fun String.toAniZipScore(): Score? {
+        return trim()
+            .replace(',', '.')
+            .takeIf(String::isNotBlank)
+            ?.let { Score.from10(it) }
+    }
+
     private suspend fun fetchJikanText(url: String, cacheKey: String): String? {
         return runCatching {
             getCachedText(cacheKey, TmdbCacheProfile.MyAnimeListDetail) {
@@ -1832,13 +2215,20 @@ class StreamCenter(
                     val character = item.optJSONObject("character") ?: continue
                     val name = character.optNullableString("name") ?: continue
                     val image = character.optJSONObject("images")?.preferredJikanImage()
-                    val voiceActor = item.optJSONArray("voice_actors")?.preferredJikanVoiceActorName()
+                    val voiceActor = item.optJSONArray("voice_actors")?.preferredJikanVoiceActor()
                     val role = item.optNullableString("role")?.toJikanRoleLabel()
-                    val roleString = listOfNotNull(role, voiceActor?.let { "Voce: $it" })
-                        .joinToString(" | ")
+                    val roleString = listOfNotNull(role, voiceActor?.name?.let { "Voce: $it" })
+                        .joinToString(" ")
                         .takeIf(String::isNotBlank)
 
-                    add(ActorData(Actor(name, image), roleString = roleString))
+                    add(
+                        ActorData(
+                            Actor(name, image),
+                            role = item.optNullableString("role")?.toJikanActorRole(),
+                            roleString = roleString,
+                            voiceActor = voiceActor,
+                        )
+                    )
                 }
             }.distinctBy { it.actor.name }
         }.getOrDefault(emptyList())
@@ -1852,20 +2242,25 @@ class StreamCenter(
         }
     }
 
-    private fun JSONArray.preferredJikanVoiceActorName(): String? {
+    private fun JSONArray.preferredJikanVoiceActor(): Actor? {
         for (index in 0 until length()) {
             val voiceActor = optJSONObject(index) ?: continue
             if (!voiceActor.optNullableString("language").equals("Japanese", ignoreCase = true)) continue
-            return voiceActor.optJSONObject("person")?.optNullableString("name")
+            return voiceActor.optJSONObject("person")?.toJikanActor()
         }
 
-        return optJSONObject(0)?.optJSONObject("person")?.optNullableString("name")
+        return optJSONObject(0)?.optJSONObject("person")?.toJikanActor()
+    }
+
+    private fun JSONObject.toJikanActor(): Actor? {
+        val name = optNullableString("name") ?: return null
+        return Actor(name, optJSONObject("images")?.preferredJikanImage())
     }
 
     private fun String.toJikanRoleLabel(): String? {
         return when (lowercase(Locale.ROOT)) {
-            "main" -> "Personaggio principale"
-            "supporting" -> "Personaggio secondario"
+            "main" -> "Principale"
+            "supporting" -> "Secondario"
             else -> null
         }
     }
@@ -1905,6 +2300,10 @@ class StreamCenter(
             tvType ?: if (isMovieFormat()) TvType.AnimeMovie else TvType.Anime,
         ) {
             this.posterUrl = poster
+            calendarEpisode?.let { episode ->
+                this.otherName = "Episodio $episode"
+                this.episodes = mutableMapOf(DubStatus.Subbed to episode)
+            }
             if (showScore) {
                 this@toAnilistOnlySearchResponse.score?.let { this.score = Score.from(it, 10) }
             }
@@ -2005,11 +2404,15 @@ class StreamCenter(
         excludeAnime: Boolean = false,
         fetchMissingScores: Boolean = false,
         showScores: Boolean = true,
-    ): List<SearchResponse> {
+        maxItems: Int? = null,
+        includeTvCalendarEpisode: Boolean = false,
+    ): List<SearchResponse> = coroutineScope {
         val seen = mutableSetOf<String>()
         val results = mutableListOf<SearchResponse>()
+        val tvCalendarCards = mutableListOf<kotlinx.coroutines.Deferred<SearchResponse>>()
 
         for (anchor in doc.select("a[href]")) {
+            if (maxItems != null && results.size + tvCalendarCards.size >= maxItems) break
             val mediaType = getMediaType(anchor) ?: continue
             val href = anchor.attr("href").substringBefore("?")
             if (!seen.add(href)) continue
@@ -2044,16 +2447,32 @@ class StreamCenter(
                 continue
             }
 
+            if (includeTvCalendarEpisode && mediaType == "tv") {
+                tvCalendarCards += async(Dispatchers.IO) {
+                    val calendarMetadata = fetchTmdbCalendarCardMetadata(itemUrl)
+                    buildTvSeriesSearchResponse(
+                        title = title,
+                        itemUrl = itemUrl,
+                        poster = poster,
+                        tmdbScore = if (showScores) cardScore ?: calendarMetadata?.score else null,
+                        calendarEpisode = calendarMetadata?.episode,
+                    )
+                }
+                continue
+            }
+
             val tmdbScore = if (showScores) {
                 cardScore ?: if (fetchMissingScores) fetchTmdbScore(itemUrl) else null
             } else {
                 null
             }
             results += if (mediaType == "tv") {
-                newTvSeriesSearchResponse(title, itemUrl, TvType.TvSeries) {
-                    this.posterUrl = poster
-                    tmdbScore?.let { this.score = Score.from(it, 10) }
-                }
+                buildTvSeriesSearchResponse(
+                    title = title,
+                    itemUrl = itemUrl,
+                    poster = poster,
+                    tmdbScore = tmdbScore,
+                )
             } else {
                 newMovieSearchResponse(title, itemUrl, TvType.Movie) {
                     this.posterUrl = poster
@@ -2062,7 +2481,53 @@ class StreamCenter(
             }
         }
 
-        return results
+        val mergedResults = results + tvCalendarCards.awaitAll()
+        maxItems?.let { mergedResults.take(it) } ?: mergedResults
+    }
+
+    private fun buildTvSeriesSearchResponse(
+        title: String,
+        itemUrl: String,
+        poster: String?,
+        tmdbScore: String?,
+        calendarEpisode: TmdbCalendarEpisode? = null,
+    ): SearchResponse {
+        val displayTitle = calendarEpisode?.label?.let { "$title - $it" } ?: title
+        return newTvSeriesSearchResponse(displayTitle, itemUrl, TvType.TvSeries) {
+            this.posterUrl = poster
+            calendarEpisode?.episodeNumber?.let { this.episodes = it }
+            tmdbScore?.let { this.score = Score.from(it, 10) }
+        }
+    }
+
+    private suspend fun fetchTmdbCalendarCardMetadata(url: String): TmdbCalendarCardMetadata? {
+        return runCatching {
+            val doc = getTmdbDocument(url, cacheProfile = TmdbCacheProfile.TvCalendarEpisode)
+            TmdbCalendarCardMetadata(
+                score = extractTmdbScore(doc),
+                episode = extractTmdbCalendarEpisode(doc),
+            )
+        }.getOrNull()
+    }
+
+    private fun extractTmdbCalendarEpisode(doc: Document): TmdbCalendarEpisode? {
+        val episodeLink = doc.selectFirst("section.panel.season a.name[href*=/episode/]")
+            ?: doc.selectFirst("a.name[href*=/episode/]")
+            ?: return null
+        val href = episodeLink.attr("href")
+        val match = Regex("""/season/(\d+)/episode/(\d+)""").find(href)
+        val seasonNumber = match?.groupValues?.getOrNull(1)?.toIntOrNull()
+        val episodeNumber = match?.groupValues?.getOrNull(2)?.toIntOrNull()
+        val numberLabel = when {
+            seasonNumber != null && episodeNumber != null -> "${seasonNumber}x$episodeNumber"
+            episodeNumber != null -> episodeNumber.toString()
+            else -> null
+        } ?: return null
+
+        return TmdbCalendarEpisode(
+            label = "Episodio $numberLabel",
+            episodeNumber = episodeNumber,
+        )
     }
 
     private suspend fun buildAnimeSearchResponses(
@@ -2217,12 +2682,24 @@ class StreamCenter(
         return url.contains(animeKeywordPath) || parseAnilistSection(url) != null
     }
 
+    private fun isTmdbTvCalendarSection(url: String): Boolean {
+        return url.contains("/tv/airing-today")
+    }
+
     private fun isAnilistOnlyUrl(url: String): Boolean {
         return url.contains(anilistOnlyPath) || Regex("""anilist\.co/anime/\d+""").containsMatchIn(url)
     }
 
     private fun extractAnilistIdFromText(text: String): Int? {
         return Regex("""(?:anilist\.co/anime/|/anilist/)(\d+)""")
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+    }
+
+    private fun extractMalIdFromText(text: String): Int? {
+        return Regex("""myanimelist\.net/anime/(\d+)""")
             .find(text)
             ?.groupValues
             ?.getOrNull(1)
@@ -2407,8 +2884,8 @@ class StreamCenter(
             tmdbId = null,
             score = score,
             people = emptyList(),
-            recommendations = emptyList(),
-            contentRating = null,
+            recommendations = recommendations,
+            contentRating = if (isAdult) "18+" else null,
             showStatus = mapAnilistShowStatus(status),
             comingSoon = status == "NOT_YET_RELEASED",
             duration = duration,
@@ -2416,16 +2893,33 @@ class StreamCenter(
         )
     }
 
-    private fun buildAnilistFallbackEpisodes(metadata: AnilistLoadMetadata): List<Episode> {
+    private fun buildAnilistFallbackEpisodes(
+        metadata: AnilistLoadMetadata,
+        aniZipMetadata: AniZipMetadata? = null,
+    ): List<Episode> {
         val totalEpisodes = metadata.episodes ?: return emptyList()
         if (totalEpisodes <= 0) return emptyList()
 
         return (1..totalEpisodes).map { episodeNumber ->
+            val aniZipEpisode = aniZipMetadata?.episode(episodeNumber)
             newEpisode(StreamCenterPlaybackData().toJson()) {
-                this.name = "Episodio $episodeNumber"
+                this.name = aniZipEpisode?.title ?: "Episodio $episodeNumber"
                 this.season = 1
                 this.episode = episodeNumber
+                this.posterUrl = aniZipEpisode?.image ?: aniZipMetadata?.fallbackPoster
+                this.description = aniZipEpisode?.overview
+                this.runTime = aniZipEpisode?.runtime
+                this.score = aniZipEpisode?.score
+                aniZipEpisode?.airDate?.let { this.addDate(it) }
             }
+        }
+    }
+
+    private fun String.toJikanActorRole(): ActorRole? {
+        return when (lowercase(Locale.ROOT)) {
+            "main" -> ActorRole.Main
+            "supporting" -> ActorRole.Supporting
+            else -> null
         }
     }
 
@@ -2924,6 +3418,16 @@ class StreamCenter(
             }
     }
 
+    private fun hasAnimeDubSources(
+        animeUnitySources: List<AnimeUnityTitleSources>,
+        animeWorldSources: List<AnimeWorldTitleSources>,
+        animeSaturnSources: List<SaturnTitleSources>,
+    ): Boolean {
+        return animeUnitySources.any { it.dubSources.isNotEmpty() } ||
+            animeWorldSources.any { it.dubSources.isNotEmpty() } ||
+            animeSaturnSources.any { it.dubSources.isNotEmpty() }
+    }
+
     private suspend fun fetchAnimeUnitySources(
         metadata: StreamCenterMetadata,
         syncIds: List<AnimeSyncIds>,
@@ -2985,7 +3489,7 @@ class StreamCenter(
         val text = getCachedText(cacheKey, TmdbCacheProfile.AnimeUnityArchive) {
             app.post(
                 "$animeUnityUrl/archivio/get-animes",
-                headers = animeUnityHeaders,
+                headers = animeUnityRequestHeaders(),
                 requestBody = requestBody,
                 cacheTime = TmdbCacheProfile.AnimeUnityArchive.cacheMinutes,
                 cacheUnit = TimeUnit.MINUTES,
@@ -3010,12 +3514,12 @@ class StreamCenter(
     }
 
     private fun hasAnimeUnitySessionHeaders(): Boolean {
-        return animeUnityHeaders["Cookie"].orEmpty().isNotBlank() &&
-            animeUnityHeaders["X-CSRF-Token"].orEmpty().isNotBlank()
+        return animeUnitySessionHeaders["Cookie"].orEmpty().isNotBlank() &&
+            animeUnitySessionHeaders["X-CSRF-Token"].orEmpty().isNotBlank()
     }
 
     private fun applyAnimeUnitySession(cookie: String, csrfToken: String) {
-        animeUnityHeaders.putAll(
+        animeUnitySessionHeaders.putAll(
             mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Content-Type" to "application/json;charset=utf-8",
@@ -3042,17 +3546,21 @@ class StreamCenter(
     private fun persistAnimeUnitySession() {
         if (!hasAnimeUnitySessionHeaders()) return
         val payload = JSONObject()
-            .put("cookie", animeUnityHeaders["Cookie"].orEmpty())
-            .put("csrfToken", animeUnityHeaders["X-CSRF-Token"].orEmpty())
+            .put("cookie", animeUnitySessionHeaders["Cookie"].orEmpty())
+            .put("csrfToken", animeUnitySessionHeaders["X-CSRF-Token"].orEmpty())
             .toString()
         tmdbTextCache.put("AU:SESSION", payload, TmdbCacheProfile.AnimeUnitySession.ttlMs)
+    }
+
+    private fun animeUnityRequestHeaders(): Map<String, String> {
+        return animeUnitySessionHeaders + mapOf("Host" to hostFromUrl(animeUnityUrl))
     }
 
     private suspend fun ensureAnimeUnityHeaders(forceRefresh: Boolean = false) {
         if (hasAnimeUnitySessionHeaders() && !forceRefresh) return
         if (!forceRefresh && restoreAnimeUnitySession()) return
 
-        val response = app.get("$animeUnityUrl/archivio", headers = animeUnityHeaders)
+        val response = app.get("$animeUnityUrl/archivio", headers = animeUnityRequestHeaders())
         val csrfToken = response.document.head().select("meta[name=csrf-token]").attr("content")
         val cookies = listOfNotNull(
             response.cookies["XSRF-TOKEN"]?.let { "XSRF-TOKEN=$it" },
@@ -3331,14 +3839,226 @@ class StreamCenter(
         return HentaiWorldTitleSources(sources).takeIf { it.sources.isNotEmpty() }
     }
 
+    private suspend fun fetchAnimeSaturnSources(
+        metadata: StreamCenterMetadata,
+        anilistMetadata: AnilistMetadata?,
+        syncIds: List<AnimeSyncIds>,
+    ): List<SaturnTitleSources> {
+        if (syncIds.isEmpty()) return emptyList()
+
+        val pageData = buildAnimeSourceTitleCandidates(metadata, anilistMetadata)
+            .flatMap {
+                fetchSaturnSearchResults(
+                    baseUrl = animeSaturnUrl,
+                    searchPath = "animelist",
+                    itemPath = "/anime/",
+                    query = it,
+                    cachePrefix = "AS",
+                    cacheProfile = TmdbCacheProfile.AnimeSaturnSearch,
+                )
+            }
+            .distinctBy { it.url }
+            .take(16)
+            .mapNotNull {
+                fetchSaturnPageData(
+                    baseUrl = animeSaturnUrl,
+                    item = it,
+                    cachePrefix = "AS",
+                    cacheProfile = TmdbCacheProfile.AnimeSaturnDetail,
+                )
+            }
+
+        return syncIds.mapNotNull { sync ->
+            val matches = pageData.filter { it.matches(sync) }
+            if (matches.isEmpty()) return@mapNotNull null
+
+            SaturnTitleSources(
+                syncIds = sync,
+                subSources = matches
+                    .filter { !it.searchItem.isDub }
+                    .mergeSaturnEpisodeSources(),
+                dubSources = matches
+                    .filter { it.searchItem.isDub }
+                    .mergeSaturnEpisodeSources(),
+            ).takeIf { it.subSources.isNotEmpty() || it.dubSources.isNotEmpty() }
+        }
+    }
+
+    private suspend fun fetchHentaiSaturnSources(
+        metadata: StreamCenterMetadata,
+        anilistMetadata: AnilistMetadata?,
+        syncIds: List<AnimeSyncIds>,
+    ): List<SaturnTitleSources> {
+        val titleCandidates = buildAnimeSourceTitleCandidates(metadata, anilistMetadata)
+        val pageData = titleCandidates
+            .flatMap {
+                fetchSaturnSearchResults(
+                    baseUrl = hentaiSaturnUrl,
+                    searchPath = "hentailist",
+                    itemPath = "/hentai/",
+                    query = it,
+                    cachePrefix = "HSAT",
+                    cacheProfile = TmdbCacheProfile.HentaiSaturnSearch,
+                )
+            }
+            .distinctBy { it.url }
+            .take(12)
+            .mapNotNull {
+                fetchSaturnPageData(
+                    baseUrl = hentaiSaturnUrl,
+                    item = it,
+                    cachePrefix = "HSAT",
+                    cacheProfile = TmdbCacheProfile.HentaiSaturnDetail,
+                )
+            }
+
+        val idMatches = syncIds.mapNotNull { sync ->
+            val matches = pageData.filter { it.matches(sync) }
+            if (matches.isEmpty()) return@mapNotNull null
+
+            SaturnTitleSources(
+                syncIds = sync,
+                subSources = matches.mergeSaturnEpisodeSources(),
+            ).takeIf { it.subSources.isNotEmpty() }
+        }
+        if (idMatches.isNotEmpty()) return idMatches
+
+        val normalizedCandidates = titleCandidates.map(::sourceTitleDedupKey).toSet()
+        return pageData
+            .filter { sourceTitleDedupKey(it.searchItem.title) in normalizedCandidates }
+            .take(4)
+            .mapNotNull {
+                SaturnTitleSources(
+                    syncIds = null,
+                    subSources = it.episodeSources,
+                ).takeIf { sources -> sources.subSources.isNotEmpty() }
+            }
+    }
+
+    private suspend fun fetchSaturnSearchResults(
+        baseUrl: String,
+        searchPath: String,
+        itemPath: String,
+        query: String,
+        cachePrefix: String,
+        cacheProfile: TmdbCacheProfile,
+    ): List<SaturnSearchItem> {
+        val url = "${baseUrl.trimEnd('/')}/$searchPath?search=${URLEncoder.encode(query, "UTF-8")}"
+        val html = getCachedText("$cachePrefix:GET:$url", cacheProfile) {
+            app.get(
+                url,
+                headers = headers,
+                cacheTime = cacheProfile.cacheMinutes,
+                cacheUnit = TimeUnit.MINUTES,
+            ).text
+        }
+        val doc = Jsoup.parse(html, url)
+
+        return doc.select("li.list-group-item .item-archivio, div.item-archivio")
+            .mapNotNull { item ->
+                val anchor = item.selectFirst("""h3 a[href*="$itemPath"], a[href*="$itemPath"]""")
+                    ?: return@mapNotNull null
+                val title = cleanText(anchor.text())
+                    ?: cleanText(item.selectFirst("img[alt]")?.attr("alt"))
+                    ?: return@mapNotNull null
+                val itemUrl = toAbsoluteProviderUrl(baseUrl, anchor.attr("href")).trimEnd('/')
+                val isDub = title.contains("(ITA)", ignoreCase = true) ||
+                    itemUrl.contains("-ITA", ignoreCase = true)
+
+                SaturnSearchItem(
+                    url = itemUrl,
+                    title = title,
+                    isDub = isDub,
+                )
+            }
+    }
+
+    private suspend fun fetchSaturnPageData(
+        baseUrl: String,
+        item: SaturnSearchItem,
+        cachePrefix: String,
+        cacheProfile: TmdbCacheProfile,
+    ): SaturnPageData? {
+        val html = getCachedText("$cachePrefix:GET:${item.url}", cacheProfile) {
+            app.get(
+                item.url,
+                headers = headers,
+                cacheTime = cacheProfile.cacheMinutes,
+                cacheUnit = TimeUnit.MINUTES,
+            ).text
+        }
+        val doc = Jsoup.parse(html, item.url)
+        val pageTitle = cleanText(doc.selectFirst("h1")?.text()) ?: item.title
+        val isDub = item.isDub || pageTitle.contains("(ITA)", ignoreCase = true)
+        val label = if (isDub) "[DUB]" else "[SUB]"
+
+        return SaturnPageData(
+            searchItem = item.copy(isDub = isDub),
+            anilistId = doc.select("a[href*=anilist.co/anime/]")
+                .firstOrNull()
+                ?.attr("href")
+                ?.let(::extractAnilistIdFromText),
+            malId = doc.select("a[href*=myanimelist.net/anime/]")
+                .firstOrNull()
+                ?.attr("href")
+                ?.let(::extractMalIdFromText),
+            episodeSources = parseSaturnEpisodes(doc, baseUrl, label),
+        ).takeIf { it.episodeSources.isNotEmpty() }
+    }
+
+    private fun parseSaturnEpisodes(
+        doc: Document,
+        baseUrl: String,
+        label: String,
+    ): Map<String, SaturnPlaybackData> {
+        return doc.select("a[href*=/ep/], a[href*=/episode/]")
+            .mapNotNull { anchor ->
+                val href = anchor.attr("href")
+                    .takeIf { it.contains("/ep/") || it.contains("/episode/") }
+                    ?: return@mapNotNull null
+                val number = extractSaturnEpisodeNumber(anchor) ?: return@mapNotNull null
+                val normalizedNumber = normalizeAnimeUnityEpisodeNumber(number) ?: return@mapNotNull null
+                val episodeUrl = toAbsoluteProviderUrl(baseUrl, href).trimEnd('/')
+
+                normalizedNumber to SaturnPlaybackData(
+                    label = label,
+                    episodeUrl = episodeUrl,
+                )
+            }
+            .distinctBy { it.first }
+            .toMap()
+    }
+
+    private fun extractSaturnEpisodeNumber(anchor: Element): String? {
+        val candidates = listOf(
+            anchor.attr("data-episode"),
+            anchor.attr("data-episode-number"),
+            anchor.text(),
+            anchor.attr("href"),
+        )
+
+        candidates.forEach { candidate ->
+            Regex("""(?i)(?:episodio|episode|ep)[\s._-]*(\d+(?:[.,]\d+)?)""")
+                .find(candidate)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.let { return it }
+        }
+
+        return null
+    }
+
     private suspend fun fetchEpisodes(
         doc: Document,
         actualUrl: String,
         animeUnitySources: List<AnimeUnityTitleSources> = emptyList(),
         animeWorldSources: List<AnimeWorldTitleSources> = emptyList(),
+        animeSaturnSources: List<SaturnTitleSources> = emptyList(),
         hentaiWorldSources: List<HentaiWorldTitleSources> = emptyList(),
+        hentaiSaturnSources: List<SaturnTitleSources> = emptyList(),
         targetSeason: Int? = null,
         streamingCommunityEpisodes: Map<Pair<Int, Int>, StreamingCommunityPlaybackData> = emptyMap(),
+        aniZipMetadata: AniZipMetadata? = null,
     ): List<Episode> = coroutineScope {
         if (!actualUrl.contains("/tv/")) {
             emptyList()
@@ -3358,8 +4078,11 @@ class StreamCenter(
                                 fallbackSeason = fallbackSeason,
                                 animeUnitySources = animeUnitySources,
                                 animeWorldSources = animeWorldSources,
+                                animeSaturnSources = animeSaturnSources,
                                 hentaiWorldSources = hentaiWorldSources,
+                                hentaiSaturnSources = hentaiSaturnSources,
                                 streamingCommunityEpisodes = streamingCommunityEpisodes,
+                                aniZipMetadata = aniZipMetadata,
                             )
                         }
                         .orEmpty()
@@ -3407,8 +4130,11 @@ class StreamCenter(
         fallbackSeason: Int?,
         animeUnitySources: List<AnimeUnityTitleSources>,
         animeWorldSources: List<AnimeWorldTitleSources>,
+        animeSaturnSources: List<SaturnTitleSources>,
         hentaiWorldSources: List<HentaiWorldTitleSources>,
+        hentaiSaturnSources: List<SaturnTitleSources>,
         streamingCommunityEpisodes: Map<Pair<Int, Int>, StreamingCommunityPlaybackData>,
+        aniZipMetadata: AniZipMetadata?,
     ): List<Episode> {
         return seasonDoc.select("div.episode_list div.card").mapNotNull { card ->
             val anchor = card.selectFirst("a[data-episode-number][data-season-number]")
@@ -3430,6 +4156,7 @@ class StreamCenter(
 
             val airDate = parseItalianDateToIso(card.selectFirst("div.date span.date")?.text())
             val runtime = parseRuntime(card.selectFirst("span.runtime")?.text())
+            val aniZipEpisode = aniZipMetadata?.episode(episodeNumber)
             val streamingCommunityPlayback = seasonNumber?.let { season ->
                 episodeNumber?.let { episode -> streamingCommunityEpisodes[season to episode] }
             }
@@ -3439,18 +4166,24 @@ class StreamCenter(
                 episodeNumber = episodeNumber,
                 animeUnitySources = animeUnitySources,
                 animeWorldSources = animeWorldSources,
+                animeSaturnSources = animeSaturnSources,
                 hentaiWorldSources = hentaiWorldSources,
+                hentaiSaturnSources = hentaiSaturnSources,
                 streamingCommunity = streamingCommunityPlayback,
             )
             newEpisode(sourcePayload) {
-                this.name = title
+                this.name = aniZipEpisode?.title ?: title
                 this.season = seasonNumber
                 this.episode = episodeNumber
-                this.posterUrl = card.selectFirst("img.backdrop")?.extractImageUrl()
+                this.posterUrl = aniZipEpisode?.image
+                    ?: card.selectFirst("img.backdrop")?.extractImageUrl()
                     ?: card.selectFirst("img")?.extractImageUrl()
-                this.description = cleanEpisodeDescription(card.selectFirst("div.overview p")?.text())
-                this.runTime = runtime
-                airDate?.let { this.addDate(it) }
+                    ?: aniZipMetadata?.fallbackPoster
+                this.description = aniZipEpisode?.overview
+                    ?: cleanEpisodeDescription(card.selectFirst("div.overview p")?.text())
+                this.runTime = aniZipEpisode?.runtime ?: runtime
+                this.score = aniZipEpisode?.score
+                (aniZipEpisode?.airDate ?: airDate)?.let { this.addDate(it) }
             }
         }
     }
@@ -3461,13 +4194,17 @@ class StreamCenter(
         episodeNumber: Int?,
         animeUnitySources: List<AnimeUnityTitleSources>,
         animeWorldSources: List<AnimeWorldTitleSources>,
+        animeSaturnSources: List<SaturnTitleSources>,
         hentaiWorldSources: List<HentaiWorldTitleSources>,
+        hentaiSaturnSources: List<SaturnTitleSources>,
         streamingCommunity: StreamingCommunityPlaybackData? = null,
     ): String {
         if (
             animeUnitySources.isEmpty() &&
             animeWorldSources.isEmpty() &&
+            animeSaturnSources.isEmpty() &&
             hentaiWorldSources.isEmpty() &&
+            hentaiSaturnSources.isEmpty() &&
             streamingCommunity == null
         ) {
             return tmdbUrl
@@ -3483,18 +4220,31 @@ class StreamCenter(
             else -> null
         } ?: animeWorldSources.takeIf { it.size == 1 }?.firstOrNull()
 
+        val animeSaturnSeasonSources = when {
+            seasonNumber != null -> animeSaturnSources.firstOrNull { it.syncIds?.tmdbSeason == seasonNumber }
+            else -> null
+        } ?: animeSaturnSources.takeIf { it.size == 1 }?.firstOrNull()
+
         val animeUnityPlayback = seasonSources?.playbackForEpisode(episodeNumber?.toString())
         val animeWorldPlaybacks = animeWorldSeasonSources
+            ?.playbacksForEpisode(episodeNumber?.toString())
+            .orEmpty()
+        val animeSaturnPlaybacks = animeSaturnSeasonSources
             ?.playbacksForEpisode(episodeNumber?.toString())
             .orEmpty()
         val hentaiWorldPlaybacks = hentaiWorldSources
             .flatMap { it.playbacksForEpisode(episodeNumber?.toString()) }
             .distinctBy { it.watchUrl }
+        val hentaiSaturnPlaybacks = hentaiSaturnSources
+            .flatMap { it.playbacksForEpisode(episodeNumber?.toString()) }
+            .distinctBy { it.episodeUrl }
         return StreamCenterPlaybackData(
             tmdbUrl = tmdbUrl.takeIf(String::isNotBlank),
             animeUnity = animeUnityPlayback,
             animeWorld = animeWorldPlaybacks,
+            animeSaturn = animeSaturnPlaybacks,
             hentaiWorld = hentaiWorldPlaybacks,
+            hentaiSaturn = hentaiSaturnPlaybacks,
             streamingCommunity = streamingCommunity,
         ).toJson()
     }
@@ -3502,9 +4252,12 @@ class StreamCenter(
     private fun buildAnimeSourceEpisodes(
         animeUnitySources: List<AnimeUnityTitleSources>,
         animeWorldSources: List<AnimeWorldTitleSources>,
+        animeSaturnSources: List<SaturnTitleSources>,
         hentaiWorldSources: List<HentaiWorldTitleSources>,
+        hentaiSaturnSources: List<SaturnTitleSources>,
         seasonNumber: Int?,
         tmdbEpisodes: List<Episode>,
+        aniZipMetadata: AniZipMetadata? = null,
     ): List<Episode> {
         val animeUnityTitleSources = when {
             seasonNumber != null -> animeUnitySources.firstOrNull { it.syncIds.tmdbSeason == seasonNumber }
@@ -3514,11 +4267,18 @@ class StreamCenter(
             seasonNumber != null -> animeWorldSources.firstOrNull { it.syncIds.tmdbSeason == seasonNumber }
             else -> null
         } ?: animeWorldSources.takeIf { it.size == 1 }?.firstOrNull()
+        val animeSaturnTitleSources = when {
+            seasonNumber != null -> animeSaturnSources.firstOrNull { it.syncIds?.tmdbSeason == seasonNumber }
+            else -> null
+        } ?: animeSaturnSources.takeIf { it.size == 1 }?.firstOrNull()
         val hentaiWorldTitleSources = hentaiWorldSources
+        val hentaiSaturnTitleSources = hentaiSaturnSources
         val episodeNumbers = (
             animeUnityTitleSources?.episodeNumbers().orEmpty() +
                 animeWorldTitleSources?.episodeNumbers().orEmpty() +
-                hentaiWorldTitleSources.flatMap { it.episodeNumbers() }
+                animeSaturnTitleSources?.episodeNumbers().orEmpty() +
+                hentaiWorldTitleSources.flatMap { it.episodeNumbers() } +
+                hentaiSaturnTitleSources.flatMap { it.episodeNumbers() }
             )
             .distinct()
             .sortedWith(compareBy({ it.toDoubleOrNull() ?: Double.POSITIVE_INFINITY }, { it }))
@@ -3531,28 +4291,42 @@ class StreamCenter(
         return episodeNumbers.mapNotNull { number ->
             val playback = animeUnityTitleSources?.playbackForEpisode(number)
             val animeWorldPlaybacks = animeWorldTitleSources?.playbacksForEpisode(number).orEmpty()
+            val animeSaturnPlaybacks = animeSaturnTitleSources?.playbacksForEpisode(number).orEmpty()
             val hentaiWorldPlaybacks = hentaiWorldTitleSources
                 .flatMap { it.playbacksForEpisode(number) }
                 .distinctBy { it.watchUrl }
-            if (playback == null && animeWorldPlaybacks.isEmpty() && hentaiWorldPlaybacks.isEmpty()) {
+            val hentaiSaturnPlaybacks = hentaiSaturnTitleSources
+                .flatMap { it.playbacksForEpisode(number) }
+                .distinctBy { it.episodeUrl }
+            if (
+                playback == null &&
+                animeWorldPlaybacks.isEmpty() &&
+                animeSaturnPlaybacks.isEmpty() &&
+                hentaiWorldPlaybacks.isEmpty() &&
+                hentaiSaturnPlaybacks.isEmpty()
+            ) {
                 return@mapNotNull null
             }
             val episodeNumber = parseWholeEpisodeNumber(number)
             val tmdbEpisode = episodeNumber?.let { tmdbEpisodesByNumber[it] }
+            val aniZipEpisode = aniZipMetadata?.episode(episodeNumber)
             newEpisode(
                 StreamCenterPlaybackData(
                     animeUnity = playback,
                     animeWorld = animeWorldPlaybacks,
+                    animeSaturn = animeSaturnPlaybacks,
                     hentaiWorld = hentaiWorldPlaybacks,
+                    hentaiSaturn = hentaiSaturnPlaybacks,
                 ).toJson()
             ) {
-                this.name = tmdbEpisode?.name ?: "Episodio $number"
                 this.season = seasonNumber ?: tmdbEpisode?.season
                 this.episode = episodeNumber ?: tmdbEpisode?.episode
-                this.posterUrl = tmdbEpisode?.posterUrl
-                this.description = tmdbEpisode?.description
-                this.runTime = tmdbEpisode?.runTime
-                tmdbEpisode?.date?.let { this.date = it }
+                this.name = aniZipEpisode?.title ?: tmdbEpisode?.name ?: "Episodio $number"
+                this.posterUrl = aniZipEpisode?.image ?: tmdbEpisode?.posterUrl ?: aniZipMetadata?.fallbackPoster
+                this.description = aniZipEpisode?.overview ?: tmdbEpisode?.description
+                this.runTime = aniZipEpisode?.runtime ?: tmdbEpisode?.runTime
+                this.score = aniZipEpisode?.score
+                aniZipEpisode?.airDate?.let { this.addDate(it) } ?: tmdbEpisode?.date?.let { this.date = it }
             }
         }
     }
@@ -3662,6 +4436,13 @@ class StreamCenter(
         }
     }
 
+    private fun hostFromUrl(url: String): String {
+        return url
+            .substringAfter("://", url)
+            .substringBefore("/")
+            .substringBefore(":")
+    }
+
     private fun AnimeWorldPageData.matches(syncIds: AnimeSyncIds): Boolean {
         return (syncIds.anilistId != null && anilistId == syncIds.anilistId) ||
             (syncIds.malId != null && malId == syncIds.malId)
@@ -3669,6 +4450,23 @@ class StreamCenter(
 
     private fun List<AnimeWorldPageData>.mergeAnimeWorldEpisodeSources(): Map<String, AnimeWorldPlaybackData> {
         val merged = linkedMapOf<String, AnimeWorldPlaybackData>()
+        forEach { pageData ->
+            pageData.episodeSources.forEach { (number, playback) ->
+                if (!merged.containsKey(number)) {
+                    merged[number] = playback
+                }
+            }
+        }
+        return merged
+    }
+
+    private fun SaturnPageData.matches(syncIds: AnimeSyncIds): Boolean {
+        return (syncIds.anilistId != null && anilistId == syncIds.anilistId) ||
+            (syncIds.malId != null && malId == syncIds.malId)
+    }
+
+    private fun List<SaturnPageData>.mergeSaturnEpisodeSources(): Map<String, SaturnPlaybackData> {
+        val merged = linkedMapOf<String, SaturnPlaybackData>()
         forEach { pageData ->
             pageData.episodeSources.forEach { (number, playback) ->
                 if (!merged.containsKey(number)) {
@@ -3736,6 +4534,17 @@ class StreamCenter(
         return optString(name).trim().takeIf { it.isNotBlank() && it != "null" }
     }
 
+    private fun formatPlayerSourceName(source: String, label: String? = null, engine: String? = null): String {
+        val audioLabel = when (label?.uppercase(Locale.ROOT)) {
+            "[DUB]", "DUB", "[ITA]", "ITA" -> "[DUB] \uD83C\uDDEE\uD83C\uDDF9"
+            "[SUB]", "SUB" -> "[SUB] \uD83C\uDDEF\uD83C\uDDF5"
+            "[SOURCE]", "SOURCE" -> "[Fonte]"
+            null, "" -> null
+            else -> label
+        }
+        return listOfNotNull(source, audioLabel, engine?.let { "- $it" }).joinToString(" ")
+    }
+
     private fun buildAnimeUnityPlayerSources(playbackData: AnimeUnityPlaybackData): List<AnimeUnityPlayerSource> {
         val sources = mutableListOf<AnimeUnityPlayerSource>()
         val seen = linkedSetOf<String>()
@@ -3778,8 +4587,8 @@ class StreamCenter(
                     false
                 } else {
                     StreamCenterVixCloudExtractor(
-                        sourceName = "VixCloud ${source.label}",
-                        displayName = "AnimeUnity ${source.label}",
+                        sourceName = formatPlayerSourceName("VixCloud", source.label),
+                        displayName = formatPlayerSourceName("AnimeUnity", source.label),
                     ).getUrl(
                         url = embedUrl,
                         referer = animeUnityUrl,
@@ -3839,7 +4648,7 @@ class StreamCenter(
 
         emitDirectVideoLink(
             source = "AnimeWorld",
-            name = "AnimeWorld ${playbackData.label}",
+            name = formatPlayerSourceName("AnimeWorld", playbackData.label),
             url = grabber,
             referer = animeWorldUrl,
             callback = callback,
@@ -3874,12 +4683,98 @@ class StreamCenter(
 
         emitDirectVideoLink(
             source = "HentaiWorld",
-            name = "HentaiWorld",
+            name = formatPlayerSourceName("HentaiWorld", "[SUB]"),
             url = videoUrl,
             referer = playbackData.watchUrl,
             callback = callback,
         )
         return true
+    }
+
+    private suspend fun loadSaturnLink(
+        source: String,
+        baseUrl: String,
+        cacheProfile: TmdbCacheProfile,
+        playbackData: SaturnPlaybackData,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val watchUrl = playbackData.watchUrl?.takeIf(String::isNotBlank)
+            ?: runCatching {
+                val episodeHtml = getCachedText("$source:GET:${playbackData.episodeUrl}", cacheProfile) {
+                    app.get(
+                        playbackData.episodeUrl,
+                        headers = headers + mapOf("Referer" to baseUrl),
+                        cacheTime = cacheProfile.cacheMinutes,
+                        cacheUnit = TimeUnit.MINUTES,
+                    ).text
+                }
+                extractSaturnVideoUrl(episodeHtml)?.let { directUrl ->
+                    emitDirectVideoLink(
+                        source = source,
+                        name = formatPlayerSourceName(source, playbackData.label),
+                        url = toAbsoluteProviderUrl(baseUrl, directUrl),
+                        referer = playbackData.episodeUrl,
+                        callback = callback,
+                    )
+                    return true
+                }
+
+                Jsoup.parse(episodeHtml, playbackData.episodeUrl)
+                    .selectFirst("""a[href*="watch?file="]""")
+                    ?.attr("href")
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { toAbsoluteProviderUrl(baseUrl, it) }
+            }.getOrNull()
+            ?: return false
+
+        val html = runCatching {
+            getCachedText("$source:GET:$watchUrl", cacheProfile) {
+                app.get(
+                    watchUrl,
+                    headers = headers + mapOf("Referer" to playbackData.episodeUrl),
+                    cacheTime = cacheProfile.cacheMinutes,
+                    cacheUnit = TimeUnit.MINUTES,
+                ).text
+            }
+        }.getOrNull() ?: return false
+
+        val videoUrl = extractSaturnVideoUrl(html)
+            ?.let { toAbsoluteProviderUrl(baseUrl, it) }
+            ?: return false
+
+        emitDirectVideoLink(
+            source = source,
+            name = formatPlayerSourceName(source, playbackData.label),
+            url = videoUrl,
+            referer = watchUrl,
+            callback = callback,
+        )
+        return true
+    }
+
+    private fun extractSaturnVideoUrl(html: String): String? {
+        val doc = Jsoup.parse(html)
+        doc.selectFirst("source[src], video[src]")
+            ?.attr("src")
+            ?.takeIf(String::isNotBlank)
+            ?.let { return cleanSaturnVideoUrl(it) }
+
+        val patterns = listOf(
+            Regex("""file\s*:\s*["']([^"']+)["']"""),
+            Regex("""src\s*:\s*["']([^"']+\.mp4[^"']*)["']"""),
+            Regex("""<source[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        )
+        return patterns.firstNotNullOfOrNull { pattern ->
+            pattern.find(html)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.takeIf(String::isNotBlank)
+                ?.let(::cleanSaturnVideoUrl)
+        }
+    }
+
+    private fun cleanSaturnVideoUrl(url: String): String {
+        return Parser.unescapeEntities(url.replace("\\/", "/"), true).trim()
     }
 
     private suspend fun emitDirectVideoLink(
@@ -3925,8 +4820,8 @@ class StreamCenter(
         if (!iframeSrc.isNullOrBlank()) {
             tasks += {
                 StreamCenterVixCloudExtractor(
-                    sourceName = "VixCloud",
-                    displayName = "StreamingCommunity - VixCloud",
+                    sourceName = formatPlayerSourceName("VixCloud", "[DUB]"),
+                    displayName = formatPlayerSourceName("StreamingCommunity", "[DUB]", "VixCloud"),
                 ).getUrl(
                     url = iframeSrc,
                     referer = streamingCommunityRootUrl,
@@ -3940,7 +4835,10 @@ class StreamCenter(
         val vixSrcUrl = buildStreamingCommunityVixSrcUrl(playbackData)
         if (!vixSrcUrl.isNullOrBlank()) {
             tasks += {
-                StreamCenterVixSrcExtractor().getUrl(
+                StreamCenterVixSrcExtractor(
+                    sourceName = formatPlayerSourceName("VixSrc", "[DUB]"),
+                    displayName = formatPlayerSourceName("StreamingCommunity", "[DUB]", "VixSrc"),
+                ).getUrl(
                     url = vixSrcUrl,
                     referer = "https://vixsrc.to/",
                     subtitleCallback = subtitleCallback,
@@ -4006,6 +4904,7 @@ class StreamCenter(
             mutableMapOf<String, Map<Pair<Int, Int>, StreamingCommunityPlaybackData>>()
         private val anilistMetadataMemoryCache = mutableMapOf<String, AnilistMetadata>()
         private val myAnimeListMetadataMemoryCache = mutableMapOf<String, MyAnimeListMetadata>()
+        private val aniZipMetadataMemoryCache = mutableMapOf<String, AniZipMetadata>()
         private var anilistRateLimitedUntilMs = 0L
 
         private fun normalizeAnimeUnityEpisodeNumber(number: String?): String? {
@@ -4055,6 +4954,7 @@ class StreamCenter(
             streamingCommunityEpisodePayloadsMemoryCache.clear()
             anilistMetadataMemoryCache.clear()
             myAnimeListMetadataMemoryCache.clear()
+            aniZipMetadataMemoryCache.clear()
             anilistRateLimitedUntilMs = 0L
         }
     }
