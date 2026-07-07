@@ -6,6 +6,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 
+data class GenreRequest(
+    val nameIT: String,
+    val nameEN: String,
+    val id: Int
+)
 
 data class SliderFetchRequestSlider(
     val name: String,
@@ -26,12 +31,6 @@ data class LoadData(
     val tmdbId: Int? = null,
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
-)
-
-data class Section(
-    @JsonProperty("name") val name: String,
-    @JsonProperty("label") val label: String,
-    @JsonProperty("titles") val titles: List<Title>,
 )
 
 data class SearchResponse(
