@@ -12,14 +12,24 @@ class StreamingCommunityPlugin : Plugin() {
         const val PREF_LANG = "lang"
         const val PREF_LANG_POSITION = "langPosition"
         const val PREF_BASE_URL = "baseUrl"
+        const val PREF_SHOW_UPCOMING = "showUpcoming"
     }
 
-    private val sharedPref = activity?.getSharedPreferences("StreamingCommunity", Context.MODE_PRIVATE)
+    private val sharedPref =
+        activity?.getSharedPreferences("StreamingCommunity", Context.MODE_PRIVATE)
+
     override fun load(context: Context) {
         val lang = sharedPref?.getString(PREF_LANG, "it") ?: "it"
         val baseUrl = sharedPref?.getString(PREF_BASE_URL, null)
+        val showUpcoming = sharedPref?.getBoolean(PREF_SHOW_UPCOMING, true) ?: true
 
-        registerMainAPI(StreamingCommunity(lang, baseUrl))
+        registerMainAPI(
+            StreamingCommunity(
+                lang,
+                customBaseUrl = baseUrl,
+                showUpcoming = showUpcoming
+            )
+        )
         registerExtractorAPI(VixCloudExtractor())
         registerExtractorAPI(VixSrcExtractor())
 

@@ -10,6 +10,12 @@
     android:padding="8dp"
     tools:context=".Settings">
 
+    <View
+        android:id="@+id/divider5"
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:background="@android:color/transparent" />
+
     <RelativeLayout
         android:layout_width="match_parent"
         android:layout_height="48dp">
@@ -48,11 +54,11 @@
         android:orientation="horizontal">
 
         <TextView
-            android:id="@+id/label"
+            android:id="@+id/lang_label"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="@string/label" />
+            android:text="@string/lang_label" />
 
         <Spinner
             android:id="@+id/lang_spinner"
@@ -64,6 +70,27 @@
         android:id="@+id/divider2"
         android:layout_width="match_parent"
         android:layout_height="16dp"
+        android:background="@android:color/transparent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+
+        <Switch
+            android:id="@+id/upcoming_switch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/upcoming_label" />
+
+    </LinearLayout>
+
+    <View
+        android:id="@+id/divider6"
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:layout_weight="1"
         android:background="@android:color/transparent" />
 
     <LinearLayout

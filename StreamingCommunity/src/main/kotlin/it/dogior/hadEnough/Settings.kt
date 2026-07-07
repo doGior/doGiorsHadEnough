@@ -13,6 +13,7 @@ import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import androidx.annotation.RequiresApi
 import androidx.core.content.res.ResourcesCompat
@@ -87,12 +88,19 @@ class Settings(
         savedInstanceState: Bundle?
     ) {
         super.onViewCreated(view, savedInstanceState)
-
+        var showUpcoming = sharedPref?.getBoolean(StreamingCommunityPlugin.PREF_SHOW_UPCOMING, true) ?: true
         // Initialize views
         val headerTw: TextView? = view.findViewByName("header_tw")
         headerTw?.text = getString("header_tw")
-        val labelTw: TextView? = view.findViewByName("label")
-        labelTw?.text = getString("label")
+        val labelTw: TextView? = view.findViewByName("lang_label")
+        labelTw?.text = getString("lang_label")
+
+        val upcomingSw: Switch? = view.findViewByName("upcoming_switch")
+        upcomingSw?.makeTvCompatible()
+        upcomingSw?.text = getString("upcoming_label")
+        upcomingSw?.isChecked = showUpcoming
+        upcomingSw?.setOnCheckedChangeListener { button, isChecked -> showUpcoming = !showUpcoming }
+
         val serverAddressLabelTw: TextView? = view.findViewByName("server_address_label")
         serverAddressLabelTw?.text = getString("server_address_label")
         val serverAddressInput: EditText? = view.findViewByName("server_address_input")
@@ -133,6 +141,7 @@ class Settings(
             sharedPref?.edit {
                 this.putInt(StreamingCommunityPlugin.PREF_LANG_POSITION, langs.indexOf(currentLang))
                 this.putString(StreamingCommunityPlugin.PREF_LANG, currentLang)
+                this.putBoolean(StreamingCommunityPlugin.PREF_SHOW_UPCOMING, showUpcoming)
                 if (normalizedBaseUrl.isNullOrBlank()) {
                     this.remove(StreamingCommunityPlugin.PREF_BASE_URL)
                 } else {

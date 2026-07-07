@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="header_tw">Streaming Community</string>
-    <string name="label">Language</string>
+    <string name="lang_label">Language</string>
+    <string name="upcoming_label">Show upcoming</string>
     <string name="it">🇮🇹  Italian</string>
     <string name="en">🇬🇧 English</string>
     <string name="server_address_label">Host / URL</string>
