@@ -33,7 +33,7 @@ class CalcioStreaming : MainAPI() {
             val categoryName = it.selectFirst("div.header-wrap > div.label")!!.text()
             val shows = it.select("div.owl-carousel > .slider-tile-inner > .box-16x9").map {
                 val href = it.selectFirst("a")!!.attr("href")
-                val name = ""
+                val name = it.selectFirst(".tile-title")?.text() ?: ""
                 val posterUrl = fixUrl(it.selectFirst("img.tile-image")!!.attr("src"))
                     .replace("//uploads", "/uploads")
                 newLiveSearchResponse(name, href, TvType.Live) {
@@ -57,7 +57,8 @@ class CalcioStreaming : MainAPI() {
             document.select("div.background-image.bg-image").attr("style").substringAfter("url(")
                 .substringBefore(");")
         val infoBlock = document.select(".info-wrap")
-        val title = infoBlock.select("h1").text()
+//        val title = infoBlock.select("h1").text()
+        val title = document.selectFirst("meta[property=\"og:title\"]")?.attr("content") ?: ""
         val description = infoBlock.select("div.info-span > span").toList().joinToString(" - ")
         return newLiveStreamLoadResponse(name = title, url = url, dataUrl = url) {
             this.posterUrl = fixUrl(posterUrl)
