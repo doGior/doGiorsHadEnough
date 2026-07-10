@@ -31,20 +31,13 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-// use an integer for version numbers
-version = 1
+version = 2
 
 cloudstream {
-    description = "Lavori in corso."
+    description = "Film, serie TV e anime in italiano. Home e ricerca da " +
+        "StreamingCommunity e AnimeUnity, metadati da TMDB e AniList."
     authors = listOf("Italiani")
 
-    /**
-     * Status int as the following:
-     * 0: Down
-     * 1: Ok
-     * 2: Slow
-     * 3: Beta only
-     * */
     status = 1
 
     tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie")
