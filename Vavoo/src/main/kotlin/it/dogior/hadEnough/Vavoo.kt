@@ -254,17 +254,20 @@ class Vavoo(
             "user-agent" to resolveUA,
             "accept" to "application/json",
             "content-type" to "application/json; charset=utf-8",
-//            "accept-encoding" to "gzip",
-            "mediahubmx-signature" to sign
+//            "mediahubmx-signature" to sign,
+            "referer" to "$mainUrl/",
+            "origin" to mainUrl
+
         )
         val response = app.post(
             "https://vavoo.to/mediahubmx-resolve.json",
             headers = headers,
             json = payload
         ).body.string()
+        Log.d("BANANA", response)
         if (response.contains("MediaHubMX signature timed out")) throw SignatureTimedOutException()
         val channel = parseJson<List<ChannelData>>(response).first()
-        val cachedChannel = channelsMetadata.firstOrNull{
+        val cachedChannel = channelsMetadata.firstOrNull {
             it.name.contains(channel.name.substringBeforeLast(" ."))
         }
         val logo = cachedChannel?.logo
@@ -289,15 +292,19 @@ class Vavoo(
                 data.replace("https://", "http://"),
                 type = ExtractorLinkType.M3U8
             ) {
-                this.referer = mainUrl
-                this.headers = mapOf("user-agent" to resolveUA)
+                this.referer = "$mainUrl/"
+                this.headers = mapOf(
+                    "user-agent" to resolveUA,
+                    "origin" to mainUrl
+                )
+
             }
         )
         return true
     }
 
     fun channelToSearchResponse(channel: Channel): LiveSearchResponse {
-        val cachedChannel = channelsMetadata.firstOrNull{
+        val cachedChannel = channelsMetadata.firstOrNull {
             it.name.contains(channel.name.substringBeforeLast(" ."))
         }
         val logo = cachedChannel?.logo
