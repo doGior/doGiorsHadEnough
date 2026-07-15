@@ -1,6 +1,7 @@
 package it.dogior.hadEnough
 
 //import android.util.Log
+import android.util.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
@@ -126,13 +127,13 @@ class Arte(language: String) : MainAPI() {
             }
         } else { // Normal collections
 //            Log.d("ARTE", "No Subcollections")
+            var epNumber = 0
             for (page in (1..100)) {
                 val apiUrl =
                     "https://api.arte.tv/api/emac/v4/$lang/web/zones/adcc5a2e-85f2-4dfb-9fc6-72755ff56267/content?collectionId=$collectionID&page=$page&pageId=collection&type=collection"
                 val response = app.get(apiUrl).body.string()
                 val resp = parseJson<Value>(response)
                 val lastPage = resp.pagination?.totalPages ?: 100
-                var epNumber = 0
                 val data = resp.data
                 episodes.addAll(data.mapNotNull {
                     epNumber++
