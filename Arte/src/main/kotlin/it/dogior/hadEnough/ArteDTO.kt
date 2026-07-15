@@ -16,6 +16,11 @@ data class EpisodeData(
     @JsonProperty("url") val url: String,
     @JsonProperty("availability") val availability: Availability,
     @JsonProperty("episodeInfo") val epInfo: EpisodeInfo? = null,
+    @JsonProperty("player") val player: Player? = null,
+)
+
+data class Player(
+    @JsonProperty("config") val config: String
 )
 
 data class EpisodeInfo(

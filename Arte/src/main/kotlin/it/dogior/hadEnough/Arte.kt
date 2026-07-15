@@ -1,7 +1,5 @@
 package it.dogior.hadEnough
 
-//import android.util.Log
-import android.util.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
@@ -23,6 +21,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -174,11 +173,22 @@ class Arte(language: String) : MainAPI() {
     ): Boolean {
 //        Log.d("ARTE", data)
         if (data.isEmpty()) return false
+        val link = if (data.contains("/api/player/v2/config/")) {
+            val resp = app.get(data).body.string()
+            JSONObject(resp)
+                .getJSONObject("data")
+                .getJSONObject("attributes")
+                .getJSONArray("streams")
+                .getJSONObject(0)
+                .getString("url")
+        } else {
+            data
+        }
         callback(
             newExtractorLink(
                 this.name,
                 this.name,
-                data
+                link
             )
         )
         return true
@@ -211,9 +221,15 @@ class Arte(language: String) : MainAPI() {
     ): Episode? {
         val data = this
         if (data.type != "trailer") {
-            val episodePage = app.get(fixUrl(data.url)).document
-            val link = extractVideoUrl(episodePage)
-            return newEpisode(link ?: "") {
+            val link: String?
+            if (data.player == null) {
+                val episodePage = app.get(fixUrl(data.url)).document
+                link = extractVideoUrl(episodePage)
+            } else {
+                link = data.player.config
+            }
+            if (link == null) return null
+            return newEpisode(link) {
                 this.name = data.title
                 this.description = data.description + "\n" + data.availability.label
                 this.posterUrl = data.image.url.replace("__SIZE__", "265x149")
