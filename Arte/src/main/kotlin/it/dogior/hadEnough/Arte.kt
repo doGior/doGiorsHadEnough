@@ -1,7 +1,6 @@
 package it.dogior.hadEnough
 
-import android.util.Log
-import com.fasterxml.jackson.annotation.JsonProperty
+//import android.util.Log
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
@@ -10,11 +9,8 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.MovieSearchResponse
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.TvSeriesSearchResponse
-import com.lagradost.cloudstream3.amap
 import com.lagradost.cloudstream3.fixUrl
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
@@ -23,8 +19,8 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
+import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.INFER_TYPE
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
@@ -38,16 +34,18 @@ class Arte(language: String) : MainAPI() {
     override val supportedTypes = setOf(TvType.Documentary)
     override var lang = language
     override val hasMainPage = true
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val headers =
             mapOf("Authorization" to "Bearer YTEwZWE3M2UxMTVmYmRjZmE0YTdmNjA4ZTI2NDczZDU3YjdjYmVmMmRmNGFjOTM3M2RhNTM5ZjIxYmI3NTc1Zg")
-        val response = app.get("https://api.arte.tv/api/emac/v4/$lang/tv/pages/HOME", headers = headers)
+        val response =
+            app.get("https://api.arte.tv/api/emac/v4/$lang/tv/pages/HOME", headers = headers)
         val jsonData = response.body.string()
         val data = parseJson<Page>(jsonData)
         val homePageLists = data.zones.mapNotNull { section ->
             val isHorizontal = !section.displayOptions.template.contains("portrait")
             val searchResponses = section.content.data.mapNotNull {
-                it.toSearchResponse(isHorizontal, ::fixUrl, ::newMovieSearchResponse, ::newTvSeriesSearchResponse)
+                it.toSearchResponse(isHorizontal)
             }
             if (searchResponses.isEmpty()) return@mapNotNull null
             HomePageList(section.title, searchResponses, isHorizontalImages = isHorizontal)
@@ -57,11 +55,11 @@ class Arte(language: String) : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "https://www.arte.tv/api/rproxy/emac/v4/$lang/web/pages/SEARCH/?page=1&query=$query"
+        val url = "https://api.arte.tv/api/emac/v4/$lang/web/pages/SEARCH/?page=1&query=$query"
         val response = app.get(url).body.string()
-        val data = parseJson<SearchApiResponse>(response)
-        val searchResponses = data.value.zones.first().content.data.mapNotNull {
-            it.toSearchResponse(false, ::fixUrl, ::newMovieSearchResponse, ::newTvSeriesSearchResponse)
+        val data = parseJson<Page>(response)
+        val searchResponses = data.zones.first().content.data.mapNotNull {
+            it.toSearchResponse(false)
         }
 
         return searchResponses
@@ -70,8 +68,15 @@ class Arte(language: String) : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val type = if (url.substringAfter("/videos/").startsWith("RC"))
             TvType.TvSeries else TvType.Movie
-        val respoonse = app.get(url)
-        val document = respoonse.document
+        val response = app.get(
+            url, headers =
+                mapOf(
+                    "referer" to "${mainUrl}/$lang/videos/serie-e-fiction/",
+                    "user-agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+                    "cookie" to "ABV=A; validated-age=1"
+                )
+        )
+        val document = response.document
         val title = document.select("meta[property=\"og:title\"]")
             .attr("content").substringBeforeLast("-")
         val plot = document.select("meta[property=\"og:description\"]")
@@ -87,7 +92,7 @@ class Arte(language: String) : MainAPI() {
             }
         } else {
             val showId = url.substringAfter("/videos/").substringBefore("/")
-            val episodes = getEpisodes(showId)
+            val episodes = getEpisodes(showId, document)
             newTvSeriesLoadResponse(title, url, type, episodes) {
                 posterUrl = image
                 this.plot = plot
@@ -95,42 +100,47 @@ class Arte(language: String) : MainAPI() {
         }
     }
 
-    private suspend fun getEpisodes(showId: String): List<Episode> {
+    private suspend fun getEpisodes(collectionID: String, doc: Document): List<Episode> {
         val episodes = mutableListOf<Episode>()
-
-        val apiUrl =
-            "https://www.arte.tv/api/rproxy/emac/v4/it/web/zones/adcc5a2e-85f2-4dfb-9fc6-72755ff56267/content?abv=A&authorizedCountry=IT&collectionId=$showId&page=1&pageId=collection&type=collection&zoneIndexInPage=1"
-        val response = app.get(apiUrl).body.string()
-        val parsedResponse = parseJson<ShowApiResponse>(response)
-        val totalPages = parsedResponse.value.pagination?.totalPages ?: 1
-
-        val currentPage = 1
-        (currentPage..totalPages).toList().amap { page ->
-            val apiUrl2 =
-                "https://www.arte.tv/api/rproxy/emac/v4/it/web/zones/adcc5a2e-85f2-4dfb-9fc6-72755ff56267/content?abv=A&authorizedCountry=IT&collectionId=$showId&page=$page&pageId=collection&type=collection&zoneIndexInPage=1"
-            val response2 = app.get(apiUrl2).body.string()
-            val parsedResponse2 = parseJson<ShowApiResponse>(response2)
-            var epNumber = 0
-            episodes.addAll(parsedResponse2.value.data.mapNotNull {
-                if (it.type != "trailer") {
-                    val episodePage = app.get(fixUrl(it.url)).document
-                    val link = extractVideoUrl(episodePage)
+        val script = doc.body().select("script").firstOrNull {
+            it.data().contains("collection_subcollection_RC-")
+        }?.data()
+        if (script != null) {// Collections with subcollections
+            val matches = Regex("collection_subcollection_RC-[0-9]+_(RC-[0-9]+)").findAll(script)
+            val ids = matches.map {
+                it.groupValues.toList().last().toJson()
+            }
+//            Log.d("ARTE", ids.toJson())
+            var season = 0
+            for (subCollectionID in ids) {
+                season++
+                val apiUrl =
+                    "https://api.arte.tv/api/emac/v4/$lang/web/zones/ea28263a-f2c2-4b63-8098-a31bf1868364/content/?collectionId=$collectionID&page=1&pageId=collection&subCollectionId=$subCollectionID&type=collection"
+                val response = app.get(apiUrl).body.string()
+                val resp = parseJson<Value>(response)
+                var epNum = 0
+                episodes.addAll(resp.data.mapNotNull {
+                    epNum++
+                    it.toEpisode(season, epNum)
+                })
+            }
+        } else { // Normal collections
+//            Log.d("ARTE", "No Subcollections")
+            for (page in (1..100)) {
+                val apiUrl =
+                    "https://api.arte.tv/api/emac/v4/$lang/web/zones/adcc5a2e-85f2-4dfb-9fc6-72755ff56267/content?collectionId=$collectionID&page=$page&pageId=collection&type=collection"
+                val response = app.get(apiUrl).body.string()
+                val resp = parseJson<Value>(response)
+                val lastPage = resp.pagination?.totalPages ?: 100
+                var epNumber = 0
+                val data = resp.data
+                episodes.addAll(data.mapNotNull {
                     epNumber++
-                    newEpisode(link ?: "") {
-                        this.name = it.title
-                        this.description = it.description + "\n" + it.availability.label
-                        this.posterUrl = it.image.url.replace("__SIZE__", "265x149")
-                        this.runTime = it.duration / 60
-                        this.date = convertToUnixTimestamp(it.availability.start)
-                        this.episode = epNumber
-                        this.season = page
-                    }
-                } else {
-                    null
-                }
-            })
+                    it.toEpisode(fallbackEpNumber = epNumber)
+                })
+                if (data.isEmpty() || page == lastPage) break
+            }
         }
-
         return episodes
     }
 
@@ -141,8 +151,8 @@ class Arte(language: String) : MainAPI() {
 
             val date = sdf.parse(isoTimestamp)
 
-            date?.let { it.time }
-        } catch (e: Exception) {
+            date?.time
+        } catch (_: Exception) {
             null
         }
     }
@@ -161,112 +171,63 @@ class Arte(language: String) : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        Log.d("ARTE", data)
+//        Log.d("ARTE", data)
         if (data.isEmpty()) return false
         callback(
             newExtractorLink(
                 this.name,
                 this.name,
-                data,
-                type = INFER_TYPE
+                data
             )
         )
         return true
     }
 
-    data class ShowApiResponse(
-        @JsonProperty("value") val value: Value,
-    )
 
-    data class Value(
-        @JsonProperty("data") val data: List<EpisodeData>,
-        @JsonProperty("pagination") val pagination: Pagination?,
-    )
-
-    data class EpisodeData(
-        @JsonProperty("mainImage") val image: ShowImage,
-        @JsonProperty("shortDescription") val description: String,
-        @JsonProperty("title") val title: String,
-        @JsonProperty("type") val type: String,
-        @JsonProperty("duration") val duration: Int, //In minutes
-        @JsonProperty("url") val url: String,
-        @JsonProperty("availability") val availability: Availability,
-    )
-
-    data class Availability(
-        @JsonProperty("start") val start: String,
-        @JsonProperty("label") val label: String,
-    )
-
-    data class ShowImage(
-        @JsonProperty("url") val url: String,
-    )
-
-    data class Pagination(
-        @JsonProperty("page") val currentPage: Int,
-        @JsonProperty("pages") val totalPages: Int,
-    )
-
-    data class SearchApiResponse(
-        @JsonProperty("value") val value: Page,
-    )
-
-    data class Page(
-        @JsonProperty("zones") val zones: List<Zones>,
-    )
-
-    data class Zones(
-        @JsonProperty("content") val content: SearchContent,
-        @JsonProperty("displayOptions") val displayOptions: DisplayOptions,
-        @JsonProperty("title") val title: String
-    )
-
-    data class SearchContent(
-        @JsonProperty("data") val data: List<ApiData>,
-    )
-
-    data class DisplayOptions(
-        @JsonProperty("template") val template: String
-    )
-
-    data class ApiData(
-        @JsonProperty("mainImage") val image: ShowImage,
-//        @JsonProperty("shortDescription") val description: String,
-        @JsonProperty("title") val title: String,
-        @JsonProperty("subtitle") val subtitle: String?,
-        @JsonProperty("programId") val programId: String?,
-        @JsonProperty("url") val url: String,
-        @JsonProperty("kind") val kind: Kind,
-    ) {
-        fun toSearchResponse(
-            isHorizontal: Boolean,
-            fixUrl: (String) -> String,
-            newMovieSearchResponse: (String, String, TvType, Boolean, initializer: MovieSearchResponse.() -> Unit) -> MovieSearchResponse,
-            newTvSeriesSearchResponse: (String, String,TvType, Boolean, initializer: TvSeriesSearchResponse.() -> Unit) -> TvSeriesSearchResponse,
-        ): SearchResponse? {
-            if (this.kind.code == "EXTERNAL") return null
-            val type = if(this.kind.isCollection) TvType.TvSeries else TvType.Movie
-            val title = if (this.subtitle == null) this.title else {
-                this.title + " - " + this.subtitle
+    fun ApiData.toSearchResponse(isHorizontal: Boolean): SearchResponse? {
+        if (this.kind.code == "EXTERNAL") return null
+        val type = if (this.kind.isCollection) TvType.TvSeries else TvType.Movie
+        val title = if (this.subtitle == null) this.title else {
+            this.title + " - " + this.subtitle
+        }
+        val link = fixUrl(this.url)
+        val imgSize = if (isHorizontal) "620x350" else "500x750"
+        val image = this.image.url.replace("__SIZE__", imgSize)
+        return if (type == TvType.Movie) {
+            newMovieSearchResponse(title, link, type, false) {
+                posterUrl = image
             }
-            val link = fixUrl(this.url)
-            val imgSize = if (isHorizontal) "620x350" else "500x750"
-            val image = this.image.url.replace("__SIZE__", imgSize)
-            return if (type == TvType.Movie) {
-                newMovieSearchResponse(title, link, type, false) {
-                    posterUrl = image
-                }
-            } else {
-                newTvSeriesSearchResponse(title, link, type, false) {
-                    posterUrl = image
-                }
+        } else {
+            newTvSeriesSearchResponse(title, link, type, false) {
+                posterUrl = image
             }
         }
     }
 
-    data class Kind(
-        @JsonProperty("code") val code: String,
-        @JsonProperty("label") val label: String,
-        @JsonProperty("isCollection") val isCollection: Boolean,
-    )
+    private suspend fun EpisodeData.toEpisode(
+        fallbackSeasonNumber: Int = 1,
+        fallbackEpNumber: Int
+    ): Episode? {
+        val data = this
+        if (data.type != "trailer") {
+            val episodePage = app.get(fixUrl(data.url)).document
+            val link = extractVideoUrl(episodePage)
+            return newEpisode(link ?: "") {
+                this.name = data.title
+                this.description = data.description + "\n" + data.availability.label
+                this.posterUrl = data.image.url.replace("__SIZE__", "265x149")
+                this.runTime = data.duration / 60
+                this.date = convertToUnixTimestamp(data.availability.start)
+                if (data.epInfo == null || data.epInfo.season == null || data.epInfo.episode == null) {
+                    this.episode = fallbackEpNumber
+                    this.season = fallbackSeasonNumber
+                } else {
+                    this.episode = data.epInfo.episode.toIntOrNull()
+                    this.season = data.epInfo.season.toIntOrNull()
+                }
+            }
+        } else {
+            return null
+        }
+    }
 }
