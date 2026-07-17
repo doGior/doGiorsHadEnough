@@ -23,7 +23,7 @@ fun resolveBuildCompletedAtRome(): String {
     val envValue = providers.environmentVariable("BUILD_COMPLETED_AT_ROME").orNull?.trim()
     if (!envValue.isNullOrEmpty()) return envValue
 
-    return SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.ITALY).apply {
+    return SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.ITALY).apply {
         timeZone = TimeZone.getTimeZone("Europe/Rome")
     }.format(Date())
 }
@@ -31,16 +31,16 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 2
+version = 3
 
 cloudstream {
-    description = "Film, serie TV e anime in italiano. Home e ricerca da " +
-        "StreamingCommunity e AnimeUnity, metadati da TMDB e AniList."
+    description = "Film, Serie TV, Anime e Canali TV internazionali. Home e ricerca da " +
+        "StreamingCommunity, AnimeUnity e Free-TV; metadati da TMDB e AniList."
     authors = listOf("Italiani")
 
     status = 1
 
-    tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie")
+    tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "Live")
 
     requiresResources = true
     language = "it"
