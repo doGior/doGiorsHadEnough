@@ -1,4 +1,4 @@
-package it.dogior.hadEnough
+package it.dogior.hadEnough.extractor
 
 import org.json.JSONObject
 

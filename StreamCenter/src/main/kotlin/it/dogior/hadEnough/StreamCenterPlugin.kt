@@ -1,5 +1,10 @@
 package it.dogior.hadEnough
 
+import it.dogior.hadEnough.catalog.StreamCenterCatalogs
+import it.dogior.hadEnough.settings.*
+import it.dogior.hadEnough.iptv.StreamCenterIptv
+import it.dogior.hadEnough.stremio.*
+
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.appcompat.app.AppCompatActivity
@@ -7,6 +12,13 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.ui.SyncWatchType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.Locale
@@ -60,6 +72,14 @@ data class StreamCenterStreamingSource(
     val defaultEnabled: Boolean = true,
 )
 
+internal data class StreamCenterStremioManifestRefreshResult(
+    val total: Int,
+    val updated: Int,
+) {
+    val failed: Int
+        get() = (total - updated).coerceAtLeast(0)
+}
+
 @CloudstreamPlugin
 class StreamCenterPlugin : Plugin() {
     companion object {
@@ -68,6 +88,7 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_SHOW_ANIME_HOME_DUB_STATUS = "showAnimeHomeDubStatus"
         const val PREF_SHOW_ANIME_HOME_EPISODE_NUMBER = "showAnimeHomeEpisodeNumber"
         const val PREF_ANIME_CARD_TITLE = "animeCardTitle"
+        const val ANIME_CARD_TITLE_ANIZIP = "aniZip"
         const val ANIME_CARD_TITLE_ANIMEUNITY = "animeUnity"
         const val ANIME_CARD_TITLE_ROMAJI = "romaji"
         const val ANIME_CARD_TITLE_ENGLISH = "english"
@@ -96,22 +117,21 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_SOURCE_ANIMEUNITY = "sourceAnimeUnity"
         const val PREF_SOURCE_ANIMEWORLD = "sourceAnimeWorld"
         const val PREF_SOURCE_ANIMESATURN = "sourceAnimeSaturn"
-        const val PREF_SOURCE_HENTAIWORLD = "sourceHentaiWorld"
         const val PREF_SOURCE_STREAMINGCOMMUNITY = "sourceStreamingCommunity"
 
         const val PREF_URL_ANIMEUNITY = "urlAnimeUnity"
         const val PREF_URL_ANIMEWORLD = "urlAnimeWorld"
         const val PREF_URL_ANIMESATURN = "urlAnimeSaturn"
         const val PREF_URL_STREAMINGCOMMUNITY = "urlStreamingCommunity"
-        const val PREF_URL_HENTAIWORLD = "urlHentaiWorld"
 
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.report"
-        const val DEFAULT_URL_HENTAIWORLD = "https://www.hentaiworld.me"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.sale"
 
         const val PREF_SOURCE_PRIORITY = "sourcePriority"
+        const val PREF_STREMIO_ADDONS = "stremioAddons"
+        private const val PREF_STREMIO_ADDON_ENABLED_PREFIX = "stremioAddonEnabled_"
 
         const val PREF_AUTO_UPDATE_SOURCE_URLS = "autoUpdateSourceUrls"
 
@@ -124,7 +144,14 @@ class StreamCenterPlugin : Plugin() {
         const val MIN_HOME_COUNT = 6
         const val MAX_HOME_COUNT = Int.MAX_VALUE
 
-        val homeCategories = listOf("anime", "tv", "movie", "tracking", "live")
+        val homeCategories = listOf(
+            "anime",
+            "tv",
+            "movie",
+            "live",
+            "tracking",
+            StreamCenterCatalogs.CATEGORY_KEY,
+        )
 
         private val standardTrackingStatuses = listOf(
             StreamCenterTrackingListStatus("watching", "Guardando", SyncWatchType.WATCHING),
@@ -310,16 +337,38 @@ class StreamCenterPlugin : Plugin() {
             ),
         )
 
-        val hentaiWorldSource = StreamCenterStreamingSource(
-            key = PREF_SOURCE_HENTAIWORLD,
-            title = "HentaiWorld",
-            urlPrefKey = PREF_URL_HENTAIWORLD,
-            defaultUrl = DEFAULT_URL_HENTAIWORLD,
-            defaultEnabled = false,
-        )
-
         internal var activeSharedPref: SharedPreferences? = null
         internal var activeContext: Context? = null
+        private var activePlugin: StreamCenterPlugin? = null
+
+        internal fun refreshCatalogs() {
+            activePlugin?.registerConfiguredCatalogs()
+        }
+
+        internal fun resetAllConfiguration(
+            context: Context,
+            sharedPref: SharedPreferences?,
+        ) {
+            val preferences = sharedPref
+                ?: activeSharedPref
+                ?: context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val failures = listOfNotNull(
+                runCatching {
+                    check(preferences.edit().clear().commit()) {
+                        "Impossibile cancellare la configurazione principale."
+                    }
+                }.exceptionOrNull(),
+                runCatching { StreamCenterBackupManager.resetDirectory(context) }.exceptionOrNull(),
+                runCatching { StreamCenter.resetRuntimeConfiguration() }.exceptionOrNull(),
+                runCatching { StreamCenterStremioManifestRefreshNotice.reset() }.exceptionOrNull(),
+            )
+            if (failures.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Non è stato possibile completare il ripristino della configurazione.",
+                    failures.first(),
+                )
+            }
+        }
 
         fun shouldShowHomeScore(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_SHOW_HOME_SCORE, true) ?: true
@@ -334,11 +383,12 @@ class StreamCenterPlugin : Plugin() {
         }
 
         fun getAnimeCardTitle(sharedPref: SharedPreferences?): String {
-            return when (sharedPref?.getString(PREF_ANIME_CARD_TITLE, ANIME_CARD_TITLE_ANIMEUNITY)) {
+            return when (sharedPref?.getString(PREF_ANIME_CARD_TITLE, ANIME_CARD_TITLE_ANIZIP)) {
+                ANIME_CARD_TITLE_ANIMEUNITY -> ANIME_CARD_TITLE_ANIMEUNITY
                 ANIME_CARD_TITLE_ROMAJI -> ANIME_CARD_TITLE_ROMAJI
                 ANIME_CARD_TITLE_ENGLISH -> ANIME_CARD_TITLE_ENGLISH
                 ANIME_CARD_TITLE_NATIVE -> ANIME_CARD_TITLE_NATIVE
-                else -> ANIME_CARD_TITLE_ANIMEUNITY
+                else -> ANIME_CARD_TITLE_ANIZIP
             }
         }
 
@@ -371,13 +421,163 @@ class StreamCenterPlugin : Plugin() {
             return sharedPref?.getBoolean(PREF_GROUP_ANIME_DUB_SUB, true) ?: true
         }
 
-        private fun allStreamingSources(): List<StreamCenterStreamingSource> {
-            return streamingSources + hentaiWorldSource
+        fun isStreamingSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
+            val source = streamingSources.firstOrNull { it.key == prefKey } ?: return false
+            return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
         }
 
-        fun isStreamingSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
-            val source = allStreamingSources().firstOrNull { it.key == prefKey } ?: return false
-            return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
+        internal fun getStremioAddons(sharedPref: SharedPreferences?): List<StreamCenterStremioAddon> {
+            val raw = sharedPref?.getString(PREF_STREMIO_ADDONS, null) ?: return emptyList()
+            val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+            return buildList {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val key = item.optString("key").trim()
+                    val manifestUrl = item.optString("manifestUrl").trim()
+                    val id = item.optString("id").trim()
+                    val name = item.optString("name").trim()
+                    if (key.isBlank() || manifestUrl.isBlank() || id.isBlank() || name.isBlank()) continue
+                    add(
+                        StreamCenterStremioAddon(
+                            key = key,
+                            manifestUrl = manifestUrl,
+                            id = id,
+                            name = name,
+                            version = item.optString("version").trim().takeIf(String::isNotBlank),
+                            logoUrl = item.optString("logo").trim().takeIf(String::isNotBlank),
+                            types = item.optStringList("types"),
+                            idPrefixes = item.optStringList("idPrefixes"),
+                            resources = item.optJSONArray("resources")?.let { resources ->
+                                buildList {
+                                    for (resourceIndex in 0 until resources.length()) {
+                                        val resource = resources.optJSONObject(resourceIndex) ?: continue
+                                        val resourceName = resource.optString("name").trim()
+                                        if (resourceName.isBlank()) continue
+                                        add(
+                                            StreamCenterStremioResource(
+                                                name = resourceName,
+                                                types = resource.optStringList("types"),
+                                                idPrefixes = resource.optStringList("idPrefixes"),
+                                            ),
+                                        )
+                                    }
+                                }
+                            }.orEmpty(),
+                        ),
+                    )
+                }
+            }.distinctBy { it.key }
+        }
+
+        internal fun saveStremioAddon(sharedPref: SharedPreferences?, addon: StreamCenterStremioAddon) {
+            val existing = getStremioAddons(sharedPref).toMutableList()
+            val index = existing.indexOfFirst { it.key == addon.key }
+            if (index >= 0) existing[index] = addon else existing += addon
+            sharedPref?.edit()?.putString(
+                PREF_STREMIO_ADDONS,
+                JSONArray().apply { existing.forEach { put(it.toPreferenceJson()) } }.toString(),
+            )?.apply()
+        }
+
+        internal suspend fun refreshStremioAddonManifests(
+            sharedPref: SharedPreferences?,
+        ): StreamCenterStremioManifestRefreshResult {
+            val prefs = sharedPref
+                ?: return StreamCenterStremioManifestRefreshResult(total = 0, updated = 0)
+            val originals = getStremioAddons(prefs)
+            if (originals.isEmpty()) {
+                return StreamCenterStremioManifestRefreshResult(total = 0, updated = 0)
+            }
+            val semaphore = Semaphore(STREMIO_MANIFEST_REFRESH_CONCURRENCY)
+            val fetched = supervisorScope {
+                originals.map { original ->
+                    async(Dispatchers.IO) {
+                        original to semaphore.withPermit {
+                            runCatching {
+                                StreamCenterStremioAddonClient.readManifest(original.manifestUrl)
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            var updated = 0
+            fetched.forEach { (original, result) ->
+                val replacement = result.getOrNull() ?: return@forEach
+                val current = getStremioAddons(prefs).firstOrNull { it.key == original.key }
+                    ?: return@forEach
+                if (current.manifestUrl != original.manifestUrl) return@forEach
+                if (replaceStremioAddon(prefs, current, replacement)) updated += 1
+            }
+            return StreamCenterStremioManifestRefreshResult(
+                total = originals.size,
+                updated = updated,
+            )
+        }
+
+        internal fun replaceStremioAddon(
+            sharedPref: SharedPreferences?,
+            previous: StreamCenterStremioAddon,
+            replacement: StreamCenterStremioAddon,
+        ): Boolean {
+            val prefs = sharedPref ?: return false
+            val existing = getStremioAddons(prefs).toMutableList()
+            val index = existing.indexOfFirst { it.key == previous.key }
+            if (index < 0) return false
+            val collisionIndex = existing.indexOfFirst { it.key == replacement.key }
+            val mergesExisting = replacement.key != previous.key && collisionIndex >= 0
+            if (mergesExisting) {
+                val collision = existing[collisionIndex]
+                if (collision.id != replacement.id || collision.manifestUrl != replacement.manifestUrl) {
+                    return false
+                }
+            }
+
+            val wasEnabled = isStremioAddonEnabled(prefs, previous.key) ||
+                (mergesExisting && isStremioAddonEnabled(prefs, replacement.key))
+            if (mergesExisting) {
+                existing[collisionIndex] = replacement
+                existing.removeAt(index)
+            } else {
+                existing[index] = replacement
+            }
+            prefs.edit().apply {
+                putString(
+                    PREF_STREMIO_ADDONS,
+                    JSONArray().apply { existing.forEach { put(it.toPreferenceJson()) } }.toString(),
+                )
+                if (replacement.key != previous.key) {
+                    putBoolean(stremioEnabledPrefKey(replacement.key), wasEnabled)
+                    remove(stremioEnabledPrefKey(previous.key))
+                    val updatedPriority = getSourcePriorityOrder(prefs)
+                        .map { key -> if (key == previous.key) replacement.key else key }
+                        .distinct()
+                    putString(PREF_SOURCE_PRIORITY, updatedPriority.joinToString(","))
+                }
+            }.apply()
+            return true
+        }
+
+        fun removeStremioAddon(sharedPref: SharedPreferences?, addonKey: String) {
+            val prefs = sharedPref ?: return
+            val retained = getStremioAddons(prefs).filterNot { it.key == addonKey }
+            prefs.edit().apply {
+                if (retained.isEmpty()) remove(PREF_STREMIO_ADDONS)
+                else putString(
+                    PREF_STREMIO_ADDONS,
+                    JSONArray().apply { retained.forEach { put(it.toPreferenceJson()) } }.toString(),
+                )
+                remove(stremioEnabledPrefKey(addonKey))
+                val order = getSourcePriorityOrder(prefs).filterNot { it == addonKey }
+                putString(PREF_SOURCE_PRIORITY, order.joinToString(","))
+            }.apply()
+        }
+
+        fun isStremioAddonEnabled(sharedPref: SharedPreferences?, addonKey: String): Boolean {
+            return sharedPref?.getBoolean(stremioEnabledPrefKey(addonKey), true) ?: true
+        }
+
+        fun setStremioAddonEnabled(sharedPref: SharedPreferences?, addonKey: String, enabled: Boolean) {
+            sharedPref?.edit()?.putBoolean(stremioEnabledPrefKey(addonKey), enabled)?.apply()
         }
 
         private fun normalizeSourceUrl(url: String): String {
@@ -387,7 +587,7 @@ class StreamCenterPlugin : Plugin() {
         }
 
         fun getSourceBaseUrl(sharedPref: SharedPreferences?, prefKey: String): String {
-            val source = allStreamingSources().firstOrNull { it.key == prefKey }
+            val source = streamingSources.firstOrNull { it.key == prefKey }
                 ?: return ""
             val stored = sharedPref
                 ?.getString(source.urlPrefKey, null)
@@ -397,7 +597,7 @@ class StreamCenterPlugin : Plugin() {
         }
 
         fun setSourceBaseUrl(sharedPref: SharedPreferences?, prefKey: String, url: String) {
-            val source = allStreamingSources().firstOrNull { it.key == prefKey } ?: return
+            val source = streamingSources.firstOrNull { it.key == prefKey } ?: return
             val cleaned = normalizeSourceUrl(url)
             sharedPref?.edit()?.apply {
                 if (cleaned.isBlank() || cleaned == source.defaultUrl.trimEnd('/')) {
@@ -410,25 +610,66 @@ class StreamCenterPlugin : Plugin() {
 
         fun resetSourceUrls(sharedPref: SharedPreferences?) {
             sharedPref?.edit()?.apply {
-                allStreamingSources().forEach { remove(it.urlPrefKey) }
+                streamingSources.forEach { remove(it.urlPrefKey) }
             }?.apply()
         }
 
         fun getSourcePriorityOrder(sharedPref: SharedPreferences?): List<String> {
-            val defaultOrder = streamingSources.map { it.key }
+            val defaultOrder = streamingSources.map { it.key } + getStremioAddons(sharedPref).map { it.key }
             val stored = sharedPref
                 ?.getString(PREF_SOURCE_PRIORITY, null)
                 ?.split(",")
                 ?.map { it.trim() }
-                ?.filter { key -> streamingSources.any { it.key == key } }
+                ?.filter { key -> key in defaultOrder }
                 ?.distinct()
                 .orEmpty()
             return stored + defaultOrder.filterNot { it in stored }
         }
 
         fun setSourcePriorityOrder(sharedPref: SharedPreferences?, order: List<String>) {
-            sharedPref?.edit()?.putString(PREF_SOURCE_PRIORITY, order.joinToString(","))?.apply()
+            val validKeys = streamingSources.map { it.key } + getStremioAddons(sharedPref).map { it.key }
+            val normalized = order.filter { it in validKeys }.distinct() + validKeys.filterNot { it in order }
+            sharedPref?.edit()?.putString(PREF_SOURCE_PRIORITY, normalized.joinToString(","))?.apply()
         }
+
+        private fun stremioEnabledPrefKey(addonKey: String): String =
+            PREF_STREMIO_ADDON_ENABLED_PREFIX + addonKey
+
+        private const val STREMIO_MANIFEST_REFRESH_CONCURRENCY = 4
+
+        private fun StreamCenterStremioAddon.toPreferenceJson(): JSONObject = JSONObject().apply {
+            put("key", key)
+            put("manifestUrl", manifestUrl)
+            put("id", id)
+            put("name", name)
+            version?.let { put("version", it) }
+            logoUrl?.let { put("logo", it) }
+            put("types", JSONArray(types))
+            put("idPrefixes", JSONArray(idPrefixes))
+            put(
+                "resources",
+                JSONArray().apply {
+                    resources.forEach { resource ->
+                        put(
+                            JSONObject().apply {
+                                put("name", resource.name)
+                                put("types", JSONArray(resource.types))
+                                put("idPrefixes", JSONArray(resource.idPrefixes))
+                            },
+                        )
+                    }
+                },
+            )
+        }
+
+        private fun JSONObject.optStringList(key: String): List<String> =
+            optJSONArray(key)?.let { array ->
+                buildList {
+                    for (index in 0 until array.length()) {
+                        array.optString(index).trim().takeIf(String::isNotBlank)?.let(::add)
+                    }
+                }
+            }.orEmpty()
 
         fun isSourceUrlAutoUpdateEnabled(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_AUTO_UPDATE_SOURCE_URLS, true) ?: true
@@ -616,7 +857,7 @@ class StreamCenterPlugin : Plugin() {
                 shortCommit != null && buildCompletedAt.isNotEmpty() ->
                     "Commit $shortCommit\nBuild $buildCompletedAt"
                 shortCommit != null -> "Commit $shortCommit"
-                else -> "Informazioni build non disponibili"
+                else -> "???"
             }
         }
 
@@ -767,11 +1008,19 @@ class StreamCenterPlugin : Plugin() {
                 ?.distinct()
                 .orEmpty()
             if (stored.isEmpty()) return
-            if ("tracking" in stored) return
-            val insertAt = stored.indexOf("movie").let { movieIndex ->
-                if (movieIndex >= 0) movieIndex + 1 else stored.indexOf("live").coerceAtLeast(0)
+            val updated = stored.toMutableList()
+            if ("tracking" in updated) {
+                val isPreviousDefault = updated == listOf("anime", "tv", "movie", "tracking", "live") ||
+                    updated == listOf("anime", "tv", "tracking", "movie", "live")
+                if (!isPreviousDefault) return
+                updated.remove("tracking")
+                updated.add(updated.indexOf("live").let { if (it >= 0) it + 1 else updated.size }, "tracking")
+            } else {
+                val insertAt = updated.indexOf("live").let { liveIndex ->
+                    if (liveIndex >= 0) liveIndex + 1 else updated.indexOf("movie").coerceAtLeast(0)
+                }
+                updated.add(insertAt, "tracking")
             }
-            val updated = stored.toMutableList().apply { add(insertAt, "tracking") }
             prefs.edit().putString(PREF_HOME_CATEGORY_ORDER, updated.joinToString(",")).apply()
         }
 
@@ -1096,17 +1345,35 @@ class StreamCenterPlugin : Plugin() {
     }
 
     private var sharedPref: SharedPreferences? = null
+    private val registeredCatalogKeys = mutableSetOf<String>()
+
+    private fun registerConfiguredCatalogs() {
+        val preferences = sharedPref ?: return
+        if (!isHomeCategoryEnabled(preferences, StreamCenterCatalogs.CATEGORY_KEY)) return
+        StreamCenterCatalogs.configuredCatalogs(preferences).forEach { catalog ->
+            if (registeredCatalogKeys.add(catalog.key)) {
+                registerMainAPI(StreamCenter(preferences, catalogDefinition = catalog))
+            }
+        }
+    }
 
     override fun load(context: Context) {
         sharedPref = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         activeSharedPref = sharedPref
         activeContext = context.applicationContext
+        activePlugin = this
 
         sharedPref?.let { prefs ->
             if (prefs.getInt(PREF_HOME_LAYOUT_VERSION, 0) < CURRENT_HOME_LAYOUT_VERSION) {
                 prefs.edit()
                     .putString(PREF_HOME_ORDER, defaultHomeOrder())
                     .putInt(PREF_HOME_LAYOUT_VERSION, CURRENT_HOME_LAYOUT_VERSION)
+                    .apply()
+            }
+            if (prefs.contains("stremioSections") || prefs.contains("stremioSectionsMigrationVersion")) {
+                prefs.edit()
+                    .remove("stremioSections")
+                    .remove("stremioSectionsMigrationVersion")
                     .apply()
             }
             migrateLegacyIptvFavorites(prefs)
@@ -1119,6 +1386,7 @@ class StreamCenterPlugin : Plugin() {
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_SERIES))
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_ANIME))
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_LIVE))
+        registerConfiguredCatalogs()
 
         openSettings = { ctx ->
             if (ctx is AppCompatActivity) {

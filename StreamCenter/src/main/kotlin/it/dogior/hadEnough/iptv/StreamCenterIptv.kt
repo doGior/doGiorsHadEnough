@@ -1,4 +1,4 @@
-package it.dogior.hadEnough
+package it.dogior.hadEnough.iptv
 
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.async

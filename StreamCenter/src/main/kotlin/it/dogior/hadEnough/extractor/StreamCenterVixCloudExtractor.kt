@@ -1,4 +1,4 @@
-package it.dogior.hadEnough
+package it.dogior.hadEnough.extractor
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app

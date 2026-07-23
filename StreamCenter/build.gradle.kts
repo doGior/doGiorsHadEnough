@@ -31,11 +31,11 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 3
+version = 4
+val pluginVersion = version.toString()
 
 cloudstream {
-    description = "Film, Serie TV, Anime e Canali TV internazionali. Home e ricerca da " +
-        "StreamingCommunity, AnimeUnity e Free-TV; metadati da TMDB e AniList."
+    description = "Film, Serie TV, Anime e TV in un unico posto."
     authors = listOf("Italiani")
 
     status = 1
@@ -45,7 +45,7 @@ cloudstream {
     requiresResources = true
     language = "it"
 
-    iconUrl = "https://www.themoviedb.org/favicon.ico"
+    iconUrl = "https://raw.githubusercontent.com/doGior/doGiorsHadEnough/master/StreamCenter/icon.png"
 }
 
 android {
@@ -54,6 +54,7 @@ android {
     }
 
     defaultConfig {
+        buildConfigField("String", "PLUGIN_VERSION", escapeBuildConfigString(pluginVersion))
         buildConfigField("String", "BUILD_COMMIT_SHA", escapeBuildConfigString(buildCommitSha))
         buildConfigField(
             "String",
