@@ -2,60 +2,59 @@ package it.dogior.hadEnough.extractor
 
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import org.json.JSONObject
 
 class StreamCenterVixSrcExtractor : ExtractorApi() {
-    override val mainUrl = "vixsrc.to"
+    override val mainUrl = "https://vixsrc.to"
     override val name = "StreamCenterVixSrc"
-    override val requiresReferer = false
+    override val requiresReferer = true
 
     override suspend fun getUrl(
         url: String,
         referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit,
+        callback: (ExtractorLink) -> Unit
     ) {
-        callback(
-            newExtractorLink(
-                source = "VixSrc",
-                name = "StreamingCommunity - VixSrc",
-                url = getPlaylistLink(url, referer),
-                type = ExtractorLinkType.M3U8,
-            ) {
-                this.referer = referer ?: "https://vixsrc.to/"
+        val resolver = WebViewResolver(
+            interceptUrl = Regex("""playlist.*token"""),
+            useOkhttp = true,
+            timeout = 15000L
+        )
+
+        try {
+            val response = app.get(
+                url = url,
+                referer = mainUrl,
+                interceptor = resolver,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                )
+            )
+
+            val m3u8Url = response.url
+
+            if (m3u8Url.contains("playlist") && m3u8Url.contains("token")) {
+                callback.invoke(
+                    newExtractorLink(
+                        source = "VixSrc",
+                        name = "StreamingCommunity - VixSrc",
+                        url = m3u8Url,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = mainUrl
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "Origin" to mainUrl,
+                            "Referer" to mainUrl
+                        )
+                    }
+                )
             }
-        )
-    }
-
-    private suspend fun getPlaylistLink(url: String, referer: String?): String {
-        return StreamCenterVixParser.playlistUrl(getScript(url, referer))
-    }
-
-    private suspend fun getScript(url: String, referer: String?): JSONObject {
-        val host = url.toHttpUrl().host
-        val headers = mapOf(
-            "Accept" to "*/*",
-            "Alt-Used" to host,
-            "Connection" to "keep-alive",
-            "Host" to host,
-            "Referer" to referer.orEmpty(),
-            "Sec-Fetch-Dest" to "iframe",
-            "Sec-Fetch-Mode" to "navigate",
-            "Sec-Fetch-Site" to "cross-site",
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/133.0",
-        )
-        val script = app.get(url, headers = headers).document
-            .select("script")
-            .firstOrNull { it.data().contains("masterPlaylist") }
-            ?.data()
-            ?.replace("\n", "\t")
-            ?: error("Missing VixSrc masterPlaylist script")
-
-        return StreamCenterVixParser.parseScript(script)
+        } catch (_: Exception) {}
     }
 }

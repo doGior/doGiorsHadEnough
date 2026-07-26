@@ -111,6 +111,7 @@ internal class StreamingCommunityClient(
                     iframeUrl = "${mainUrl()}/iframe/${title.id}?episode_id=${episode.id}&canPlayFHD=1",
                     type = "tv",
                     tmdbId = title.tmdbId,
+                    imdbId = title.imdbId,
                     seasonNumber = seasonWithEpisodes.number,
                     episodeNumber = episode.number,
                 )
@@ -125,6 +126,7 @@ internal class StreamingCommunityClient(
             iframeUrl = "${mainUrl()}/iframe/${title.id}&canPlayFHD=1",
             type = title.type,
             tmdbId = title.tmdbId,
+            imdbId = title.imdbId,
         )
     }
 

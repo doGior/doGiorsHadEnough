@@ -118,16 +118,19 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_SOURCE_ANIMEWORLD = "sourceAnimeWorld"
         const val PREF_SOURCE_ANIMESATURN = "sourceAnimeSaturn"
         const val PREF_SOURCE_STREAMINGCOMMUNITY = "sourceStreamingCommunity"
+        const val PREF_SOURCE_VIDXGO = "sourceVidxGo"
 
         const val PREF_URL_ANIMEUNITY = "urlAnimeUnity"
         const val PREF_URL_ANIMEWORLD = "urlAnimeWorld"
         const val PREF_URL_ANIMESATURN = "urlAnimeSaturn"
         const val PREF_URL_STREAMINGCOMMUNITY = "urlStreamingCommunity"
+        const val PREF_URL_VIDXGO = "urlVidxGo"
 
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
         const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.sale"
+        const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
 
         const val PREF_SOURCE_PRIORITY = "sourcePriority"
         const val PREF_STREMIO_ADDONS = "stremioAddons"
@@ -315,6 +318,13 @@ class StreamCenterPlugin : Plugin() {
                 title = "StreamingCommunity",
                 urlPrefKey = PREF_URL_STREAMINGCOMMUNITY,
                 defaultUrl = DEFAULT_URL_STREAMINGCOMMUNITY,
+                category = "tv",
+            ),
+            StreamCenterStreamingSource(
+                key = PREF_SOURCE_VIDXGO,
+                title = "VidxGo",
+                urlPrefKey = PREF_URL_VIDXGO,
+                defaultUrl = DEFAULT_URL_VIDXGO,
                 category = "tv",
             ),
             StreamCenterStreamingSource(
