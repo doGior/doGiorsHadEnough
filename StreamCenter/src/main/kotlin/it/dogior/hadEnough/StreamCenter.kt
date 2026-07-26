@@ -186,6 +186,9 @@ class StreamCenter internal constructor(
 
     private val streamingCommunityMainUrl: String
         get() = "${streamingCommunityRootUrl}it"
+    private val vidxGoUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_VIDXGO)
+            .ifBlank { StreamCenterPlugin.DEFAULT_URL_VIDXGO }
     private val headers = mapOf(
         "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.5,en;q=0.3",
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
@@ -2075,6 +2078,18 @@ class StreamCenter internal constructor(
                     )
                 }
         }
+
+        playbackData?.streamingCommunity
+            ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIDXGO) }
+            ?.let { scPlayback ->
+                addTask(StreamCenterPlugin.PREF_SOURCE_VIDXGO) {
+                    loadVidxGoLinks(
+                        playbackData = scPlayback,
+                        subtitleCallback = uniqueSubtitleCallback,
+                        callback = uniqueCallback,
+                    )
+                }
+            }
 
         playbackData?.stremio?.let { stremioContext ->
             activeStremioResolverAddons().forEach { addon ->
@@ -4478,6 +4493,32 @@ class StreamCenter internal constructor(
         }
 
         return runParallelSourceTasks(tasks)
+    }
+
+    private suspend fun loadVidxGoLinks(
+        playbackData: StreamingCommunityPlaybackData,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
+        val rawImdbId = playbackData.imdbId ?: return false
+        val imdbNumber = rawImdbId.removePrefix("tt")
+
+        val targetUrl = if (playbackData.type == "movie") {
+            "$vidxGoUrl/$imdbNumber"
+        } else {
+            val season = playbackData.seasonNumber ?: return false
+            val episode = playbackData.episodeNumber ?: return false
+            "$vidxGoUrl/$imdbNumber/$season/$episode"
+        }
+
+        return runCatching {
+            StreamCenterVidxGoExtractor().getUrl(
+                url = targetUrl,
+                referer = "$vidxGoUrl/",
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+            )
+        }.isSuccess
     }
 
     private fun buildStreamingCommunityVixSrcUrl(playbackData: StreamingCommunityPlaybackData): String? {

@@ -35,6 +35,7 @@ internal data class StreamingCommunityPlaybackData(
     val iframeUrl: String,
     val type: String,
     val tmdbId: Int? = null,
+    val imdbId: String? = null,
     val seasonNumber: Int? = null,
     val episodeNumber: Int? = null,
 )

@@ -1212,7 +1212,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
     protected fun checkApis() {
         val ctx = context ?: return
         val apiNames = listOf("AniList", "MyAnimeList (Jikan)", "Kitsu", "AniZip", "TMDB")
-        val sourceNames = listOf("StreamingCommunity", "AnimeUnity", "AnimeWorld", "AnimeSaturn")
+        val sourceNames = listOf("StreamingCommunity", "VidxGo", "AnimeUnity", "AnimeWorld", "AnimeSaturn")
         val checkNames = apiNames + sourceNames
         val rows = mutableMapOf<String, ApiCheckRowViews>()
         val states = checkNames.associateWith { ApiCheckState.WAITING }.toMutableMap()
