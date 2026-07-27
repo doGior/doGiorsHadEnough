@@ -135,12 +135,25 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_ANIME_HOME_EPISODE_NUMBER, enabled) }
             },
         )
+        content.addView(
+            switchRow(
+                title = "ID di tracciamento",
+                summary = "Mostra gli ID MAL, AniList, Kitsu e Simkl nelle schede del Catalogo Base.",
+                checked = StreamCenterPlugin.shouldShowTrackingIds(sharedPref),
+                accent = COLOR_TRACKING_IDS,
+                icon = "🆔",
+                fixedHeight = true,
+            ) { enabled ->
+                sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_TRACKING_IDS, enabled) }
+            },
+        )
         content.addView(animeCardTitleRow())
         val displayAccents = listOf(
             COLOR_SCORE,
             COLOR_ANIME_VARIANTS,
             COLOR_ANIME_VARIANTS,
             COLOR_EPISODES,
+            COLOR_TRACKING_IDS,
             COLOR_DISPLAY,
         )
         startBorderSparkleCycle(displayAccents.mapIndexedNotNull { index, accent ->

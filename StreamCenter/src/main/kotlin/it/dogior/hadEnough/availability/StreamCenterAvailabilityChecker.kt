@@ -64,7 +64,9 @@ internal object StreamCenterAvailabilityChecker {
             "StreamingCommunity" to {
                 urlReachable("${sourceUrl(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)}/it")
             },
-            "VidxGo" to ::isVidxGoAvailable,
+            "VidxGo" to {
+                isVidxGoAvailable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_VIDXGO))
+            },
             "AnimeUnity" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) },
             "AnimeWorld" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) },
             "AnimeSaturn" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) },
@@ -113,6 +115,25 @@ internal object StreamCenterAvailabilityChecker {
         }
     }
 
+    private suspend fun isVidxGoAvailable(baseUrl: String): CheckResult {
+        val url = "${baseUrl.trimEnd('/')}/26657236"
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Sec-Fetch-Dest" to "iframe",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "cross-site",
+            "Referer" to "https://altadefinizione.study/",
+            "DNT" to "1",
+        )
+        return httpClient.newCall(Request.Builder().url(url).apply {
+            headers.forEach { (key, value) -> header(key, value) }
+        }.build()).execute().use { response ->
+            if (response.code in 200..399) CheckResult(true) else CheckResult(false, "HTTP ${response.code}")
+        }
+    }
+
     private fun jikanJsonResult(body: String): CheckResult {
         val json = runCatching { JSONObject(body) }.getOrNull()
             ?: return CheckResult(false, "JSON non valido: ${body.trim().take(100)}")
@@ -133,25 +154,6 @@ internal object StreamCenterAvailabilityChecker {
             false,
             detail.takeIf(String::isNotBlank) ?: "JSON senza dati: ${json.keys().asSequence().toList()}",
         )
-    }
-
-    private suspend fun isVidxGoAvailable(): CheckResult {
-        val url = "${StreamCenterPlugin.DEFAULT_URL_VIDXGO}/26657236"
-        val headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Sec-Fetch-Dest" to "iframe",
-            "Sec-Fetch-Mode" to "navigate",
-            "Sec-Fetch-Site" to "cross-site",
-            "Referer" to "https://altadefinizione.study/",
-            "DNT" to "1",
-        )
-        return httpClient.newCall(Request.Builder().url(url).apply {
-            headers.forEach { (k, v) -> header(k, v) }
-        }.build()).execute().use { response ->
-            if (response.code in 200..399) CheckResult(true) else CheckResult(false, "HTTP ${response.code}")
-        }
     }
 
     private suspend fun jsonApiReachable(

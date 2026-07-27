@@ -33,6 +33,43 @@ internal data class StreamCenterStremioResource(
     val idPrefixes: List<String> = emptyList(),
 )
 
+internal data class StreamCenterStremioCatalogDescriptor(
+    val id: String,
+    val type: String,
+    val name: String,
+    val extra: List<String> = emptyList(),
+    val requiredExtra: List<String> = emptyList(),
+)
+
+internal data class StreamCenterStremioCatalogVideo(
+    val id: String,
+    val title: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val posterUrl: String? = null,
+    val description: String? = null,
+)
+
+internal data class StreamCenterStremioCatalogItem(
+    val id: String,
+    val type: String,
+    val name: String,
+    val posterUrl: String? = null,
+    val backgroundUrl: String? = null,
+    val description: String? = null,
+    val year: Int? = null,
+    val score: Double? = null,
+    val genres: List<String> = emptyList(),
+    val imdbId: String? = null,
+    val tmdbId: String? = null,
+    val videos: List<StreamCenterStremioCatalogVideo> = emptyList(),
+)
+
+internal data class StreamCenterStremioCatalogPage(
+    val items: List<StreamCenterStremioCatalogItem>,
+    val hasNext: Boolean,
+)
+
 internal data class StreamCenterStremioAddon(
     val key: String,
     val manifestUrl: String,
@@ -43,7 +80,17 @@ internal data class StreamCenterStremioAddon(
     val types: List<String> = emptyList(),
     val idPrefixes: List<String> = emptyList(),
     val resources: List<StreamCenterStremioResource> = emptyList(),
-)
+    val catalogs: List<StreamCenterStremioCatalogDescriptor> = emptyList(),
+) {
+    val hasStreamingResources: Boolean
+        get() = resources.any { resource ->
+            resource.name.equals("stream", ignoreCase = true) ||
+                resource.name.equals("subtitles", ignoreCase = true)
+        }
+
+    val hasCatalogs: Boolean
+        get() = catalogs.isNotEmpty()
+}
 
 internal data class StreamCenterStremioPlaybackContext(
     val contentTypes: List<String>,
@@ -57,6 +104,7 @@ internal data class StreamCenterStremioPlaybackContext(
     val simklId: Int? = null,
     val season: Int? = null,
     val episode: Int? = null,
+    val catalogAddonKey: String? = null,
 )
 
 internal object StreamCenterStremioAddonClient {
@@ -140,6 +188,90 @@ internal object StreamCenterStremioAddonClient {
             responseUrl
         }
         return parseManifest(resolvedManifestUrl, response.text)
+    }
+
+    suspend fun readStreamingAddon(input: String): StreamCenterStremioAddon {
+        val addon = readManifest(input)
+        check(addon.hasStreamingResources) { "L'add-on non offre stream o sottotitoli" }
+        return addon
+    }
+
+    suspend fun loadCatalog(
+        addon: StreamCenterStremioAddon,
+        catalog: StreamCenterStremioCatalogDescriptor,
+        page: Int,
+        query: String? = null,
+    ): StreamCenterStremioCatalogPage {
+        val normalizedPage = page.coerceAtLeast(1)
+        if (normalizedPage > 1 && !catalog.supportsExtra("skip")) {
+            return StreamCenterStremioCatalogPage(emptyList(), false)
+        }
+        val requestedExtra = linkedSetOf<String>()
+        val extraArguments = buildList {
+            query?.trim()?.takeIf(String::isNotBlank)
+                ?.takeIf { catalog.supportsExtra("search") }
+                ?.let { value ->
+                    requestedExtra += "search"
+                    add("search=${encodePathSegment(value)}")
+                }
+            if ((normalizedPage > 1 || catalog.requiresExtra("skip")) && catalog.supportsExtra("skip")) {
+                requestedExtra += "skip"
+                add("skip=${(normalizedPage - 1) * STREMIO_CATALOG_PAGE_SIZE}")
+            }
+        }
+        if (catalog.requiredExtra.any { name -> name.lowercase(Locale.ROOT) !in requestedExtra }) {
+            return StreamCenterStremioCatalogPage(emptyList(), false)
+        }
+        val extraPath = extraArguments.joinToString("&").takeIf(String::isNotBlank)
+        val response = getResourceSafely(
+            addon,
+            ResourceRequest(
+                name = "catalog",
+                type = catalog.type,
+                id = catalog.id,
+                extraArguments = extraPath,
+            ),
+        ) ?: return StreamCenterStremioCatalogPage(emptyList(), false)
+        val metas = response.optJSONArray("metas") ?: return StreamCenterStremioCatalogPage(emptyList(), false)
+        val items = buildList {
+            for (index in 0 until metas.length()) {
+                val meta = metas.optJSONObject(index) ?: continue
+                parseCatalogItem(addon, meta, catalog.type)?.let(::add)
+            }
+        }.distinctBy { item -> item.id to item.type }
+        return StreamCenterStremioCatalogPage(
+            items = items,
+            hasNext = catalog.supportsExtra("skip") && items.size >= STREMIO_CATALOG_PAGE_SIZE,
+        )
+    }
+
+    suspend fun loadCatalogMeta(
+        addon: StreamCenterStremioAddon,
+        type: String,
+        id: String,
+    ): StreamCenterStremioCatalogItem? {
+        val supportsMeta = addon.resources.isEmpty() || addon.resources.any { resource ->
+            resource.name.equals("meta", ignoreCase = true)
+        }
+        val response = if (supportsMeta) {
+            getResourceSafely(
+                addon,
+                ResourceRequest(
+                    name = "meta",
+                    type = type,
+                    id = id,
+                ),
+            )
+        } else {
+            null
+        }
+        val addonMeta = response?.optJSONObject("meta")?.let { meta ->
+            parseCatalogItem(addon, meta, type)
+        }
+        val needsFallback = addonMeta == null ||
+            (type.equals("series", ignoreCase = true) && addonMeta.videos.isEmpty())
+        val cinemetaMeta = if (needsFallback) loadCinemetaCatalogMeta(addon, type, id) else null
+        return addonMeta?.withFallback(cinemetaMeta) ?: cinemetaMeta
     }
 
     suspend fun load(
@@ -236,14 +368,26 @@ internal object StreamCenterStremioAddonClient {
                 }
             }
         }.orEmpty()
-        check(
-            resources.any { resource ->
-                resource.name.equals("stream", ignoreCase = true) ||
-                    resource.name.equals("subtitles", ignoreCase = true)
-            },
-        ) {
-            "L'add-on non offre stream o sottotitoli"
-        }
+        val catalogs = root.optJSONArray("catalogs")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    val entry = array.optJSONObject(index) ?: continue
+                    val catalogId = entry.optNonBlank("id") ?: continue
+                    val catalogType = entry.optNonBlank("type") ?: continue
+                    val catalogName = entry.optNonBlank("name") ?: catalogId
+                    val extras = entry.catalogExtras()
+                    add(
+                        StreamCenterStremioCatalogDescriptor(
+                            id = catalogId,
+                            type = catalogType,
+                            name = catalogName,
+                            extra = extras.names,
+                            requiredExtra = extras.requiredNames,
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
         return StreamCenterStremioAddon(
             key = addonKey(id, manifestUrl),
             manifestUrl = manifestUrl,
@@ -254,6 +398,7 @@ internal object StreamCenterStremioAddonClient {
             types = types,
             idPrefixes = idPrefixes,
             resources = resources,
+            catalogs = catalogs,
         )
     }
 
@@ -269,6 +414,10 @@ internal object StreamCenterStremioAddonClient {
             append(encodePathSegment(request.type))
             append('/')
             append(encodePathSegment(request.id))
+            request.extraArguments?.takeIf(String::isNotBlank)?.let { arguments ->
+                append('/')
+                append(arguments)
+            }
             append(".json")
         }
         val url = configuredResourceUrl(resourceUrl, addon.manifestUrl)
@@ -577,6 +726,120 @@ internal object StreamCenterStremioAddonClient {
             supportedPrefixes.any { prefix -> requestedId.startsWith(prefix, ignoreCase = true) }
     }
 
+    private fun StreamCenterStremioCatalogDescriptor.supportsExtra(name: String): Boolean =
+        extra.any { it.equals(name, ignoreCase = true) }
+
+    private fun StreamCenterStremioCatalogDescriptor.requiresExtra(name: String): Boolean =
+        requiredExtra.any { it.equals(name, ignoreCase = true) }
+
+    private fun parseCatalogItem(
+        addon: StreamCenterStremioAddon,
+        root: JSONObject,
+        fallbackType: String,
+    ): StreamCenterStremioCatalogItem? {
+        val id = root.optNonBlank("id") ?: return null
+        val name = root.optNonBlank("name", "title") ?: return null
+        val type = root.optNonBlank("type") ?: fallbackType
+        val videos = root.optJSONArray("videos")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    val video = array.optJSONObject(index) ?: continue
+                    val videoId = video.optNonBlank("id") ?: continue
+                    val videoSuffix = VIDEO_SEASON_EPISODE.find(videoId)
+                    add(
+                        StreamCenterStremioCatalogVideo(
+                            id = videoId,
+                            title = video.optNonBlank("title", "name"),
+                            season = video.optNullableInt("season")?.takeIf { it > 0 }
+                                ?: videoSuffix?.groupValues?.getOrNull(1)?.toIntOrNull(),
+                            episode = video.optNullableInt("episode")?.takeIf { it > 0 }
+                                ?: videoSuffix?.groupValues?.getOrNull(2)?.toIntOrNull(),
+                            posterUrl = video.optNonBlank("thumbnail", "poster")
+                                ?.let { value -> resolveManifestAssetUrl(addon.manifestUrl, value) },
+                            description = video.optNonBlank("overview", "description"),
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+        val imdbId = listOfNotNull(
+            root.optNonBlank("imdb_id", "imdbId"),
+            id.takeIf(IMDB_ID::matches),
+        ).firstOrNull(IMDB_ID::matches)?.lowercase(Locale.ROOT)
+        val tmdbId = listOfNotNull(
+            root.optNonBlank("tmdb_id", "tmdbId"),
+            id.takeIf(TMDB_ID::matches),
+        ).firstNotNullOfOrNull { value ->
+            TMDB_ID.matchEntire(value)?.groupValues?.getOrNull(1)
+        }
+        return StreamCenterStremioCatalogItem(
+            id = id,
+            type = type,
+            name = name,
+            posterUrl = root.optNonBlank("poster", "posterUrl")
+                ?.let { value -> resolveManifestAssetUrl(addon.manifestUrl, value) },
+            backgroundUrl = root.optNonBlank("background", "backgroundUrl", "fanart")
+                ?.let { value -> resolveManifestAssetUrl(addon.manifestUrl, value) },
+            description = root.optNonBlank("description", "overview"),
+            year = YEAR_REGEX.find(root.optNonBlank("releaseInfo", "year").orEmpty())
+                ?.value
+                ?.toIntOrNull(),
+            score = root.optNonBlank("imdbRating", "rating")
+                ?.replace(',', '.')
+                ?.toDoubleOrNull()
+                ?.takeIf { it > 0.0 },
+            genres = root.stringList("genres"),
+            imdbId = imdbId,
+            tmdbId = tmdbId,
+            videos = videos,
+        )
+    }
+
+    private suspend fun loadCinemetaCatalogMeta(
+        addon: StreamCenterStremioAddon,
+        type: String,
+        id: String,
+    ): StreamCenterStremioCatalogItem? {
+        if (!IMDB_ID.matches(id)) return null
+        val cinemetaType = when (type.lowercase(Locale.ROOT)) {
+            "movie" -> "movie"
+            "series" -> "series"
+            else -> return null
+        }
+        val url = "$CINEMETA_BASE_URL/meta/$cinemetaType/${encodePathSegment(id)}.json"
+        val response = runCatching {
+            app.get(
+                url,
+                headers = mapOf("Accept" to "application/json"),
+                timeout = 12L,
+            )
+        }.getOrNull() ?: return null
+        if (
+            response.code !in 200..299 ||
+            response.text.length > RESPONSE_MAX_SIZE ||
+            !isHttpsUrl(response.url.ifBlank { url })
+        ) return null
+        return runCatching { JSONObject(response.text).optJSONObject("meta") }
+            .getOrNull()
+            ?.let { meta -> parseCatalogItem(addon, meta, type) }
+    }
+
+    private fun StreamCenterStremioCatalogItem.withFallback(
+        fallback: StreamCenterStremioCatalogItem?): StreamCenterStremioCatalogItem {
+        fallback ?: return this
+        return copy(
+            posterUrl = posterUrl ?: fallback.posterUrl,
+            backgroundUrl = backgroundUrl ?: fallback.backgroundUrl,
+            description = description ?: fallback.description,
+            year = year ?: fallback.year,
+            score = score ?: fallback.score,
+            genres = genres.ifEmpty { fallback.genres },
+            imdbId = imdbId ?: fallback.imdbId,
+            tmdbId = tmdbId ?: fallback.tmdbId,
+            videos = videos.ifEmpty { fallback.videos },
+        )
+    }
+
     private fun JSONObject.optNonBlank(vararg keys: String): String? {
         for (key in keys) {
             val raw = opt(key)
@@ -588,6 +851,24 @@ internal object StreamCenterStremioAddonClient {
         }
         return null
     }
+
+    private fun JSONObject.catalogExtras(): CatalogExtras = optJSONArray("extra")?.let { array ->
+        val names = mutableListOf<String>()
+        val requiredNames = mutableListOf<String>()
+        for (index in 0 until array.length()) {
+            when (val entry = array.opt(index)) {
+                is String -> entry.trim().takeIf(String::isNotBlank)?.let(names::add)
+                is JSONObject -> entry.optNonBlank("name")?.let { name ->
+                    names += name
+                    if (entry.optBoolean("isRequired")) requiredNames += name
+                }
+            }
+        }
+        CatalogExtras(
+            names = names.distinctBy { it.lowercase(Locale.ROOT) },
+            requiredNames = requiredNames.distinctBy { it.lowercase(Locale.ROOT) },
+        )
+    } ?: CatalogExtras()
 
     private fun JSONObject.optNullableInt(key: String): Int? {
         return when (val value = opt(key)) {
@@ -867,14 +1148,17 @@ internal object StreamCenterStremioAddonClient {
                 else -> "https://$value"
             }
         }
-        val uri = runCatching { URI(candidate) }.getOrNull()
+        val encodedCandidate = candidate
+            .replace("|", "%7C")
+            .replace(" ", "%20")
+        val uri = runCatching { URI(encodedCandidate) }.getOrNull()
             ?: error("URL del manifest non valido")
         check(uri.scheme.equals("https", ignoreCase = true)) {
             "Sono ammessi solo manifest HTTPS"
         }
         check(!uri.host.isNullOrBlank()) { "URL del manifest non valido" }
         val configuredQuery = uri.rawQuery?.takeIf(String::isNotBlank)
-        val withoutQuery = candidate
+        val withoutQuery = encodedCandidate
             .substringBefore('#')
             .substringBefore('?')
             .trimEnd('/')
@@ -1003,6 +1287,12 @@ internal object StreamCenterStremioAddonClient {
         val name: String,
         val type: String,
         val id: String,
+        val extraArguments: String? = null,
+    )
+
+    private data class CatalogExtras(
+        val names: List<String> = emptyList(),
+        val requiredNames: List<String> = emptyList(),
     )
 
     private enum class VideoIdStyle {
@@ -1021,6 +1311,8 @@ internal object StreamCenterStremioAddonClient {
         "^(?:kitsu|anilist|mal):[^:]+:\\d+$",
         RegexOption.IGNORE_CASE,
     )
+    private val VIDEO_SEASON_EPISODE = Regex(":(\\d+):(\\d+)$")
+    private val YEAR_REGEX = Regex("(?<!\\d)(?:19|20)\\d{2}(?!\\d)")
     private val INFO_HASH = Regex(
         "^(?:[A-Fa-f0-9]{40}|[A-Za-z2-7]{32})$",
     )
@@ -1031,4 +1323,5 @@ internal object StreamCenterStremioAddonClient {
     )
     private val HTTP_HEADER_NAME = Regex("^[A-Za-z0-9!#%&'*+.^_`|~-]{1,100}$")
     private const val MAX_HEADER_VALUE_LENGTH = 8_192
+    private const val STREMIO_CATALOG_PAGE_SIZE = 100
 }

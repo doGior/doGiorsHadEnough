@@ -25,7 +25,11 @@ internal class AniZipMetadataClient(
         val description = listOf("description", "overview", "synopsis", "summary")
             .firstNotNullOfOrNull { fieldName -> italianText(root, fieldName) }
             ?.let(::cleanDescription)
-        val mappedKitsuId = root.optJSONObject("mappings")?.optNullableInt("kitsu_id")
+        val mappings = root.optJSONObject("mappings")
+        val mappedKitsuId = mappings?.optNullableInt("kitsu_id")
+        val mappedTmdbId = mappings?.optNullableString("themoviedb_id")
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
         val episodes = linkedMapOf<Int, AniZipEpisodeMetadata>()
 
         root.optJSONObject("episodes")?.let { entries ->
@@ -57,6 +61,7 @@ internal class AniZipMetadataClient(
             description = description,
             episodes = episodes,
             kitsuId = mappedKitsuId,
+            tmdbId = mappedTmdbId,
         )
     }
 

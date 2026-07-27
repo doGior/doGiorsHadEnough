@@ -20,6 +20,7 @@ import org.jsoup.Jsoup
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 internal class AniListMetadataClient(
     private val performanceMode: () -> Boolean,
@@ -54,6 +55,21 @@ internal class AniListMetadataClient(
             }
         }
         return result
+    }
+
+    suspend fun fetchTitleAliases(ids: Collection<Int>): Map<Int, List<String>> {
+        val distinctIds = ids.distinct()
+        if (distinctIds.isEmpty()) return emptyMap()
+        val missingIds = distinctIds.filterNot(titleAliasCache::containsKey)
+        missingIds.chunked(SCORE_PAGE_SIZE).forEach { chunk ->
+            val aliases = requestTitleAliases(chunk) ?: return@forEach
+            aliases.forEach { (id, titles) -> titleAliasCache[id] = titles }
+        }
+        return buildMap {
+            distinctIds.forEach { id ->
+                titleAliasCache[id]?.let { put(id, it) }
+            }
+        }
     }
 
     fun showStatus(status: String?): ShowStatus? = when (status?.uppercase(Locale.ROOT)) {
@@ -150,6 +166,43 @@ internal class AniListMetadataClient(
                     val entry = media.optJSONObject(index) ?: continue
                     val id = entry.optNullableInt("id") ?: continue
                     entry.optNullableInt("averageScore")?.let { put(id, formatScore(it)) }
+                }
+            }
+        }.getOrNull()
+    }
+
+    private suspend fun requestTitleAliases(ids: List<Int>): Map<Int, List<String>>? {
+        val body = JSONObject()
+            .put("query", TITLE_ALIASES_QUERY)
+            .put("variables", JSONObject().put("ids", JSONArray(ids)))
+            .toString()
+        return runCatching {
+            throttle()
+            val text = app.post(
+                API_URL,
+                headers = JSON_HEADERS,
+                requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
+                cacheTime = 0,
+            ).text
+            val media = JSONObject(text)
+                .optJSONObject("data")
+                ?.optJSONObject("Page")
+                ?.optJSONArray("media")
+                ?: return@runCatching null
+            buildMap<Int, List<String>> {
+                for (index in 0 until media.length()) {
+                    val entry = media.optJSONObject(index) ?: continue
+                    val id = entry.optNullableInt("id") ?: continue
+                    val titles = entry.optJSONObject("title")
+                        ?.let { title ->
+                            listOfNotNull(
+                                title.optNullableString("romaji"),
+                                title.optNullableString("english"),
+                                title.optNullableString("native"),
+                            )
+                        }
+                        .orEmpty() + entry.optJSONArray("synonyms")?.toStringList().orEmpty()
+                    put(id, titles.distinct())
                 }
             }
         }.getOrNull()
@@ -369,6 +422,7 @@ internal class AniListMetadataClient(
             "Content-Type" to "application/json",
         )
         val requestMutex = Mutex()
+        val titleAliasCache = ConcurrentHashMap<Int, List<String>>()
         var lastRequestAtMs = 0L
 
         val SCORES_QUERY = """
@@ -377,6 +431,18 @@ internal class AniListMetadataClient(
                 media(id_in: ${'$'}ids, type: ANIME) {
                   id
                   averageScore
+                }
+              }
+            }
+        """.trimIndent()
+
+        val TITLE_ALIASES_QUERY = """
+            query (${'$'}ids: [Int]) {
+              Page(perPage: 50) {
+                media(id_in: ${'$'}ids, type: ANIME) {
+                  id
+                  title { romaji english native }
+                  synonyms
                 }
               }
             }

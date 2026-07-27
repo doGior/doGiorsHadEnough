@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.addDate
 import it.dogior.hadEnough.model.AniZipEpisodeCatalog
+import it.dogior.hadEnough.model.TmdbAnimeEpisodeMetadata
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -17,6 +18,7 @@ internal class AnimeEpisodeMetadataMerger(
         kitsuId: Int?,
         anilistEpisodes: List<Episode>,
         aniZipCatalog: AniZipEpisodeCatalog,
+        tmdbEpisodes: suspend () -> Map<Int, TmdbAnimeEpisodeMetadata> = { emptyMap() },
         targetEpisodeCount: Int? = null,
         episodeFactory: (Episode.() -> Unit) -> Episode,
     ): List<Episode> = coroutineScope {
@@ -33,12 +35,14 @@ internal class AnimeEpisodeMetadataMerger(
                 }.getOrDefault(emptyMap())
             }.orEmpty()
         }
+        val tmdbDeferred = async(Dispatchers.IO) { tmdbEpisodes() }
         val anilistByNumber = anilistEpisodes.mapNotNull { episode ->
             episode.episode?.let { it to episode }
         }.toMap()
         val aniZip = aniZipCatalog.episodes
         val kitsu = kitsuDeferred.await()
         val mal = malDeferred.await()
+        val tmdb = tmdbDeferred.await()
 
         val numbers = (anilistByNumber.keys + aniZip.keys + kitsu.keys + mal.keys).toSortedSet()
         if (numbers.isEmpty()) return@coroutineScope anilistEpisodes
@@ -48,12 +52,14 @@ internal class AnimeEpisodeMetadataMerger(
             val aniZipEpisode = aniZip[number]
             val kitsuEpisode = kitsu[number]
             val malEpisode = mal[number]
+            val tmdbEpisode = tmdb[number]
             val markerSuffix = when {
                 malEpisode?.filler == true -> " (Filler)"
                 malEpisode?.recap == true -> " (Riassunto)"
                 else -> ""
             }
-            val baseName = aniZipEpisode?.title
+            val baseName = tmdbEpisode?.title
+                ?: aniZipEpisode?.title
                 ?: kitsuEpisode?.name
                 ?: anilistEpisode?.name
                 ?: malEpisode?.title
@@ -69,7 +75,8 @@ internal class AnimeEpisodeMetadataMerger(
                 this.posterUrl = kitsuEpisode?.posterUrl
                     ?: aniZipEpisode?.posterUrl
                     ?: anilistEpisode?.posterUrl
-                this.description = aniZipEpisode?.summary
+                this.description = tmdbEpisode?.description
+                    ?: aniZipEpisode?.summary
                     ?: kitsuEpisode?.description
                     ?: aniZipEpisode?.overview
                 malEpisode?.score?.let { this.score = Score.from(it.toString(), 5) }

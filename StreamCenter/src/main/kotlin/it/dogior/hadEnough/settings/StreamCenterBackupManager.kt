@@ -128,7 +128,7 @@ internal object StreamCenterBackupManager {
         preferences: SharedPreferences,
         requestedName: String,
     ): StreamCenterBackupFile {
-        val content = createBackupJson(preferences).toString(2)
+        val content = createBackupJson(configurationSnapshot(preferences)).toString(2)
         val requestedFileName = normalizedFileName(requestedName)
         val treeUri = selectedTreeUri(context)
         return if (treeUri == null) {
@@ -203,12 +203,17 @@ internal object StreamCenterBackupManager {
         }
     }
 
+    fun readContent(context: Context, backupFile: StreamCenterBackupFile): String {
+        return readText(context, backupFile)
+    }
+
     fun import(
         context: Context,
         preferences: SharedPreferences,
         backupFile: StreamCenterBackupFile,
     ): StreamCenterBackupRestoreResult {
         val backup = parseBackup(readText(context, backupFile))
+        val previousConfiguration = configurationSnapshot(preferences)
         val editor = preferences.edit().clear()
         backup.preferences.forEach { (key, value) ->
             when (value) {
@@ -221,6 +226,15 @@ internal object StreamCenterBackupManager {
             }
         }
         check(editor.commit()) { "Il ripristino delle impostazioni non è riuscito." }
+        runCatching {
+            verifyRestoredConfiguration(preferences, backup.preferences)
+        }.getOrElse { error ->
+            val rollbackError = runCatching {
+                restoreConfiguration(preferences, previousConfiguration)
+            }.exceptionOrNull()
+            rollbackError?.let(error::addSuppressed)
+            throw error
+        }
         return StreamCenterBackupRestoreResult(
             preferenceCount = backup.preferences.size,
             sourceVersion = backup.pluginVersion,
@@ -232,9 +246,52 @@ internal object StreamCenterBackupManager {
         val preferences: Map<String, Any>,
     )
 
-    private fun createBackupJson(preferences: SharedPreferences): JSONObject {
+    private fun configurationSnapshot(preferences: SharedPreferences): Map<String, Any> {
+        return preferences.all.toSortedMap().mapValues { (key, value) ->
+            when (value) {
+                is String, is Boolean, is Int, is Long, is Float -> value
+                is Set<*> -> {
+                    check(value.all { it is String }) {
+                        "La preferenza $key contiene un tipo non supportato."
+                    }
+                    value.filterIsInstance<String>().toSet()
+                }
+                else -> error("Tipo non supportato per la preferenza $key.")
+            }
+        }
+    }
+
+    private fun verifyRestoredConfiguration(
+        preferences: SharedPreferences,
+        expected: Map<String, Any>,
+    ) {
+        check(configurationSnapshot(preferences) == expected) {
+            "Ripristino del backup incompleto."
+        }
+    }
+
+    private fun restoreConfiguration(
+        preferences: SharedPreferences,
+        values: Map<String, Any>,
+    ) {
+        val editor = preferences.edit().clear()
+        values.forEach { (key, value) ->
+            when (value) {
+                is String -> editor.putString(key, value)
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putLong(key, value)
+                is Float -> editor.putFloat(key, value)
+                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+                else -> error("Tipo non supportato per la preferenza $key.")
+            }
+        }
+        check(editor.commit()) { "Impossibile ripristinare la configurazione precedente." }
+    }
+
+    private fun createBackupJson(preferences: Map<String, Any>): JSONObject {
         val values = JSONObject()
-        preferences.all.toSortedMap().forEach { (key, value) ->
+        preferences.forEach { (key, value) ->
             val encoded = JSONObject()
             when (value) {
                 is String -> encoded.put("type", "string").put("value", value)
@@ -246,7 +303,7 @@ internal object StreamCenterBackupManager {
                     "value",
                     JSONArray(value.filterIsInstance<String>().sorted()),
                 )
-                else -> return@forEach
+                else -> error("Tipo non supportato per la preferenza $key.")
             }
             values.put(key, encoded)
         }
@@ -272,6 +329,7 @@ internal object StreamCenterBackupManager {
         }
         val encodedPreferences = root.optJSONObject("preferences")
             ?: throw IllegalArgumentException("Il backup non contiene alcuna configurazione valida.")
+        val declaredPreferenceCount = root.optInt("preferenceCount", -1)
         val decodedPreferences = linkedMapOf<String, Any>()
         val keys = encodedPreferences.keys()
         runCatching {
@@ -297,6 +355,9 @@ internal object StreamCenterBackupManager {
         }.getOrElse { error ->
             if (error is IllegalArgumentException) throw error
             throw IllegalArgumentException("Il backup contiene dati danneggiati.")
+        }
+        require(declaredPreferenceCount == decodedPreferences.size) {
+            "Il backup non contiene tutte le impostazioni dichiarate."
         }
         return ParsedBackup(
             pluginVersion = root.optString("pluginVersion", "sconosciuta"),

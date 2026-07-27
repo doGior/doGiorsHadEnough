@@ -36,6 +36,7 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -97,6 +98,10 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         const val API_CHECK_TIMEOUT_MS = 12_000L
         const val TELEGRAM_GROUP_URL = "https://t.me/cloudstream_italia"
         val versionHeaderPattern = Regex("^#{2,3}\\s*(.*?)(?:\\s+INIZIO)?\\s*$", RegexOption.IGNORE_CASE)
+        val versionTitleWithDatePattern = Regex(
+            "^(.+?)\\s*\\((\\d{1,2}\\s*/\\s*\\d{1,2}\\s*/\\s*\\d{4})\\)$",
+            RegexOption.IGNORE_CASE,
+        )
         val endMarkerPattern = Regex("^#{2,3}\\s*(?:FINE)?\\s*$", RegexOption.IGNORE_CASE)
         val primaryHeaderPattern = Regex(
             "^#\\s*Modific(?:a|he)\\s+Principal(?:e|i)\\b.*$",
@@ -116,6 +121,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
 
     private data class ChangelogVersion(
         val title: String,
+        val date: String? = null,
         val primaryChanges: MutableList<String> = mutableListOf(),
         val secondaryChanges: MutableList<String> = mutableListOf(),
     )
@@ -155,7 +161,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "✨",
             title = "Effetti visivi",
-            summary = "Animazioni, sfocature e bagliori.",
+            summary = "Animazioni, sfocature, bagliori e IP pubblico.",
             accent = COLOR_VISUAL_EFFECTS,
         ) {
             showVisualEffectsDialog()
@@ -317,13 +323,13 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 return@forEach
             }
 
-            val versionTitle = versionHeaderPattern.matchEntire(line)
+            val version = versionHeaderPattern.matchEntire(line)
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.trim()
-                ?.takeIf(::isVersionTitle)
-            if (versionTitle != null) {
-                currentVersion = ChangelogVersion(versionTitle)
+                ?.let(::parseChangelogVersion)
+            if (version != null) {
+                currentVersion = version
                 versions += currentVersion
                 currentSection = ChangelogSection.NONE
                 return@forEach
@@ -357,6 +363,16 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             value.matches(Regex("^V\\d+(?:\\.\\d+)?$", RegexOption.IGNORE_CASE))
     }
 
+    private fun parseChangelogVersion(value: String): ChangelogVersion? {
+        val match = versionTitleWithDatePattern.matchEntire(value.trim())
+        val title = match?.groupValues?.getOrNull(1)?.trim() ?: value.trim()
+        val date = match?.groupValues
+            ?.getOrNull(2)
+            ?.replace(Regex("\\s+"), "")
+            ?.takeIf(String::isNotBlank)
+        return title.takeIf(::isVersionTitle)?.let { ChangelogVersion(it, date) }
+    }
+
     private fun showChangelogVersionPicker(versions: List<ChangelogVersion>) {
         val ctx = context ?: return
         val list = LinearLayout(ctx).apply {
@@ -376,9 +392,9 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 chip(label, color)
             }
             val arrow = chevron(accent)
-            list.addView(settingsRow(
+            val versionRow = settingsRow(
                 title = version.title,
-                summary = changelogVersionSummary(version),
+                summary = changelogChangesSummary(version),
                 accent = accent,
                 fillColor = COLOR_CARD_ALT,
                 strokeColor = tint(accent, "66"),
@@ -390,7 +406,9 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             ) {
                 dialog.dismiss()
                 showChangelogVersion(version, versions)
-            }.view)
+            }
+            styleChangelogVersionTitle(versionRow.title, version)
+            list.addView(versionRow.view)
         }
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogBrandTitle(
@@ -408,7 +426,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         dialog.show()
     }
 
-    private fun changelogVersionSummary(version: ChangelogVersion): String {
+    private fun changelogChangesSummary(version: ChangelogVersion): String {
         val totalChanges = version.primaryChanges.size + version.secondaryChanges.size
         if (totalChanges == 0) return "Nessuna modifica indicata"
         return buildList {
@@ -416,6 +434,26 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             if (version.primaryChanges.isNotEmpty()) add("${version.primaryChanges.size} principali")
             if (version.secondaryChanges.isNotEmpty()) add("${version.secondaryChanges.size} secondarie")
         }.joinToString(" · ")
+    }
+
+    private fun styleChangelogVersionTitle(titleView: TextView, version: ChangelogVersion) {
+        val date = version.date ?: return
+        val title = "${version.title} ($date)"
+        val dateStart = version.title.length + 1
+        titleView.text = SpannableString(title).apply {
+            setSpan(
+                ForegroundColorSpan(Color.parseColor(COLOR_MUTED)),
+                dateStart,
+                length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            setSpan(
+                RelativeSizeSpan(0.68f),
+                dateStart,
+                length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
     }
 
     private fun changelogVersionStatus(version: ChangelogVersion): Pair<String, String>? {
@@ -465,8 +503,14 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(4), dp(20), dp(12))
-            addView(chip(changelogVersionSummary(version), accent).apply {
-                layoutParams = verticalParams(top = 4)
+            version.date?.let { date ->
+                addView(bodyText(date, 11).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    layoutParams = verticalParams(top = 4)
+                })
+            }
+            addView(chip(changelogChangesSummary(version), accent).apply {
+                layoutParams = verticalParams(top = if (version.date == null) 4 else 8)
             })
             if (version.primaryChanges.isNotEmpty()) {
                 addChangelogSection(
@@ -492,12 +536,13 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 })
             }
         }
+        val dialogTitle = dialogBrandTitle(
+            version.title,
+            iconBadge(icon, accent, size = 40, marginEnd = 10),
+            accent,
+        )
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogBrandTitle(
-                version.title,
-                iconBadge(icon, accent, size = 40, marginEnd = 10),
-                accent,
-            ))
+            .setCustomTitle(dialogTitle)
             .setView(ScrollView(ctx).apply { addView(content) })
             .setPositiveButton("Chiudi", null)
             .create()
@@ -893,12 +938,17 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                             fillColor = COLOR_CARD_ALT,
                             strokeColor = tint(COLOR_BACKUP, "55"),
                             trailingViews = listOf(renameButton, deleteButton),
+                            touchTarget = null,
                             topMargin = 8,
                         ) {
                             confirmImport(backup) { showImportFilesDialog(files) }
                         }
                         row.title.maxLines = 2
                         row.view.contentDescription = "Importa ${backup.name}"
+                        row.view.setOnLongClickListener {
+                            showBackupContent(backup) { showImportFilesDialog(files) }
+                            true
+                        }
                         addView(row.view)
                     }
                 }
@@ -907,7 +957,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                     addView(rows)
                 }, LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp((files.size * 76).coerceIn(84, 390)),
+                    dp((files.size * 108).coerceIn(108, 432)),
                 ))
             }
         }
@@ -963,6 +1013,12 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 })
                 addView(preview)
             })
+            addView(bodyText(
+                "Segnaposto: %data%, %giorno%, %dd%, %mm%, %yyyy%, %ora%, %minuti%, %secondi%, %versione%.",
+                11,
+            ).apply {
+                setPadding(dp(2), dp(10), dp(2), 0)
+            })
         }
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Rinomina backup"))
@@ -1016,6 +1072,83 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 showImportPicker()
             }
         }
+    }
+
+    private fun showBackupContent(
+        backup: StreamCenterBackupFile,
+        onBack: () -> Unit,
+    ) {
+        val ctx = context ?: return
+        val loadingDialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Contenuto backup"))
+            .setMessage("Lettura del backup in corso…")
+            .create()
+            .apply {
+                setCancelable(false)
+                setCanceledOnTouchOutside(false)
+            }
+        presentBackupDialog(loadingDialog)
+        CoroutineScope(Dispatchers.IO).launch {
+            val result = runCatching {
+                StreamCenterBackupManager.readContent(ctx.applicationContext, backup)
+            }
+            withContext(Dispatchers.Main) {
+                if (!isAdded) return@withContext
+                result.onSuccess { content ->
+                    showBackupContentDialog(backup, content, onBack)
+                }.onFailure { error ->
+                    val dialog = AlertDialog.Builder(ctx)
+                        .setCustomTitle(dialogTitle("Contenuto non disponibile"))
+                        .setMessage(error.message ?: "Impossibile leggere il backup.")
+                        .setNegativeButton("Indietro", null)
+                        .create()
+                    presentBackupDialog(dialog)
+                    setBackupBackNavigation(dialog, onBack)
+                }
+            }
+        }
+    }
+
+    private fun showBackupContentDialog(
+        backup: StreamCenterBackupFile,
+        rawContent: String,
+        onBack: () -> Unit,
+    ) {
+        val ctx = context ?: return
+        val formattedContent = runCatching { JSONObject(rawContent).toString(2) }.getOrDefault(rawContent)
+        val contentText = TextView(ctx).apply {
+            text = formattedContent
+            setTextColor(Color.parseColor(COLOR_TEXT))
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+        }
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(6), dp(20), 0)
+            addView(bodyText(backup.name, 12).apply {
+                setTextColor(Color.parseColor(COLOR_MUTED))
+                maxLines = 2
+            })
+            addView(ScrollView(ctx).apply {
+                isVerticalScrollBarEnabled = true
+                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_BACKUP, "44"), 12)
+                addView(contentText)
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(400),
+            ).apply {
+                topMargin = dp(8)
+            })
+        }
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Contenuto backup"))
+            .setView(content)
+            .setNegativeButton("Indietro", null)
+            .create()
+        presentBackupDialog(dialog)
+        setBackupBackNavigation(dialog, onBack)
     }
 
     private fun <T> performBackupFileAction(
@@ -1132,8 +1265,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
 
     private fun showVisualEffectsDialog() {
         val ctx = context ?: return
-        fun effectSelected(preferenceKey: String): Boolean {
-            return sharedPref?.getBoolean(preferenceKey, true) ?: true
+        fun effectSelected(preferenceKey: String, defaultValue: Boolean): Boolean {
+            return sharedPref?.getBoolean(preferenceKey, defaultValue) ?: defaultValue
         }
 
         fun effectOptionRow(
@@ -1141,11 +1274,12 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             title: String,
             preferenceKey: String,
             optionAccent: String,
+            defaultValue: Boolean = true,
         ): LinearLayout {
             return switchRow(
                 title = title,
                 summary = null,
-                checked = effectSelected(preferenceKey),
+                checked = effectSelected(preferenceKey, defaultValue),
                 accent = optionAccent,
                 icon = icon,
                 strokeColor = tint(optionAccent, "55"),
@@ -1159,13 +1293,13 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(10), dp(20), dp(4))
             addView(effectOptionRow(
-                icon = "↔",
+                icon = "\uD83C\uDF9E\uFE0F",
                 title = "Animazioni",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_ANIMATIONS,
                 optionAccent = COLOR_VISUAL_EFFECTS,
             ))
             addView(effectOptionRow(
-                icon = "◌",
+                icon = "\uD83C\uDF2B\uFE0F",
                 title = "Sfocatura finestre",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_BLUR,
                 optionAccent = COLOR_VISUAL_BLUR,
@@ -1181,6 +1315,13 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 title = "Universo animato",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PARTICLES,
                 optionAccent = COLOR_PARTICLES,
+            ))
+            addView(effectOptionRow(
+                icon = "\uD83C\uDF10",
+                title = "Mostra IP pubblico",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PUBLIC_IP,
+                optionAccent = COLOR_PUBLIC_IP,
+                defaultValue = true,
             ))
         }
 
@@ -1266,7 +1407,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
 
         addSection("API", apiNames, COLOR_API_CHECK)
-        addSection("Fonti Streaming", sourceNames, COLOR_SOURCES)
+        addSection("Fonti", sourceNames, COLOR_SOURCES)
         addSection("Servizi CloudStream", emptyList(), COLOR_CLOUDSTREAM_SERVICES)
         cloudstreamConnectionResults().forEach { (name, connected) ->
             createApiCheckRow(ctx, name).also { row ->

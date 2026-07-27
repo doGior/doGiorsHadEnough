@@ -82,6 +82,12 @@ internal data class AniZipEpisodeCatalog(
     val description: String? = null,
     val episodes: Map<Int, AniZipEpisodeMetadata> = emptyMap(),
     val kitsuId: Int? = null,
+    val tmdbId: Int? = null,
+)
+
+internal data class TmdbAnimeEpisodeMetadata(
+    val title: String?,
+    val description: String?,
 )
 
 internal data class MalEpisodeExtra(

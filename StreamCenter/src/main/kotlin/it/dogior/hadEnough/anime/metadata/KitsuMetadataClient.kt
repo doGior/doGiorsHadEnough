@@ -66,6 +66,18 @@ internal class KitsuMetadataClient(
         return result
     }
 
+    suspend fun fetchContentRating(kitsuId: Int?): String? {
+        val resolvedKitsuId = kitsuId ?: return null
+        val attributes = request("anime/$resolvedKitsuId")
+            ?.optJSONObject("data")
+            ?.optJSONObject("attributes")
+            ?: return null
+        return listOfNotNull(
+            attributes.optNullableString("ageRating"),
+            attributes.optNullableString("ageRatingGuide"),
+        ).joinToString(" - ").takeIf(String::isNotBlank)
+    }
+
     suspend fun resolveAnimeId(malId: Int?, anilistId: Int?): Int? {
         val lookups = listOfNotNull(
             malId?.let { "myanimelist/anime" to it },

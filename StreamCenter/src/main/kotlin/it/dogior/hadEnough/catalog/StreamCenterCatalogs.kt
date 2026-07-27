@@ -4,6 +4,14 @@ import android.content.SharedPreferences
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
+import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
+import it.dogior.hadEnough.stremio.StreamCenterStremioCatalogDescriptor
+import it.dogior.hadEnough.stremio.StreamCenterStremioResource
+import org.json.JSONArray
+import org.json.JSONObject
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.Locale
 
 internal data class StreamCenterCatalogSection(
     val key: String,
@@ -13,6 +21,7 @@ internal data class StreamCenterCatalogSection(
     val defaultEnabled: Boolean = true,
     val trackingServiceKey: String? = null,
     val trackingListKey: String? = null,
+    val stremioCatalog: StreamCenterStremioCatalogDescriptor? = null,
 )
 
 internal data class StreamCenterCatalogDefinition(
@@ -23,6 +32,7 @@ internal data class StreamCenterCatalogDefinition(
     val iconUrl: String? = null,
     val sections: List<StreamCenterCatalogSection>,
     val supportedTypes: Set<TvType> = sections.mapTo(linkedSetOf()) { it.type },
+    val stremioAddon: StreamCenterStremioAddon? = null,
 )
 
 internal data class StreamCenterCatalogPage(
@@ -51,6 +61,8 @@ internal object StreamCenterCatalogs {
     private const val PREF_CONFIGURED_CATALOGS = "catalogs"
     private const val PREF_CATALOG_SECTIONS_PREFIX = "catalogSections_"
     private const val PREF_CATALOG_SECTION_ORDER_PREFIX = "catalogSectionOrder_"
+    private const val PREF_STREMIO_CATALOGS = "stremioCatalogs"
+    private const val STREMIO_CATALOG_KEY_PREFIX = "stremioCatalog_"
 
     private val standardTrackingLists = listOf(
         "watching" to "Guardando",
@@ -311,14 +323,65 @@ internal object StreamCenterCatalogs {
         return catalogs.firstOrNull { it.key == key }
     }
 
+    fun allCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> =
+        catalogs + stremioCatalogs(sharedPref)
+
+    fun stremioCatalogDefinition(
+        addon: StreamCenterStremioAddon,
+    ): StreamCenterCatalogDefinition? {
+        val sections = addon.catalogs.mapNotNull { descriptor ->
+            val type = stremioTvType(descriptor.type) ?: return@mapNotNull null
+            if (descriptor.requiredExtra.any { name -> !name.equals("skip", ignoreCase = true) }) {
+                return@mapNotNull null
+            }
+            StreamCenterCatalogSection(
+                key = stremioSectionKey(descriptor),
+                title = descriptor.name,
+                path = descriptor.id,
+                type = type,
+                stremioCatalog = descriptor,
+            )
+        }.distinctBy(StreamCenterCatalogSection::key)
+        if (sections.isEmpty()) return null
+        val titleCounts = sections.groupingBy { section ->
+            section.title.trim().lowercase(Locale.ROOT)
+        }.eachCount()
+        val assignedTitleCounts = mutableMapOf<String, Int>()
+        val titledSections = sections.map { section ->
+            val baseTitle = section.title.trim()
+            val typeTitle = if ((titleCounts[baseTitle.lowercase(Locale.ROOT)] ?: 0) > 1) {
+                "$baseTitle — ${stremioSectionTypeTitle(section.type)}"
+            } else {
+                baseTitle
+            }
+            val titleKey = typeTitle.lowercase(Locale.ROOT)
+            val occurrence = (assignedTitleCounts[titleKey] ?: 0) + 1
+            assignedTitleCounts[titleKey] = occurrence
+            section.copy(title = if (occurrence == 1) typeTitle else "$typeTitle $occurrence")
+        }
+        return StreamCenterCatalogDefinition(
+            key = STREMIO_CATALOG_KEY_PREFIX + addon.key,
+            title = addon.name,
+            displayName = "StreamCenter (${addon.name})",
+            websiteUrl = addon.manifestUrl,
+            iconUrl = addon.logoUrl,
+            sections = titledSections,
+            stremioAddon = addon,
+        )
+    }
+
+    fun stremioCatalogAddon(
+        sharedPref: SharedPreferences?,
+        addonKey: String,
+    ): StreamCenterStremioAddon? {
+        return stremioCatalogs(sharedPref)
+            .mapNotNull(StreamCenterCatalogDefinition::stremioAddon)
+            .firstOrNull { addon -> addon.key == addonKey }
+    }
+
     fun configuredCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> {
-        val configuredKeys = sharedPref?.getString(PREF_CONFIGURED_CATALOGS, null)
-            ?.split(",")
-            ?.map(String::trim)
-            ?.filter(String::isNotBlank)
-            ?.distinct()
-            .orEmpty()
-        return configuredKeys.mapNotNull(::catalog)
+        val catalogByKey = allCatalogs(sharedPref).associateBy(StreamCenterCatalogDefinition::key)
+        return configuredCatalogKeys(sharedPref).mapNotNull(catalogByKey::get)
     }
 
     fun isConfigured(sharedPref: SharedPreferences?, catalog: StreamCenterCatalogDefinition): Boolean {
@@ -370,33 +433,214 @@ internal object StreamCenterCatalogs {
         val completeOrder = orderedKeys + catalog.sections.map { it.key }.filterNot { it in orderedKeys }
         val configuredKeys = configuredCatalogs(preferences).map { it.key }
         val updatedKeys = if (catalog.key in configuredKeys) configuredKeys else configuredKeys + catalog.key
-        preferences.edit()
-            .putString(PREF_CONFIGURED_CATALOGS, updatedKeys.joinToString(","))
-            .putString(catalogSectionsKey(catalog.key), selectedKeys.joinToString(","))
-            .putString(catalogSectionOrderKey(catalog.key), completeOrder.joinToString(","))
-            .apply()
+        preferences.edit().apply {
+            if (catalog.stremioAddon != null) {
+                val retained = stremioCatalogs(preferences).filterNot { it.key == catalog.key }
+                putString(
+                    PREF_STREMIO_CATALOGS,
+                    JSONArray().apply {
+                        (retained + catalog).forEach { definition ->
+                            definition.stremioAddon?.let { stremioAddon ->
+                                put(stremioAddon.toStremioCatalogJson())
+                            }
+                        }
+                    }.toString(),
+                )
+            }
+            putString(PREF_CONFIGURED_CATALOGS, updatedKeys.joinToString(","))
+            putString(catalogSectionsKey(catalog.key), selectedKeys.joinToString(","))
+            putString(catalogSectionOrderKey(catalog.key), completeOrder.joinToString(","))
+        }.apply()
         return true
     }
 
     fun removeCatalog(sharedPref: SharedPreferences?, catalog: StreamCenterCatalogDefinition) {
         val preferences = sharedPref ?: return
         val configuredKeys = configuredCatalogs(preferences).map { it.key }.filterNot { it == catalog.key }
-        preferences.edit()
-            .putString(PREF_CONFIGURED_CATALOGS, configuredKeys.joinToString(","))
-            .remove(catalogSectionsKey(catalog.key))
-            .remove(catalogSectionOrderKey(catalog.key))
-            .apply()
+        preferences.edit().apply {
+            if (catalog.stremioAddon != null) {
+                val retained = stremioCatalogs(preferences).filterNot { it.key == catalog.key }
+                if (retained.isEmpty()) {
+                    remove(PREF_STREMIO_CATALOGS)
+                } else {
+                    putString(
+                        PREF_STREMIO_CATALOGS,
+                        JSONArray().apply {
+                            retained.forEach { definition ->
+                                definition.stremioAddon?.let { addon ->
+                                    put(addon.toStremioCatalogJson())
+                                }
+                            }
+                        }.toString(),
+                    )
+                }
+            }
+            putString(PREF_CONFIGURED_CATALOGS, configuredKeys.joinToString(","))
+            remove(catalogSectionsKey(catalog.key))
+            remove(catalogSectionOrderKey(catalog.key))
+        }.apply()
     }
 
     fun reset(sharedPref: SharedPreferences?) {
         val preferences = sharedPref ?: return
         preferences.edit().apply {
             remove(PREF_CONFIGURED_CATALOGS)
-            catalogs.forEach {
+            allCatalogs(preferences).forEach {
                 remove(catalogSectionsKey(it.key))
                 remove(catalogSectionOrderKey(it.key))
             }
+            remove(PREF_STREMIO_CATALOGS)
         }.apply()
+    }
+
+    private fun configuredCatalogKeys(sharedPref: SharedPreferences?): List<String> {
+        return sharedPref?.getString(PREF_CONFIGURED_CATALOGS, null)
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotBlank)
+            ?.distinct()
+            .orEmpty()
+    }
+
+    private fun stremioCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> {
+        val raw = sharedPref?.getString(PREF_STREMIO_CATALOGS, null) ?: return emptyList()
+        val array = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val addon = array.optJSONObject(index)?.toStremioCatalogAddon() ?: continue
+                stremioCatalogDefinition(addon)?.let(::add)
+            }
+        }.distinctBy(StreamCenterCatalogDefinition::key)
+    }
+
+    private fun StreamCenterStremioAddon.toStremioCatalogJson(): JSONObject = JSONObject().apply {
+        put("key", key)
+        put("manifestUrl", manifestUrl)
+        put("id", id)
+        put("name", name)
+        version?.let { put("version", it) }
+        logoUrl?.let { put("logo", it) }
+        put("types", JSONArray(types))
+        put("idPrefixes", JSONArray(idPrefixes))
+        put(
+            "resources",
+            JSONArray().apply {
+                resources.forEach { resource ->
+                    put(
+                        JSONObject().apply {
+                            put("name", resource.name)
+                            put("types", JSONArray(resource.types))
+                            put("idPrefixes", JSONArray(resource.idPrefixes))
+                        },
+                    )
+                }
+            },
+        )
+        put(
+            "catalogs",
+            JSONArray().apply {
+                catalogs.forEach { catalog ->
+                    put(
+                        JSONObject().apply {
+                            put("id", catalog.id)
+                            put("type", catalog.type)
+                            put("name", catalog.name)
+                            put("extra", JSONArray(catalog.extra))
+                            put("requiredExtra", JSONArray(catalog.requiredExtra))
+                        },
+                    )
+                }
+            },
+        )
+    }
+
+    private fun JSONObject.toStremioCatalogAddon(): StreamCenterStremioAddon? {
+        val key = optString("key").trim()
+        val manifestUrl = optString("manifestUrl").trim()
+        val id = optString("id").trim()
+        val name = optString("name").trim()
+        if (key.isBlank() || manifestUrl.isBlank() || id.isBlank() || name.isBlank()) return null
+        val resources = optJSONArray("resources")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    val resource = array.optJSONObject(index) ?: continue
+                    val resourceName = resource.optString("name").trim()
+                    if (resourceName.isBlank()) continue
+                    add(
+                        StreamCenterStremioResource(
+                            name = resourceName,
+                            types = resource.optStringList("types"),
+                            idPrefixes = resource.optStringList("idPrefixes"),
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+        val catalogs = optJSONArray("catalogs")?.let { array ->
+            buildList {
+                for (index in 0 until array.length()) {
+                    val catalog = array.optJSONObject(index) ?: continue
+                    val catalogId = catalog.optString("id").trim()
+                    val catalogType = catalog.optString("type").trim()
+                    val catalogName = catalog.optString("name").trim()
+                    if (catalogId.isBlank() || catalogType.isBlank() || catalogName.isBlank()) continue
+                    add(
+                        StreamCenterStremioCatalogDescriptor(
+                            id = catalogId,
+                            type = catalogType,
+                            name = catalogName,
+                            extra = catalog.optStringList("extra"),
+                            requiredExtra = catalog.optStringList("requiredExtra"),
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+        return StreamCenterStremioAddon(
+            key = key,
+            manifestUrl = manifestUrl,
+            id = id,
+            name = name,
+            version = optString("version").trim().takeIf(String::isNotBlank),
+            logoUrl = optString("logo").trim().takeIf(String::isNotBlank),
+            types = optStringList("types"),
+            idPrefixes = optStringList("idPrefixes"),
+            resources = resources,
+            catalogs = catalogs,
+        )
+    }
+
+    private fun JSONObject.optStringList(key: String): List<String> = optJSONArray(key)?.let { array ->
+        buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).trim().takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
+    }.orEmpty()
+
+    private fun stremioTvType(type: String): TvType? = when (type.lowercase(Locale.ROOT)) {
+        "movie" -> TvType.Movie
+        "series" -> TvType.TvSeries
+        "anime" -> TvType.Anime
+        "tv", "channel" -> TvType.Live
+        else -> null
+    }
+
+    private fun stremioSectionTypeTitle(type: TvType): String = when (type) {
+        TvType.Movie -> "Film"
+        TvType.TvSeries -> "Serie TV"
+        TvType.Anime, TvType.AnimeMovie, TvType.OVA -> "Anime"
+        TvType.Live -> "TV"
+        else -> "Altro"
+    }
+
+    private fun stremioSectionKey(catalog: StreamCenterStremioCatalogDescriptor): String {
+        val source = "${catalog.type.lowercase(Locale.ROOT)}:${catalog.id}"
+        val fingerprint = MessageDigest.getInstance("SHA-256")
+            .digest(source.toByteArray(StandardCharsets.UTF_8))
+            .take(8)
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        return "stremio_$fingerprint"
     }
 
     fun sectionData(catalog: StreamCenterCatalogDefinition, section: StreamCenterCatalogSection): String {

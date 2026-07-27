@@ -1,6 +1,9 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
+import it.dogior.hadEnough.catalog.StreamCenterCatalogSection
+import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.stremio.*
 
 import android.animation.ArgbEvaluator
@@ -139,7 +142,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         content.minimumHeight = standardSubmenuMinimumHeight()
         content.addView(
             header(
-                title = "Fonti Streaming",
+                title = "Fonti",
                 icon = "📡",
                 accent = COLOR_SOURCES,
                 actionText = "Ripristina",
@@ -280,6 +283,14 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 accent = COLOR_STREMIO,
                 trailingViews = listOf(expandButton),
                 titleCompanion = notice,
+                leadingBadge = siteIconBadge(
+                    fallback = "\uD83D\uDD0C",
+                    accent = COLOR_STREMIO,
+                    contentDescription = "Icona di Stremio",
+                    websiteUrl = STREMIO_WEBSITE_URL,
+                    size = 40,
+                    marginEnd = 10,
+                ),
             ) { expandButton.callOnClick() }.view)
 
             if (expanded) {
@@ -426,6 +437,12 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
             ) { confirmStremioAddonRemoval(addon) })
             addView(topLine)
             addCardTouchFeedback(this, COLOR_STREMIO, badge)
+            setOnLongClickListener {
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
+                    ?.setPrimaryClip(ClipData.newPlainText("Manifest Stremio", addon.manifestUrl))
+                saveToast("Manifest copiato")
+                true
+            }
         }
     }
 
@@ -454,7 +471,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val manifestUrl = input.text?.toString().orEmpty().trim()
             if (manifestUrl.isBlank()) {
-                input.error = "Inserisci il link al manifest"
+                input.error = "Inserisci manifest"
                 return@setOnClickListener
             }
             isStremioAddonInstallRunning = true
@@ -465,19 +482,102 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 withContext(Dispatchers.Main) {
                     isStremioAddonInstallRunning = false
                     if (!isAdded) return@withContext
-                    if (result.isSuccess) {
-                        StreamCenterPlugin.saveStremioAddon(sharedPref, result.getOrThrow())
-                        renderRows()
-                        dialog.dismiss()
-                        saveToast("Add-on aggiunto")
-                    } else {
+                    if (result.isFailure) {
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                         dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
                         input.error = result.exceptionOrNull()?.message ?: "Impossibile leggere il manifest"
+                        return@withContext
+                    }
+                    val addon = result.getOrThrow()
+                    val catalog = StreamCenterCatalogs.stremioCatalogDefinition(addon)
+                    when {
+                        addon.hasStreamingResources && catalog != null -> {
+                            dialog.dismiss()
+                            promptStremioSourceAndCatalog(addon, catalog)
+                        }
+                        addon.hasStreamingResources -> {
+                            StreamCenterPlugin.saveStremioAddon(sharedPref, addon)
+                            renderRows()
+                            dialog.dismiss()
+                            saveToast("Add-on aggiunto")
+                        }
+                        catalog != null -> {
+                            dialog.dismiss()
+                            promptStremioCatalogInstead(addon, catalog)
+                        }
+                        else -> {
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
+                            input.error = "L'add-on non offre Cataloghi o Fonti Streaming"
+                        }
                     }
                 }
             }
         }
+    }
+
+    private fun promptStremioCatalogInstead(
+        addon: StreamCenterStremioAddon,
+        catalog: StreamCenterCatalogDefinition,
+    ) {
+        val dialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Non è una Fonte Stremio"))
+            .setMessage(
+                "${addon.name} non contiene Fonti Streaming, ma offre Cataloghi. Vuoi aggiungerlo come Catalogo?",
+            )
+            .setPositiveButton("Aggiungi Catalogo") { _, _ ->
+                if (addStremioCatalogToHome(catalog)) {
+                    saveToast("Catalogo aggiunto in Home")
+                } else {
+                    saveToast("Impossibile aggiungere il Catalogo")
+                }
+            }
+            .setNegativeButton("Annulla", null)
+            .create()
+        showCompactActionDialog(dialog)
+    }
+
+    private fun promptStremioSourceAndCatalog(
+        addon: StreamCenterStremioAddon,
+        catalog: StreamCenterCatalogDefinition,
+    ) {
+        val dialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Add-on Stremio completo"))
+            .setMessage(
+                "${addon.name} offre sia Fonti Streaming sia Cataloghi. Puoi aggiungerlo sia come Fonte sia come Catalogo.",
+            )
+            .setPositiveButton("Fonte e Catalogo") { _, _ ->
+                StreamCenterPlugin.saveStremioAddon(sharedPref, addon)
+                renderRows()
+                saveToast(
+                    if (addStremioCatalogToHome(catalog)) {
+                        "Add-on aggiunto in Fonti e Cataloghi"
+                    } else {
+                        "Add-on aggiunto in Fonti, ma non il Catalogo"
+                    },
+                )
+            }
+            .setNeutralButton("Solo Fonte") { _, _ ->
+                StreamCenterPlugin.saveStremioAddon(sharedPref, addon)
+                renderRows()
+                saveToast("Add-on aggiunto in Fonti")
+            }
+            .setNegativeButton("Annulla", null)
+            .create()
+        showCompactActionDialog(dialog)
+    }
+
+    private fun addStremioCatalogToHome(catalog: StreamCenterCatalogDefinition): Boolean {
+        if (StreamCenterCatalogs.isConfigured(sharedPref, catalog)) return true
+        val selectedSections = catalog.sections
+            .filter(StreamCenterCatalogSection::defaultEnabled)
+            .map(StreamCenterCatalogSection::key)
+        if (!StreamCenterCatalogs.saveCatalog(sharedPref, catalog, selectedSections)) return false
+        sharedPref?.edit {
+            putBoolean(StreamCenterPlugin.homeCategoryEnabledKey(StreamCenterCatalogs.CATEGORY_KEY), true)
+        }
+        StreamCenterPlugin.refreshCatalogs()
+        return true
     }
 
     private fun editStremioManifestUrl(addon: StreamCenterStremioAddon) {
@@ -506,14 +606,14 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val manifestUrl = input.text?.toString().orEmpty().trim()
             if (manifestUrl.isBlank()) {
-                input.error = "Inserisci il link al manifest"
+                input.error = "Inserisci manifest"
                 return@setOnClickListener
             }
             isStremioAddonInstallRunning = true
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
             CoroutineScope(Dispatchers.IO).launch {
-                val result = runCatching { StreamCenterStremioAddonClient.readManifest(manifestUrl) }
+                val result = runCatching { StreamCenterStremioAddonClient.readStreamingAddon(manifestUrl) }
                 withContext(Dispatchers.Main) {
                     isStremioAddonInstallRunning = false
                     if (!isAdded) return@withContext
@@ -544,7 +644,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         button.isEnabled = false
         button.text = "…"
         CoroutineScope(Dispatchers.IO).launch {
-            val result = runCatching { StreamCenterStremioAddonClient.readManifest(addon.manifestUrl) }
+            val result = runCatching { StreamCenterStremioAddonClient.readStreamingAddon(addon.manifestUrl) }
             withContext(Dispatchers.Main) {
                 isStremioAddonInstallRunning = false
                 if (!isAdded) return@withContext
@@ -734,7 +834,9 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
             .distinct()
             .forEach { iconUrl -> preloadSourceIcon(container, iconUrl) }
 
-        val sourceUrls = rows.map(SourceRowState::url).filter(String::isNotBlank).distinct()
+        val sourceUrls = (listOf(STREMIO_WEBSITE_URL) + rows.map(SourceRowState::url))
+            .filter(String::isNotBlank)
+            .distinct()
         CoroutineScope(Dispatchers.IO).launch {
             sourceUrls.forEach { sourceUrl ->
                 launch {
@@ -824,14 +926,22 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
             })
             linkInput = input(row.url).apply {
                 filters = arrayOf(InputFilter.LengthFilter(120))
+                fun saveLink(value: String) {
+                    val previousUrl = row.url
+                    StreamCenterPlugin.setSourceBaseUrl(sharedPref, row.source.key, value)
+                    row.url = StreamCenterPlugin.getSourceBaseUrl(sharedPref, row.source.key)
+                    if (row.url != previousUrl) {
+                        StreamCenter.resetSourceDomainChecks()
+                    }
+                }
+                doAfterTextChanged { editable ->
+                    saveLink(editable?.toString().orEmpty())
+                }
                 setOnFocusChangeListener { _, hasFocus ->
                     if (!hasFocus) {
-                        val value = text?.toString()?.trim().orEmpty()
-                        val previousUrl = row.url
-                        StreamCenterPlugin.setSourceBaseUrl(sharedPref, row.source.key, value)
-                        row.url = StreamCenterPlugin.getSourceBaseUrl(sharedPref, row.source.key)
-                        if (row.url != previousUrl) {
-                            StreamCenter.resetSourceDomainChecks()
+                        saveLink(text?.toString().orEmpty())
+                        if (text?.toString() != row.url) {
+                            setText(row.url)
                         }
                     }
                 }
@@ -976,8 +1086,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
 
     private fun resetSources() {
         rowsContainer?.clearFocus()
-        StreamCenterPlugin.resetSourceUrls(sharedPref)
-        sharedPref?.edit { remove(StreamCenterPlugin.PREF_SOURCE_PRIORITY) }
+        StreamCenterPlugin.resetSourcesConfiguration(sharedPref)
         StreamCenter.resetSourceDomainChecks()
         loadRows()
         renderRows()
