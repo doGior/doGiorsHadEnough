@@ -1,6 +1,5 @@
 package it.dogior.hadEnough
 
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.ErrorLoadingException
@@ -43,15 +42,14 @@ import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
+open class AnimeWorldCore(isSplit: Boolean = false, val currentExtension: CurrentExtension = CurrentExtension.CORE) : MainAPI() {
     final override var mainUrl = Companion.mainUrl
     override var name = "AnimeWorld"
     override var lang = "it"
     override val hasMainPage = true
     override val hasQuickSearch = true
     override var sequentialMainPage = true
-
-    open val currentExtension = CurrentExtension.CORE
+    val dubFilter = getDubFilter(currentExtension)
 
     override val mainPage = if (isSplit) {
         emptyList()
@@ -74,10 +72,26 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
         private var cookies = mutableMapOf<String, String>()
         private var headers = mutableMapOf<String, String>()
 
+        private fun getDubFilter(currentExtension: CurrentExtension): DubStatus? {
+            return when (currentExtension) {
+                CurrentExtension.DUB -> {
+                    DubStatus.Dubbed
+                }
+
+                CurrentExtension.SUB -> {
+                    DubStatus.Subbed
+                }
+
+                else -> {
+                    null
+                }
+            }
+        }
+
         private suspend fun request(url: String): NiceResponse {
             if (!headers.contains("Cookie")) {
                 val cookie = getSecurityCookie()
-                if (cookie != null){
+                if (cookie != null) {
                     headers["Cookie"] = cookie
                 }
 //                Log.d("AnimeWorld:Headers", "headers: $headers")
@@ -127,31 +141,27 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
         if (request.name.contains("Top")) {
             val items = document.select("div.row  .content")
 //            Log.d("AnimeWorld:MainPage", "Items: ${items[0]}")
-            items.map { list.add(it.toSearchResult(true)) }
+            items.mapNotNull { item -> item.toSearchResult(true)?.let{list.add(it)} }
         } else {
             val items = document.select("div.film-list > .item")
 //            Log.d("AnimeWorld:MainPage", "Items: ${items[0]}")
-            items.map { list.add(it.toSearchResult(false)) }
+            items.mapNotNull { item -> item.toSearchResult(false)?.let{list.add(it)} }
 
             val pagingWrapper = document.select("#paging-form").firstOrNull()
             val totalPages = pagingWrapper?.select("span.total")?.text()?.toIntOrNull()
             hasNextPage = totalPages != null && (page + 1) < totalPages
         }
 
-        val finalList = list.filter { anime ->
-            filterByDubStatus(anime)
-        }
-
         return newHomePageResponse(
             HomePageList(
                 name = request.name,
-                list = finalList,
+                list = list,
                 isHorizontalImages = false
             ), hasNextPage
         )
     }
 
-    private fun Element.toSearchResult(isTopPage: Boolean): AnimeSearchResponse {
+    private fun Element.toSearchResult(isTopPage: Boolean): AnimeSearchResponse? {
         // Extension function for parsing href.
         fun String.parseHref(): String {
             val parts = this.split('.').toMutableList()
@@ -172,9 +182,9 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             anchor.text()
         }
 
-        val title = titleText.replace(" (ITA)","")
+        val title = titleText.replace(" (ITA)", "")
         val otherTitle = if (currentExtension == CurrentExtension.DUB) anchor.attr("data-jtitle")
-                .replace(" (ITA)", "") else titleText
+            .replace(" (ITA)", "") else titleText
 
         // Use when for `poster` selection.
         val poster = when {
@@ -192,6 +202,15 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             else -> TvType.Anime
         }
 
+        val dubStatus = if (dub) {
+            DubStatus.Dubbed
+        } else {
+            DubStatus.Subbed
+        }
+
+        if (dubFilter != null && dubStatus != dubFilter) {
+            return null
+        }
         // Construct and return AnimeSearchResponse.
         return newAnimeSearchResponse(title, url, type) {
             addDubStatus(dub)
@@ -207,23 +226,28 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             cookies = cookies
         ).text
 
-        return tryParseJson<SearchJson>(document)?.animes?.map { anime ->
+        return tryParseJson<SearchJson>(document)?.animes?.mapNotNull { anime ->
             val type = when (anime.type) {
                 "Movie" -> TvType.AnimeMovie
                 "OVA" -> TvType.OVA
                 else -> TvType.Anime
             }
-            val dub = when (anime.language) {
-                "it" -> true
-                else -> false
+//            val dub = when (anime.language) {
+//                "it" -> true
+//                else -> false
+//            }
+            val dubStatus = when (anime.language) {
+                "it" -> DubStatus.Dubbed
+                else -> DubStatus.Subbed
+            }
+            if (dubFilter != null && dubStatus != dubFilter) {
+                return@mapNotNull null
             }
             newAnimeSearchResponse(anime.name, "$mainUrl/play/${anime.link}.${anime.id}", type) {
-                addDubStatus(dub)
+                addDubStatus(dubStatus)
                 this.otherName = anime.otherTitle
                 this.posterUrl = anime.image
             }
-        }?.filter { anime ->
-            filterByDubStatus(anime)
         }
     }
 
@@ -231,35 +255,31 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
         val pageParam = if (page <= 1) "" else "&page=$page"
         val document = request("$mainUrl/filter?sort=0&keyword=${query.trim()}$pageParam").document
 
-        val list = document.select(".film-list > .item").map {
+        val list = document.select(".film-list > .item").mapNotNull {
             it.toSearchResult(false)
         }
         val pagingWrapper = document.select("#paging-form").firstOrNull()
         val totalPages = pagingWrapper?.select("span.total")?.text()?.toIntOrNull()
         val hasNextPage = totalPages != null && (page + 1) < totalPages
 
-        val searchResponses = list.filter { anime ->
-            filterByDubStatus(anime)
-        }
-
-        return newSearchResponseList(searchResponses, hasNextPage)
+        return newSearchResponseList(list, hasNextPage)
     }
 
-    private fun filterByDubStatus(anime: AnimeSearchResponse): Boolean {
-        return anime.dubStatus?.any {
-            when (currentExtension) {
-                CurrentExtension.DUB -> {
-                    it == DubStatus.Dubbed
-                }
-                CurrentExtension.SUB -> {
-                    it == DubStatus.Subbed
-                }
-                else -> {
-                    true
-                }
-            }
-        } ?: true
-    }
+//    private fun filterByDubStatus(anime: AnimeSearchResponse): Boolean {
+//        return anime.dubStatus?.any {
+//            when (currentExtension) {
+//                CurrentExtension.DUB -> {
+//                    it == DubStatus.Dubbed
+//                }
+//                CurrentExtension.SUB -> {
+//                    it == DubStatus.Subbed
+//                }
+//                else -> {
+//                    true
+//                }
+//            }
+//        } ?: true
+//    }
 
     override suspend fun load(url: String): LoadResponse {
         val actualUrl = url.replace(Regex("""www\.animeworld\..."""), mainUrl.toHttpUrl().host)
@@ -314,7 +334,7 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
 
         val episodes = servers.select(".server[data-name=\"9\"] .episode").map {
             val number = it.select("a").attr("data-episode-num").toIntOrNull()
-            newEpisode("$number¿$actualUrl"){
+            newEpisode("$number¿$actualUrl") {
                 this.episode = number
             }
 
@@ -331,7 +351,7 @@ open class AnimeWorldCore(isSplit: Boolean = false) : MainAPI() {
             null
         }
 
-        val recommendations = document.select(".film-list.interesting .item").map {
+        val recommendations = document.select(".film-list.interesting .item").mapNotNull {
             it.toSearchResult(false)
         }
         return newAnimeLoadResponse(title, actualUrl, type) {

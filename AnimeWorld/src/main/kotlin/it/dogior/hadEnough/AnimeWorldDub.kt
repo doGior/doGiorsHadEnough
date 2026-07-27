@@ -2,10 +2,9 @@ package it.dogior.hadEnough
 
 import com.lagradost.cloudstream3.*
 
-class AnimeWorldDub(isSplit: Boolean) : AnimeWorldCore(isSplit) {
+class AnimeWorldDub(isSplit: Boolean) : AnimeWorldCore(isSplit, currentExtension = CurrentExtension.DUB) {
     override var name = "AnimeWorld Dub"
     override var lang = "it"
-    override val currentExtension = CurrentExtension.DUB
 
     override val mainPage = super.mainPage + mainPageOf(
         "$mainUrl/filter?status=0&language=it&sort=1" to "In Corso",
