@@ -4,6 +4,8 @@ import it.dogior.hadEnough.*
 import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
+import it.dogior.hadEnough.torrent.StreamCenterTorrentSources
+import it.dogior.hadEnough.util.StreamCenterLogger
 
 import android.animation.ArgbEvaluator
 import android.animation.AnimatorListenerAdapter
@@ -85,6 +87,7 @@ import org.jsoup.Jsoup
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.sin
+import kotlin.random.Random
 
 private const val MAIN_MENU_SUBMENU_REVEAL_DP = 116
 private const val PUBLIC_IP_ENDPOINT = "https://api.ipify.org"
@@ -133,6 +136,8 @@ private class SettingsAuroraDecoration(context: Context) : View(context) {
     private var particlesEnabled = false
     private var publicIpEnabled = false
     private var publicIp: String? = null
+    private var publicIpPlaceholder = "000.000.000.000"
+    private var publicIpPlaceholderStep = -1
     private var phase = 0f
     private val animationFrame = object : Runnable {
         override fun run() {
@@ -286,7 +291,8 @@ private class SettingsAuroraDecoration(context: Context) : View(context) {
     }
 
     private fun drawPublicIp(canvas: Canvas) {
-        val value = publicIp?.takeIf { publicIpEnabled && it.isNotBlank() } ?: return
+        if (!publicIpEnabled) return
+        val value = publicIp?.takeIf { it.isNotBlank() } ?: animatedPublicIpPlaceholder()
         horizonMeasure.setPath(horizonPath, false)
         val pathLength = horizonMeasure.length
         if (pathLength <= 0f) return
@@ -308,6 +314,18 @@ private class SettingsAuroraDecoration(context: Context) : View(context) {
             publicIpPaint.alpha = 178 + ((sin(phase * 0.9f + index) + 1f) * 28f).toInt()
             canvas.drawText(character.toString(), pathPosition[0], pathPosition[1] - lift, publicIpPaint)
         }
+    }
+
+    private fun animatedPublicIpPlaceholder(): String {
+        val step = (phase * 6f).toInt()
+        if (step == publicIpPlaceholderStep) return publicIpPlaceholder
+
+        val random = Random(step)
+        publicIpPlaceholder = List(4) {
+            random.nextInt(256).toString().padStart(3, '0')
+        }.joinToString(".")
+        publicIpPlaceholderStep = step
+        return publicIpPlaceholder
     }
 
     private fun drawGalaxyGlow(canvas: Canvas) {
@@ -392,7 +410,9 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var sourcesStatus: TextView? = null
     private var vpnStatus: TextView? = null
     private var vpnCountryFlag: ImageView? = null
+    private var vpnCountryFlagPlaceholder: TextView? = null
     private var vpnCountryCodeText: TextView? = null
+    private var vpnDnsText: TextView? = null
     private var mainContent: View? = null
     private var openSubmenus = 0
     private var stremioManifestRefreshStarted = false
@@ -452,35 +472,77 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 bottomMargin = dp(2)
             }
         }
+        fun vpnSeparator(): TextView = counterText("•", 9).apply {
+            alpha = 0.42f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                marginStart = dp(6)
+                marginEnd = dp(6)
+            }
+        }
         vpnStatus = counterText("VPN: OFF", 10).apply {
             text = vpnStatusText(isActive = false)
             gravity = Gravity.START
             alpha = 0.62f
             letterSpacing = 0.04f
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(46),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             )
         }.also(vpnInfo::addView)
-        vpnCountryFlag = ImageView(requireContext()).apply {
-            contentDescription = "Paese della connessione"
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            alpha = 0.72f
-            visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(dp(19), dp(13)).apply {
-                marginStart = dp(7)
-            }
+        vpnInfo.addView(vpnSeparator())
+        FrameLayout(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(19), dp(13))
+            vpnCountryFlag = ImageView(requireContext()).apply {
+                contentDescription = "Paese della connessione"
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                alpha = 0.72f
+                visibility = View.INVISIBLE
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            }.also(::addView)
+            vpnCountryFlagPlaceholder = TextView(requireContext()).apply {
+                text = "?"
+                textSize = 8f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                setTextColor(Color.parseColor(COLOR_MUTED))
+                background = outlined(tint(COLOR_MUTED, "70"), tint(COLOR_MUTED, "18"), 3)
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            }.also(::addView)
         }.also(vpnInfo::addView)
-        vpnCountryCodeText = counterText("", 9).apply {
-            alpha = 0.55f
+        vpnCountryCodeText = counterText("??", 9).apply {
+            alpha = 0.62f
+            setTextColor(Color.parseColor(COLOR_VPN_ON))
             letterSpacing = 0.06f
-            visibility = View.GONE
+            gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(18),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply {
                 marginStart = dp(4)
             }
+        }.also(vpnInfo::addView)
+        vpnInfo.addView(vpnSeparator())
+        vpnDnsText = counterText("DNS: —", 9).apply {
+            text = vpnDnsStatusText(null)
+            alpha = 0.62f
+            letterSpacing = 0.03f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f,
+            )
         }.also(vpnInfo::addView)
         content.addView(vpnInfo)
         content.addView(headerConnector())
@@ -608,7 +670,9 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         networkRefreshGeneration += 1
         vpnStatus = null
         vpnCountryFlag = null
+        vpnCountryFlagPlaceholder = null
         vpnCountryCodeText = null
+        vpnDnsText = null
         preloadedIconUrls.clear()
         super.onDestroyView()
         menuSparkleTargets.clear()
@@ -669,11 +733,19 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     }
 
     private fun refreshStatusStrip() {
-        val activeSourceCount = StreamCenterPlugin.streamingSources.count {
-            StreamCenterPlugin.isStreamingSourceEnabled(sharedPref, it.key)
+        val activeStreamingSourceCount = StreamCenterPlugin.streamingSources.count { source ->
+            StreamCenterPlugin.isStreamingSourceEnabled(sharedPref, source.key)
         } + StreamCenterPlugin.getStremioAddons(sharedPref).count { addon ->
             StreamCenterPlugin.isStremioAddonEnabled(sharedPref, addon.key)
         }
+        val activeTorrentSourceCount = if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
+            StreamCenterTorrentSources.definitions.count { source ->
+                StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
+            }
+        } else {
+            0
+        }
+        val activeSourceCount = activeStreamingSourceCount + activeTorrentSourceCount
         sourcesStatus?.text = "$activeSourceCount ${if (activeSourceCount == 1) "attiva" else "attive"}"
     }
 
@@ -727,10 +799,11 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         if (shouldRefreshCountry) {
             vpnCountryNetwork = manager.activeNetwork
             vpnCountryVpnActive = isVpnActive
-            vpnCountryCode = normalizedCountryCode(Locale.getDefault().country)
+            vpnCountryCode = null
             vpnCountryRefreshGeneration += 1
         }
         updateVpnStatusText(isVpnActive)
+        updateDnsStatus(manager)
         if (shouldRefreshCountry) {
             requestVpnCountry()
         }
@@ -788,12 +861,25 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
     }
 
+    private fun vpnDnsStatusText(server: String?): SpannableString {
+        val value = server ?: "—"
+        return SpannableString("DNS: $value").apply {
+            setSpan(
+                ForegroundColorSpan(Color.parseColor(COLOR_VPN_ON)),
+                length - value.length,
+                length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+    }
+
     private fun updateVpnCountryFlag(countryCode: String?) {
         val flag = vpnCountryFlag ?: return
         val code = countryCode?.takeIf { countryCodePattern.matches(it) }
         if (code == null) {
-            flag.visibility = View.GONE
-            vpnCountryCodeText?.visibility = View.GONE
+            flag.visibility = View.INVISIBLE
+            vpnCountryFlagPlaceholder?.visibility = View.VISIBLE
+            vpnCountryCodeText?.text = "??"
             return
         }
         if (flag.tag != code) {
@@ -801,18 +887,42 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             ImageLoader.run { flag.loadImage("https://flagcdn.com/w40/${code.lowercase(Locale.ROOT)}.png") }
         }
         flag.visibility = View.VISIBLE
+        vpnCountryFlagPlaceholder?.visibility = View.INVISIBLE
         vpnCountryCodeText?.apply {
             text = code
-            visibility = View.VISIBLE
+        }
+    }
+
+    private fun updateDnsStatus(manager: ConnectivityManager) {
+        val server = runCatching {
+            val activeNetwork = manager.activeNetwork ?: return@runCatching null
+            val linkProperties = manager.getLinkProperties(activeNetwork)
+                ?: return@runCatching null
+            val privateDnsName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                linkProperties.privateDnsServerName?.trim()?.takeIf(String::isNotBlank)
+            } else {
+                null
+            }
+            privateDnsName ?: linkProperties.dnsServers
+                .asSequence()
+                .mapNotNull { address -> address.hostAddress?.substringBefore('%') }
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .distinct()
+                .sortedBy { address -> if (':' in address) 1 else 0 }
+                .firstOrNull()
+        }.getOrNull()
+        vpnDnsText?.post {
+            vpnDnsText?.text = vpnDnsStatusText(server)
         }
     }
 
     private fun refreshNetworkStatus() {
         val content = mainContent ?: return
         val refreshGeneration = ++networkRefreshGeneration
-        refreshVpnStatus(refreshCountry = true)
         content.post {
             if (!isAdded || refreshGeneration != networkRefreshGeneration) return@post
+            refreshVpnStatus(refreshCountry = true)
             refreshAuroraEffects(forcePublicIpRefresh = true)
             content.postDelayed({
                 if (!isAdded || refreshGeneration != networkRefreshGeneration) return@postDelayed
@@ -908,12 +1018,23 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     }
 
     private fun showSubmenu(fragment: StreamCenterBaseSettingsFragment, tag: String) {
+        StreamCenterLogger.logMenu(
+            action = "Apertura sottomenu impostazioni",
+            metadata = mapOf(
+                "sottomenu" to tag,
+                "schermata" to fragment.javaClass.simpleName,
+            ),
+        )
         openSubmenus += 1
         updateMainBackdrop()
         fragment.onDismissed {
             openSubmenus = (openSubmenus - 1).coerceAtLeast(0)
             updateMainBackdrop()
         }.show(parentFragmentManager, tag)
+    }
+
+    override fun shouldAnimateChevrons(): Boolean {
+        return super.shouldAnimateChevrons() && openSubmenus == 0
     }
 
     private fun updateMainBackdrop() {
@@ -930,6 +1051,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 },
             )
         }
+        refreshChevronAnimations()
     }
 
     override fun refreshVisualEffectBackdrops() {

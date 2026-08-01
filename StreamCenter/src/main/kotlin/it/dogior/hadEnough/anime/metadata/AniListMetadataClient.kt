@@ -31,45 +31,138 @@ internal class AniListMetadataClient(
         malId: Int?,
         forceFullMetadata: Boolean = false,
     ): AnilistLoadMetadata? {
-        if (anilistId == null && malId == null) return null
+        if (anilistId == null && malId == null) {
+            MetadataLog.info(
+                SOURCE,
+                "Recupero metadati ignorato",
+                mapOf("motivo" to "id_anilist_e_myanimelist_assenti"),
+            )
+            return null
+        }
+        val usePerformanceQuery = performanceMode() && !forceFullMetadata
+        val requestDetails = buildMap<String, Any?> {
+            anilistId?.let { put("id_anilist", it) }
+            malId?.let { put("id_myanimelist", it) }
+            put("modalita_metadati", if (usePerformanceQuery) "ridotta" else "completa")
+            put("metadati_completi_forzati", forceFullMetadata)
+        }
         val variables = JSONObject().apply {
             if (anilistId != null) put("id", anilistId) else malId?.let { put("idMal", it) }
         }
-        val query = if (performanceMode() && !forceFullMetadata) MEDIA_PERFORMANCE_QUERY else MEDIA_QUERY
-        val media = graphQL(query, variables)?.optJSONObject("Media") ?: return null
-        return parseMedia(media)
+        val query = if (usePerformanceQuery) MEDIA_PERFORMANCE_QUERY else MEDIA_QUERY
+        MetadataLog.info(SOURCE, "Recupero metadati avviato", requestDetails)
+        val media = graphQL(
+            query = query,
+            variables = variables,
+            operation = "Metadati anime AniList",
+            requestDetails = requestDetails,
+        )?.optJSONObject("Media") ?: run {
+            MetadataLog.warning(SOURCE, "Metadati anime non disponibili", requestDetails)
+            return null
+        }
+        val metadata = parseMedia(media)
+        MetadataLog.info(
+            SOURCE,
+            "Metadati anime elaborati",
+            requestDetails + mapOf(
+                "id_anilist_risolto" to metadata.anilistId,
+                "id_myanimelist_risolto" to metadata.malId,
+                "titolo_risolto" to metadata.title,
+                "episodi_anilist" to metadata.episodeMetadata.size,
+                "personaggi" to metadata.characters.size,
+                "raccomandazioni" to metadata.recommendations.size,
+                "generi" to metadata.genres.size,
+                "tag" to metadata.tags.size,
+            ),
+        )
+        return metadata
     }
 
     suspend fun execute(query: String, variables: JSONObject): JSONObject? {
-        return graphQL(query, variables)
+        return graphQL(
+            query = query,
+            variables = variables,
+            operation = "Query catalogo AniList",
+            requestDetails = safeVariableDetails(variables),
+        )
     }
 
     suspend fun fetchScores(ids: Collection<Int>): Map<Int, String> {
         val distinctIds = ids.distinct()
-        if (distinctIds.isEmpty()) return emptyMap()
+        if (distinctIds.isEmpty()) {
+            MetadataLog.info(SOURCE, "Recupero punteggi ignorato", mapOf("motivo" to "nessun_id"))
+            return emptyMap()
+        }
+        val chunks = distinctIds.chunked(SCORE_PAGE_SIZE)
+        MetadataLog.info(
+            SOURCE,
+            "Recupero punteggi avviato",
+            mapOf("id_richiesti" to distinctIds.size, "richieste_previste" to chunks.size),
+        )
         val result = mutableMapOf<Int, String>()
-        distinctIds.chunked(SCORE_PAGE_SIZE).forEach { chunk ->
-            val scores = requestScores(chunk) ?: return@forEach
+        chunks.forEachIndexed { index, chunk ->
+            val scores = requestScores(chunk, index + 1, chunks.size)
+            if (scores == null) {
+                MetadataLog.warning(
+                    SOURCE,
+                    "Punteggi non disponibili per gruppo",
+                    mapOf("gruppo" to index + 1, "id_nel_gruppo" to chunk.size),
+                )
+                return@forEachIndexed
+            }
             chunk.forEach { id ->
                 scores[id]?.takeIf(String::isNotBlank)?.let { result[id] = it }
             }
         }
+        MetadataLog.info(
+            SOURCE,
+            "Recupero punteggi completato",
+            mapOf("id_richiesti" to distinctIds.size, "punteggi_risolti" to result.size),
+        )
         return result
     }
 
     suspend fun fetchTitleAliases(ids: Collection<Int>): Map<Int, List<String>> {
         val distinctIds = ids.distinct()
-        if (distinctIds.isEmpty()) return emptyMap()
+        if (distinctIds.isEmpty()) {
+            MetadataLog.info(SOURCE, "Recupero titoli alternativi ignorato", mapOf("motivo" to "nessun_id"))
+            return emptyMap()
+        }
         val missingIds = distinctIds.filterNot(titleAliasCache::containsKey)
-        missingIds.chunked(SCORE_PAGE_SIZE).forEach { chunk ->
-            val aliases = requestTitleAliases(chunk) ?: return@forEach
+        val chunks = missingIds.chunked(SCORE_PAGE_SIZE)
+        MetadataLog.info(
+            SOURCE,
+            "Recupero titoli alternativi avviato",
+            mapOf(
+                "id_richiesti" to distinctIds.size,
+                "id_in_cache" to distinctIds.size - missingIds.size,
+                "id_da_richiedere" to missingIds.size,
+                "richieste_previste" to chunks.size,
+            ),
+        )
+        chunks.forEachIndexed { index, chunk ->
+            val aliases = requestTitleAliases(chunk, index + 1, chunks.size)
+            if (aliases == null) {
+                MetadataLog.warning(
+                    SOURCE,
+                    "Titoli alternativi non disponibili per gruppo",
+                    mapOf("gruppo" to index + 1, "id_nel_gruppo" to chunk.size),
+                )
+                return@forEachIndexed
+            }
             aliases.forEach { (id, titles) -> titleAliasCache[id] = titles }
         }
-        return buildMap {
+        val result = buildMap {
             distinctIds.forEach { id ->
                 titleAliasCache[id]?.let { put(id, it) }
             }
         }
+        MetadataLog.info(
+            SOURCE,
+            "Recupero titoli alternativi completato",
+            mapOf("id_richiesti" to distinctIds.size, "id_risolti" to result.size),
+        )
+        return result
     }
 
     fun showStatus(status: String?): ShowStatus? = when (status?.uppercase(Locale.ROOT)) {
@@ -116,40 +209,124 @@ internal class AniListMetadataClient(
         else -> null
     }
 
-    private suspend fun graphQL(query: String, variables: JSONObject): JSONObject? {
+    private suspend fun graphQL(
+        query: String,
+        variables: JSONObject,
+        operation: String,
+        requestDetails: Map<String, Any?>,
+    ): JSONObject? {
         val body = JSONObject().put("query", query).put("variables", variables).toString()
-        var lastError: Throwable? = null
         repeat(REQUEST_ATTEMPTS) { attempt ->
-            if (attempt > 0) delay(RETRY_DELAY_MS * attempt)
-            throttle()
-            val response = runCatching {
+            val attemptNumber = attempt + 1
+            if (attempt > 0) {
+                MetadataLog.info(
+                    SOURCE,
+                    "Nuovo tentativo query AniList",
+                    requestDetails + mapOf(
+                        "operazione" to operation,
+                        "tentativo" to attemptNumber,
+                        "attesa_prima_del_tentativo_ms" to RETRY_DELAY_MS * attempt,
+                    ),
+                )
+                delay(RETRY_DELAY_MS * attempt)
+            }
+            throttle(operation)
+            val attemptDetails = requestDetails + mapOf(
+                "operazione" to operation,
+                "tentativo" to attemptNumber,
+                "tentativi_massimi" to REQUEST_ATTEMPTS,
+            )
+            MetadataLog.info(SOURCE, "Richiesta GraphQL avviata", attemptDetails)
+            val responseResult = runCatching {
                 app.post(
                     API_URL,
                     headers = JSON_HEADERS,
                     requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
                     cacheTime = 0,
-                ).text
-            }.getOrElse {
-                lastError = it
+                )
+            }
+            val response = responseResult.getOrNull()
+            if (response == null) {
+                MetadataLog.failure(
+                    source = SOURCE,
+                    action = "Richiesta GraphQL non riuscita",
+                    error = responseResult.exceptionOrNull(),
+                    details = attemptDetails + mapOf(
+                        "motivo" to "errore_di_rete",
+                        "nuovo_tentativo" to (attemptNumber < REQUEST_ATTEMPTS),
+                    ),
+                )
                 return@repeat
             }
-            val root = runCatching { JSONObject(response) }.getOrNull()
-            val data = root?.optJSONObject("data")
-            val errors = root?.optJSONArray("errors")
-            if (data != null && (errors == null || errors.length() == 0)) return data
-            lastError = RuntimeException("AniList throttled or empty response")
+            val rootResult = runCatching { JSONObject(response.text) }
+            val root = rootResult.getOrNull()
+            if (root == null) {
+                MetadataLog.failure(
+                    source = SOURCE,
+                    action = "Risposta GraphQL non valida",
+                    error = rootResult.exceptionOrNull(),
+                    details = attemptDetails + mapOf(
+                        "stato_http" to response.code,
+                        "motivo" to "json_non_interpretabile",
+                        "nuovo_tentativo" to (attemptNumber < REQUEST_ATTEMPTS),
+                    ),
+                )
+                return@repeat
+            }
+            val data = root.optJSONObject("data")
+            val errors = root.optJSONArray("errors")
+            if (data != null && (errors == null || errors.length() == 0)) {
+                MetadataLog.info(
+                    SOURCE,
+                    "Risposta GraphQL elaborata",
+                    attemptDetails + mapOf(
+                        "stato_http" to response.code,
+                        "sezioni_dati" to data.length(),
+                    ),
+                )
+                return data
+            }
+            MetadataLog.warning(
+                SOURCE,
+                "Risposta GraphQL senza dati utilizzabili",
+                attemptDetails + buildMap<String, Any?> {
+                    put("stato_http", response.code)
+                    put("dati_presenti", data != null)
+                    put("errori_graphql", errors?.length() ?: 0)
+                    put("nuovo_tentativo", attemptNumber < REQUEST_ATTEMPTS)
+                },
+            )
         }
-        lastError?.let { return null }
+        MetadataLog.warning(
+            SOURCE,
+            "Query AniList terminata senza risultato",
+            requestDetails + mapOf("operazione" to operation, "tentativi_eseguiti" to REQUEST_ATTEMPTS),
+        )
         return null
     }
 
-    private suspend fun requestScores(ids: List<Int>): Map<Int, String>? {
+    private suspend fun requestScores(
+        ids: List<Int>,
+        group: Int,
+        totalGroups: Int,
+    ): Map<Int, String>? {
+        val details = mapOf(
+            "gruppo" to group,
+            "gruppi_totali" to totalGroups,
+            "id_nel_gruppo" to ids.size,
+            "id_anilist_gruppo" to ids,
+        )
         val body = JSONObject()
             .put("query", SCORES_QUERY)
             .put("variables", JSONObject().put("ids", JSONArray(ids)))
             .toString()
-        return runCatching {
-            throttle()
+        MetadataLog.info(
+            SOURCE,
+            "Richiesta punteggi AniList avviata",
+            details + mapOf("tentativi_massimi" to 1),
+        )
+        val requestResult = runCatching {
+            throttle("Punteggi AniList")
             val text = app.post(
                 API_URL,
                 headers = JSON_HEADERS,
@@ -168,16 +345,46 @@ internal class AniListMetadataClient(
                     entry.optNullableInt("averageScore")?.let { put(id, formatScore(it)) }
                 }
             }
-        }.getOrNull()
+        }
+        requestResult.exceptionOrNull()?.let { error ->
+            MetadataLog.failure(
+                source = SOURCE,
+                action = "Richiesta punteggi AniList non riuscita",
+                error = error,
+                details = details,
+            )
+        }
+        val result = requestResult.getOrNull() ?: return null
+        MetadataLog.info(
+            SOURCE,
+            "Punteggi AniList elaborati",
+            details + mapOf("punteggi_risolti" to result.size),
+        )
+        return result
     }
 
-    private suspend fun requestTitleAliases(ids: List<Int>): Map<Int, List<String>>? {
+    private suspend fun requestTitleAliases(
+        ids: List<Int>,
+        group: Int,
+        totalGroups: Int,
+    ): Map<Int, List<String>>? {
+        val details = mapOf(
+            "gruppo" to group,
+            "gruppi_totali" to totalGroups,
+            "id_nel_gruppo" to ids.size,
+            "id_anilist_gruppo" to ids,
+        )
         val body = JSONObject()
             .put("query", TITLE_ALIASES_QUERY)
             .put("variables", JSONObject().put("ids", JSONArray(ids)))
             .toString()
-        return runCatching {
-            throttle()
+        MetadataLog.info(
+            SOURCE,
+            "Richiesta titoli alternativi AniList avviata",
+            details + mapOf("tentativi_massimi" to 1),
+        )
+        val requestResult = runCatching {
+            throttle("Titoli alternativi AniList")
             val text = app.post(
                 API_URL,
                 headers = JSON_HEADERS,
@@ -205,16 +412,57 @@ internal class AniListMetadataClient(
                     put(id, titles.distinct())
                 }
             }
-        }.getOrNull()
+        }
+        requestResult.exceptionOrNull()?.let { error ->
+            MetadataLog.failure(
+                source = SOURCE,
+                action = "Richiesta titoli alternativi AniList non riuscita",
+                error = error,
+                details = details,
+            )
+        }
+        val result = requestResult.getOrNull() ?: return null
+        MetadataLog.info(
+            SOURCE,
+            "Titoli alternativi AniList elaborati",
+            details + mapOf("id_risolti" to result.size),
+        )
+        return result
     }
 
-    private suspend fun throttle() {
+    private suspend fun throttle(operation: String) {
         requestMutex.withLock {
             val now = System.currentTimeMillis()
-            val wait = minRequestIntervalMs() - (now - lastRequestAtMs)
-            if (wait > 0) delay(wait)
+            val minIntervalMs = minRequestIntervalMs()
+            val wait = minIntervalMs - (now - lastRequestAtMs)
+            if (wait > 0) {
+                MetadataLog.info(
+                    SOURCE,
+                    "Attesa rate limit",
+                    mapOf(
+                        "operazione" to operation,
+                        "attesa_ms" to wait,
+                        "intervallo_minimo_ms" to minIntervalMs,
+                    ),
+                )
+                delay(wait)
+            }
             lastRequestAtMs = System.currentTimeMillis()
         }
+    }
+
+    private fun safeVariableDetails(variables: JSONObject): Map<String, Any?> = buildMap {
+        val keys = buildList {
+            val iterator = variables.keys()
+            while (iterator.hasNext()) add(iterator.next())
+        }.sorted()
+        put("variabili_presenti", keys)
+        variables.optNullableInt("id")?.let { put("id_anilist", it) }
+        variables.optNullableInt("idMal")?.let { put("id_myanimelist", it) }
+        variables.optNullableInt("page")?.let { put("pagina", it) }
+        variables.optNullableInt("perPage")?.let { put("elementi_per_pagina", it) }
+        variables.optJSONArray("ids")?.let { put("id_richiesti", it.length()) }
+        if (variables.has("search")) put("ricerca_testuale_presente", true)
     }
 
     private fun parseMedia(media: JSONObject): AnilistLoadMetadata {
@@ -409,6 +657,7 @@ internal class AniListMetadataClient(
     }
 
     private companion object {
+        const val SOURCE = "AniList"
         const val API_URL = "https://graphql.anilist.co"
         const val REQUEST_ATTEMPTS = 3
         const val RETRY_DELAY_MS = 1_000L

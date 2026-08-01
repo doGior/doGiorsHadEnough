@@ -31,7 +31,7 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 6
+version = 7
 val pluginVersion = version.toString()
 
 cloudstream {
@@ -67,4 +67,5 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
+    testImplementation("junit:junit:4.13.2")
 }

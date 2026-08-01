@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addSimklId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import it.dogior.hadEnough.catalog.StreamCenterSimklMedia
+import it.dogior.hadEnough.util.StreamCenterLogger
 
 internal data class StreamCenterTrackingIds(
     val anilist: Int? = null,
@@ -30,6 +31,11 @@ internal fun LoadResponse.addStreamCenterTrackingIds(
     ids.imdb?.let { addImdbId(it) }
     ids.tmdb?.let { addTMDbId(it) }
     if (showAsTags) addStreamCenterTrackingIdTags(ids)
+    StreamCenterLogger.logTab(
+        tabName = name,
+        action = "ID servizi di tracciamento associati",
+        metadata = ids.toLogMetadata(),
+    )
 }
 
 internal fun LoadResponse.addStreamCenterTrackingId(
@@ -38,27 +44,28 @@ internal fun LoadResponse.addStreamCenterTrackingId(
     showAsTags: Boolean = false,
 ) {
     val id = value.substringBefore('/').trim().toIntOrNull()
-    when (name) {
-        SyncIdName.Anilist -> id?.let {
-            addAniListId(it)
-            if (showAsTags) addStreamCenterTrackingIdTags(StreamCenterTrackingIds(anilist = it))
-        }
-        SyncIdName.MyAnimeList -> id?.let {
-            addMalId(it)
-            if (showAsTags) addStreamCenterTrackingIdTags(StreamCenterTrackingIds(mal = it))
-        }
-        SyncIdName.Kitsu -> id?.let {
-            addKitsuId(it)
-            if (showAsTags) addStreamCenterTrackingIdTags(StreamCenterTrackingIds(kitsu = it))
-        }
-        SyncIdName.Simkl -> id?.let {
-            addSimklId(it)
-            if (showAsTags) addStreamCenterTrackingIdTags(StreamCenterTrackingIds(simkl = it))
-        }
-        SyncIdName.Imdb -> value.trim().takeIf(String::isNotBlank)?.let { addImdbId(it) }
-        else -> Unit
-    }
+    val ids = when (name) {
+        SyncIdName.Anilist -> id?.let { StreamCenterTrackingIds(anilist = it) }
+        SyncIdName.MyAnimeList -> id?.let { StreamCenterTrackingIds(mal = it) }
+        SyncIdName.Kitsu -> id?.let { StreamCenterTrackingIds(kitsu = it) }
+        SyncIdName.Simkl -> id?.let { StreamCenterTrackingIds(simkl = it) }
+        SyncIdName.Imdb -> value.trim().takeIf(String::isNotBlank)?.let { StreamCenterTrackingIds(imdb = it) }
+        else -> null
+    } ?: return
+
+    addStreamCenterTrackingIds(ids, showAsTags)
 }
+
+private fun StreamCenterTrackingIds.toLogMetadata(): Map<String, String> = linkedMapOf(
+    "id_anilist" to anilist.orUnavailable(),
+    "id_myanimelist" to mal.orUnavailable(),
+    "id_kitsu" to kitsu.orUnavailable(),
+    "id_simkl" to simkl.orUnavailable(),
+    "id_imdb" to imdb.orUnavailable(),
+    "id_tmdb" to tmdb.orUnavailable(),
+)
+
+private fun Any?.orUnavailable(): String = this?.toString()?.takeIf(String::isNotBlank) ?: "Non disponibile"
 
 private fun LoadResponse.addStreamCenterTrackingIdTags(ids: StreamCenterTrackingIds) {
     val idTags = listOfNotNull(

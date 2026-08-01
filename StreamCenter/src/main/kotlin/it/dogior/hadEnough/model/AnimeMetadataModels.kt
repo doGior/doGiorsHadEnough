@@ -61,6 +61,8 @@ internal data class AniZipEpisodeMetadata(
     val airDate: String?,
     val fallbackAirDate: String?,
     val rating: Double?,
+    val episodeNumber: Int?,
+    val absoluteEpisodeNumber: Int?,
 )
 
 internal data class AnilistRecommendation(
@@ -81,6 +83,8 @@ internal data class AniZipEpisodeCatalog(
     val titles: Map<String, String> = emptyMap(),
     val description: String? = null,
     val episodes: Map<Int, AniZipEpisodeMetadata> = emptyMap(),
+    val anilistId: Int? = null,
+    val malId: Int? = null,
     val kitsuId: Int? = null,
     val tmdbId: Int? = null,
 )

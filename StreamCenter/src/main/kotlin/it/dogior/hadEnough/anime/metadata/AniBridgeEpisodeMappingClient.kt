@@ -29,50 +29,169 @@ internal class AniBridgeEpisodeMappingClient(
         anilistId: Int,
         episodeNumbers: Set<Int>,
     ): Map<Int, TmdbAnimeEpisodeReference> {
-        if (anilistId <= 0 || episodeNumbers.isEmpty()) return emptyMap()
+        if (anilistId <= 0 || episodeNumbers.isEmpty()) {
+            MetadataLog.info(
+                SOURCE,
+                "Risoluzione mappature episodi ignorata",
+                buildMap<String, Any?> {
+                    put("motivo", if (anilistId <= 0) "id_anilist_non_valido" else "nessun_episodio")
+                    if (anilistId > 0) put("id_anilist", anilistId)
+                    put("episodi_richiesti", episodeNumbers.size)
+                },
+            )
+            return emptyMap()
+        }
+        val requestDetails = mapOf(
+            "id_anilist" to anilistId,
+            "episodi_richiesti" to episodeNumbers.size,
+        )
         val cacheKey = "$anilistId:${episodeNumbers.sorted().joinToString(",")}"
-        mappingCache[cacheKey]?.let { return it }
+        mappingCache[cacheKey]?.let { cached ->
+            MetadataLog.info(
+                SOURCE,
+                "Mappature episodi ottenute dalla cache",
+                requestDetails + mapOf("mappature_risolte" to cached.size),
+            )
+            return cached
+        }
 
+        MetadataLog.info(SOURCE, "Risoluzione mappature episodi avviata", requestDetails)
         val mapping = withContext(Dispatchers.IO) {
             archiveFile()?.let { archive ->
                 parseMappings(archive, anilistId, episodeNumbers)
             }.orEmpty()
         }
-        if (mapping.isEmpty()) return mapping
-        return mappingCache.putIfAbsent(cacheKey, mapping) ?: mapping
+        if (mapping.isEmpty()) {
+            MetadataLog.info(
+                SOURCE,
+                "Nessuna mappatura episodi trovata",
+                requestDetails,
+            )
+            return mapping
+        }
+        val resolved = mappingCache.putIfAbsent(cacheKey, mapping) ?: mapping
+        MetadataLog.info(
+            SOURCE,
+            "Mappature episodi elaborate",
+            requestDetails + mapOf(
+                "mappature_risolte" to resolved.size,
+                "serie_tmdb_coinvolte" to resolved.values.map(TmdbAnimeEpisodeReference::tmdbId).distinct().size,
+                "stagioni_tmdb_coinvolte" to resolved.values.map { it.tmdbId to it.season }.distinct().size,
+            ),
+        )
+        return resolved
     }
 
     private suspend fun archiveFile(): File? {
-        val directory = cacheDirectory() ?: return null
+        val directory = cacheDirectory() ?: run {
+            MetadataLog.warning(SOURCE, "Archivio mappature non disponibile", mapOf("motivo" to "cache_non_configurata"))
+            return null
+        }
         return archiveMutex.withLock {
-            if (!directory.exists() && !directory.mkdirs()) return@withLock null
+            if (!directory.exists() && !directory.mkdirs()) {
+                MetadataLog.error(SOURCE, "Archivio mappature non disponibile", mapOf("motivo" to "creazione_cache_non_riuscita"))
+                return@withLock null
+            }
             val archive = File(directory, ARCHIVE_FILE_NAME)
-            if (archive.isFresh()) return@withLock archive
+            if (archive.isFresh()) {
+                MetadataLog.info(
+                    SOURCE,
+                    "Archivio mappature ottenuto dalla cache locale",
+                    mapOf(
+                        "dimensione_archivio_byte" to archive.length(),
+                        "eta_archivio_ms" to (System.currentTimeMillis() - archive.lastModified()).coerceAtLeast(0L),
+                    ),
+                )
+                return@withLock archive
+            }
+            MetadataLog.info(
+                SOURCE,
+                "Aggiornamento archivio mappature necessario",
+                mapOf("archivio_locale_utilizzabile" to (archive.isFile && archive.length() >= MIN_ARCHIVE_SIZE_BYTES)),
+            )
             downloadArchive(directory, archive)
-                ?: archive.takeIf { it.isFile && it.length() >= MIN_ARCHIVE_SIZE_BYTES }
+                ?: archive.takeIf { it.isFile && it.length() >= MIN_ARCHIVE_SIZE_BYTES }?.also {
+                    MetadataLog.warning(
+                        SOURCE,
+                        "Usato archivio mappature locale non aggiornato",
+                        mapOf("dimensione_archivio_byte" to it.length()),
+                    )
+                }
         }
     }
 
     private suspend fun downloadArchive(directory: File, archive: File): File? {
         val temporary = File(directory, ".${ARCHIVE_FILE_NAME}.${System.nanoTime()}.tmp")
         return try {
-            val response = app.get(
+            MetadataLog.info(
+                SOURCE,
+                "Download archivio mappature avviato",
+                mapOf("timeout_secondi" to ARCHIVE_TIMEOUT_SECONDS),
+            )
+            val responseResult = runCatching {
+                app.get(
                 ARCHIVE_URL,
                 headers = headers + mapOf("Accept" to "application/zip"),
                 cacheTime = 0,
                 timeout = ARCHIVE_TIMEOUT_SECONDS,
-            )
-            if (response.code !in 200..299) return null
+                )
+            }
+            val response = responseResult.getOrNull() ?: run {
+                MetadataLog.failure(
+                    source = SOURCE,
+                    action = "Download archivio mappature non riuscito",
+                    error = responseResult.exceptionOrNull(),
+                    details = mapOf("motivo" to "errore_di_rete"),
+                )
+                return null
+            }
+            if (response.code !in 200..299) {
+                MetadataLog.warning(
+                    SOURCE,
+                    "Download archivio mappature non riuscito",
+                    mapOf("motivo" to "stato_http_non_valido", "stato_http" to response.code),
+                )
+                return null
+            }
             response.body.byteStream().use { input ->
                 temporary.outputStream().buffered().use { output -> input.copyTo(output) }
             }
-            if (temporary.length() < MIN_ARCHIVE_SIZE_BYTES) return null
-            if (archive.exists() && !archive.delete()) return null
+            if (temporary.length() < MIN_ARCHIVE_SIZE_BYTES) {
+                MetadataLog.warning(
+                    SOURCE,
+                    "Download archivio mappature scartato",
+                    mapOf(
+                        "motivo" to "archivio_troppo_piccolo",
+                        "dimensione_archivio_byte" to temporary.length(),
+                    ),
+                )
+                return null
+            }
+            if (archive.exists() && !archive.delete()) {
+                MetadataLog.error(
+                    SOURCE,
+                    "Aggiornamento archivio mappature non riuscito",
+                    mapOf("motivo" to "sostituzione_archivio_non_riuscita"),
+                )
+                return null
+            }
             if (!temporary.renameTo(archive)) {
                 temporary.copyTo(archive, overwrite = true)
             }
-            archive.takeIf(File::isFile)
-        } catch (_: Throwable) {
+            archive.takeIf(File::isFile)?.also {
+                MetadataLog.info(
+                    SOURCE,
+                    "Download archivio mappature completato",
+                    mapOf("stato_http" to response.code, "dimensione_archivio_byte" to it.length()),
+                )
+            }
+        } catch (error: Throwable) {
+            MetadataLog.failure(
+                source = SOURCE,
+                action = "Download archivio mappature non riuscito",
+                error = error,
+                details = mapOf("motivo" to "errore_durante_salvataggio_archivio"),
+            )
             null
         } finally {
             if (temporary.exists()) temporary.delete()
@@ -84,7 +203,7 @@ internal class AniBridgeEpisodeMappingClient(
         anilistId: Int,
         episodeNumbers: Set<Int>,
     ): Map<Int, TmdbAnimeEpisodeReference> {
-        return runCatching {
+        val result = runCatching {
             archive.inputStream().buffered().use { input ->
                 ZipInputStream(input).use { zip ->
                     var entry = zip.nextEntry
@@ -100,7 +219,26 @@ internal class AniBridgeEpisodeMappingClient(
                     }
                 }
             }
-        }.getOrDefault(emptyMap())
+        }
+        val mappings = result.getOrElse { error ->
+            MetadataLog.failure(
+                source = SOURCE,
+                action = "Lettura archivio mappature non riuscita",
+                error = error,
+                details = mapOf("id_anilist" to anilistId, "episodi_richiesti" to episodeNumbers.size),
+            )
+            emptyMap()
+        }
+        MetadataLog.info(
+            SOURCE,
+            "Archivio mappature elaborato",
+            mapOf(
+                "id_anilist" to anilistId,
+                "episodi_richiesti" to episodeNumbers.size,
+                "mappature_trovate" to mappings.size,
+            ),
+        )
+        return mappings
     }
 
     private fun readProvenance(
@@ -387,6 +525,7 @@ internal class AniBridgeEpisodeMappingClient(
     }
 
     private companion object {
+        const val SOURCE = "AniBridge"
         const val ARCHIVE_URL = "https://mappings.anibridge.eliasbenb.dev/data/provenance.zip"
         const val ARCHIVE_FILE_NAME = "streamcenter-anibridge-provenance.zip"
         const val ARCHIVE_TIMEOUT_SECONDS = 30L

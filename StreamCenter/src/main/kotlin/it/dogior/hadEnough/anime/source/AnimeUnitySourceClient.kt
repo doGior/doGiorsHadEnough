@@ -40,16 +40,31 @@ internal class AnimeUnitySourceClient(
         anilistMetadata: AnilistMetadata?,
         syncIds: List<AnimeSyncIds>,
     ): List<AnimeUnityTitleSources> {
-        if (syncIds.isEmpty()) return emptyList()
+        if (syncIds.isEmpty()) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Ricerca sorgenti ignorata: identificativi assenti")
+            return emptyList()
+        }
 
         val titleCandidates = buildAnimeSourceTitleCandidates(metadata, anilistMetadata)
             .take(archiveQueryLimit())
         val exactTitleKeys = exactAnimeTitleKeys(metadata, anilistMetadata)
         val allowTitleFallback = syncIds.size == 1
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca sorgenti avviata",
+            mapOf(
+                "titoli_candidati" to titleCandidates.size,
+                "identificativi_sincronizzazione" to syncIds.size,
+                "fallback_titolo_consentito" to allowTitleFallback,
+            ),
+        )
 
-        return syncIds.mapNotNull { sync ->
+        val resolvedSources = syncIds.mapNotNull { sync ->
             val variants = findVariants(sync, titleCandidates, exactTitleKeys, allowTitleFallback)
-            if (variants.isEmpty()) return@mapNotNull null
+            if (variants.isEmpty()) {
+                AnimeSourceLog.warning(SOURCE_NAME, "Nessuna variante corrispondente")
+                return@mapNotNull null
+            }
 
             val subAnime = variants.firstOrNull { !it.isDub }
             val dubAnime = variants.firstOrNull { it.isDub }
@@ -70,7 +85,24 @@ internal class AnimeUnitySourceClient(
                 plot = pageAnime?.plot?.takeIf(String::isNotBlank),
                 posterUrl = posterResolver(pageAnime?.imageUrl),
             ).takeIf { it.subSources.isNotEmpty() || it.dubSources.isNotEmpty() }
+                ?.also {
+                    AnimeSourceLog.info(
+                        SOURCE_NAME,
+                        "Sorgenti episodio disponibili",
+                        mapOf(
+                            "varianti_trovate" to variants.size,
+                            "episodi_sub" to subSources.size,
+                            "episodi_doppiati" to dubSources.size,
+                        ),
+                    )
+                }
         }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca sorgenti conclusa",
+            mapOf("contenuti_risolti" to resolvedSources.size),
+        )
+        return resolvedSources
     }
 
     suspend fun fetchArchive(
@@ -78,20 +110,41 @@ internal class AnimeUnitySourceClient(
         offset: Int = 0,
         title: String = "",
     ): List<AnimeUnityAnime> {
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Richiesta archivio avviata",
+            mapOf(
+                "offset" to offset,
+                "filtro_doppiato" to filters.dubbed,
+                "ricerca_titolo_presente" to title.isNotBlank(),
+            ),
+        )
         ensureHeaders()
         val requestBody = buildArchiveBody(title, offset, filters)
             .toRequestBody("application/json;charset=utf-8".toMediaType())
-        val text = app.post(
-            "${baseUrl()}/archivio/get-animes",
-            headers = requestHeaders,
-            requestBody = requestBody,
-        ).text
-        return parseArchive(text)
+        val text = try {
+            app.post(
+                "${baseUrl()}/archivio/get-animes",
+                headers = requestHeaders,
+                requestBody = requestBody,
+            ).text
+        } catch (error: Throwable) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Richiesta archivio non riuscita", error = error)
+            throw error
+        }
+        return parseArchive(text).also { results ->
+            AnimeSourceLog.info(
+                SOURCE_NAME,
+                "Richiesta archivio completata",
+                mapOf("risultati_archivio" to results.size),
+            )
+        }
     }
 
     fun resetSession() {
         sharedPref?.edit()?.remove(PREF_SESSION)?.apply()
         applySession(cookie = "", csrfToken = "")
+        AnimeSourceLog.info(SOURCE_NAME, "Sessione sorgente reimpostata")
     }
 
     suspend fun findVariants(
@@ -100,29 +153,83 @@ internal class AnimeUnitySourceClient(
         exactTitleKeys: Set<String>,
         allowTitleFallback: Boolean,
     ): List<AnimeUnityAnime> {
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca varianti avviata",
+            mapOf(
+                "titoli_candidati" to titleCandidates.size,
+                "fallback_titolo_consentito" to allowTitleFallback,
+            ),
+        )
         val candidates = linkedMapOf<Int, AnimeUnityAnime>()
-        for (chunk in titleCandidates.chunked(SEARCH_PARALLELISM)) {
+        for ((batchIndex, chunk) in titleCandidates.chunked(SEARCH_PARALLELISM).withIndex()) {
+            AnimeSourceLog.info(
+                SOURCE_NAME,
+                "Tentativo ricerca archivio",
+                mapOf(
+                    "lotto" to (batchIndex + 1),
+                    "titoli_nel_lotto" to chunk.size,
+                ),
+            )
             coroutineScope {
                 chunk.map { title ->
                     async(Dispatchers.IO) {
-                        runCatching { fetchArchive(title = title) }.getOrDefault(emptyList())
+                        runCatching { fetchArchive(title = title) }
+                            .onFailure {
+                                AnimeSourceLog.warning(
+                                    SOURCE_NAME,
+                                    "Tentativo ricerca archivio non riuscito",
+                                    error = it,
+                                )
+                            }
+                            .getOrDefault(emptyList())
                     }
                 }.awaitAll()
             }.flatten().forEach { anime ->
                 if (!candidates.containsKey(anime.id)) candidates[anime.id] = anime
             }
+            AnimeSourceLog.info(
+                SOURCE_NAME,
+                "Tentativo ricerca archivio completato",
+                mapOf(
+                    "lotto" to (batchIndex + 1),
+                    "candidati_univoci" to candidates.size,
+                ),
+            )
             if (candidates.values.any { it.matches(syncIds) }) break
         }
 
         val idMatches = candidates.values.filter { it.matches(syncIds) }
         val exactMatches = idMatches.ifEmpty {
-            if (!allowTitleFallback) return emptyList()
+            if (!allowTitleFallback) {
+                AnimeSourceLog.warning(
+                    SOURCE_NAME,
+                    "Fallback titolo non applicato: piu identificativi disponibili",
+                )
+                return emptyList()
+            }
             candidates.values.filter { anime ->
                 anime.anilistId == null && anime.malId == null &&
                     anime.titleKeys().any { it in exactTitleKeys }
             }
         }
-        if (exactMatches.isEmpty()) return emptyList()
+        if (exactMatches.isEmpty()) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Nessuna variante verificata")
+            return emptyList()
+        }
+        if (idMatches.isEmpty()) {
+            AnimeSourceLog.warning(
+                SOURCE_NAME,
+                "Fallback titolo applicato: identificativi mancanti nella sorgente",
+                mapOf("corrispondenze" to exactMatches.size),
+            )
+        } else {
+            AnimeSourceLog.info(
+                SOURCE_NAME,
+                "Corrispondenza tramite identificativi",
+                mapOf("corrispondenze" to idMatches.size),
+            )
+        }
 
         val matchedContentKeys = exactMatches.map(AnimeUnityAnime::contentKey).toSet()
         return candidates.values
@@ -150,9 +257,22 @@ internal class AnimeUnitySourceClient(
     }
 
     private suspend fun fetchPage(anime: AnimeUnityAnime): AnimeUnityPageData? {
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Dettaglio variante richiesto",
+            mapOf("identificativo_variante" to anime.id),
+        )
         val url = "${baseUrl()}/anime/${anime.id}-${anime.slug}"
-        val html = app.get(url).text
-        val videoPlayer = Jsoup.parse(html, url).selectFirst("video-player") ?: return null
+        val html = try {
+            app.get(url).text
+        } catch (error: Throwable) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio variante non riuscito", error = error)
+            throw error
+        }
+        val videoPlayer = Jsoup.parse(html, url).selectFirst("video-player") ?: run {
+            AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio variante senza player")
+            return null
+        }
         val pageAnime = videoPlayer.attr("anime")
             .takeIf(String::isNotBlank)
             ?.let { runCatching { JSONObject(it).toAnimeUnityAnime() }.getOrNull() }
@@ -162,7 +282,16 @@ internal class AnimeUnitySourceClient(
         return AnimeUnityPageData(
             anime = pageAnime,
             episodes = fetchAllEpisodes(pageAnime, initialEpisodes, totalEpisodes),
-        )
+        ).also { pageData ->
+            AnimeSourceLog.info(
+                SOURCE_NAME,
+                "Dettaglio variante completato",
+                mapOf(
+                    "episodi_rilevati" to pageData.episodes.size,
+                    "episodi_dichiarati" to totalEpisodes,
+                ),
+            )
+        }
     }
 
     private suspend fun fetchAllEpisodes(
@@ -178,7 +307,17 @@ internal class AnimeUnitySourceClient(
             val startRange = 1 + (page - 1) * EPISODES_PER_PAGE
             val endRange = if (page == pageCount) totalEpisodes else page * EPISODES_PER_PAGE
             val url = "${baseUrl()}/info_api/${anime.id}/1?start_range=$startRange&end_range=$endRange"
-            val text = app.get(url).text
+            val text = try {
+                app.get(url).text
+            } catch (error: Throwable) {
+                AnimeSourceLog.warning(
+                    SOURCE_NAME,
+                    "Recupero pagina episodi non riuscito",
+                    mapOf("pagina" to page),
+                    error,
+                )
+                throw error
+            }
             episodes += parseEpisodes(
                 JSONObject(text).optJSONArray("episodes")?.toString().orEmpty()
             )
@@ -197,6 +336,8 @@ internal class AnimeUnitySourceClient(
                     add(AnimeUnityEpisodeInfo(id = id, number = number))
                 }
             }
+        }.onFailure {
+            AnimeSourceLog.warning(SOURCE_NAME, "Parsing episodi non riuscito", error = it)
         }.getOrDefault(emptyList())
     }
 
@@ -217,6 +358,8 @@ internal class AnimeUnitySourceClient(
                     records.optJSONObject(index)?.toAnimeUnityAnime()?.let(::add)
                 }
             }
+        }.onFailure {
+            AnimeSourceLog.warning(SOURCE_NAME, "Parsing archivio non riuscito", error = it)
         }.getOrDefault(emptyList())
     }
 
@@ -313,6 +456,7 @@ internal class AnimeUnitySourceClient(
     }
 
     private companion object {
+        const val SOURCE_NAME = "AnimeUnity"
         const val PREF_SESSION = "streamcenter_au_session"
         const val SESSION_TTL_MS = 12L * 60L * 60L * 1000L
         const val SEARCH_PARALLELISM = 4

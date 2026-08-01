@@ -4,6 +4,9 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.settings.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.*
+import it.dogior.hadEnough.torrent.StreamCenterTorrentFilterPreferences
+import it.dogior.hadEnough.torrent.StreamCenterTorrentSources
+import it.dogior.hadEnough.util.StreamCenterLogger
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -80,6 +83,7 @@ data class StreamCenterStreamingSource(
     val defaultUrl: String,
     val category: String = "anime",
     val defaultEnabled: Boolean = true,
+    val isPinned: Boolean = false,
 )
 
 internal data class StreamCenterStremioManifestRefreshResult(
@@ -136,18 +140,25 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_SOURCE_ANIMEWORLD = "sourceAnimeWorld"
         const val PREF_SOURCE_ANIMESATURN = "sourceAnimeSaturn"
         const val PREF_SOURCE_STREAMINGCOMMUNITY = "sourceStreamingCommunity"
+        const val PREF_SOURCE_VIXCLOUD = "sourceVixCloud"
+        const val PREF_SOURCE_VIXSRC = "sourceVixSrc"
         const val PREF_SOURCE_VIDXGO = "sourceVidxGo"
+        const val PREF_TORRENT_ENABLED = "torrentEnabled"
 
         const val PREF_URL_ANIMEUNITY = "urlAnimeUnity"
         const val PREF_URL_ANIMEWORLD = "urlAnimeWorld"
         const val PREF_URL_ANIMESATURN = "urlAnimeSaturn"
         const val PREF_URL_STREAMINGCOMMUNITY = "urlStreamingCommunity"
+        const val PREF_URL_VIXCLOUD = "urlVixCloud"
+        const val PREF_URL_VIXSRC = "urlVixSrc"
         const val PREF_URL_VIDXGO = "urlVidxGo"
 
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.sale"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.support"
+        const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
+        const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
 
         const val PREF_SOURCE_PRIORITY = "sourcePriority"
@@ -270,6 +281,21 @@ class StreamCenterPlugin : Plugin() {
                 title = "StreamingCommunity",
                 urlPrefKey = PREF_URL_STREAMINGCOMMUNITY,
                 defaultUrl = DEFAULT_URL_STREAMINGCOMMUNITY,
+                category = "tv",
+                isPinned = true,
+            ),
+            StreamCenterStreamingSource(
+                key = PREF_SOURCE_VIXCLOUD,
+                title = "VixCloud",
+                urlPrefKey = PREF_URL_VIXCLOUD,
+                defaultUrl = DEFAULT_URL_VIXCLOUD,
+                category = "tv",
+            ),
+            StreamCenterStreamingSource(
+                key = PREF_SOURCE_VIXSRC,
+                title = "VixSrc",
+                urlPrefKey = PREF_URL_VIXSRC,
+                defaultUrl = DEFAULT_URL_VIXSRC,
                 category = "tv",
             ),
             StreamCenterStreamingSource(
@@ -395,6 +421,36 @@ class StreamCenterPlugin : Plugin() {
         fun isStreamingSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
             val source = streamingSources.firstOrNull { it.key == prefKey } ?: return false
             return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
+        }
+
+        fun isTorrentEnabled(sharedPref: SharedPreferences?): Boolean {
+            return sharedPref?.getBoolean(PREF_TORRENT_ENABLED, false) ?: false
+        }
+
+        fun setTorrentEnabled(sharedPref: SharedPreferences?, enabled: Boolean) {
+            sharedPref?.edit()?.apply {
+                if (enabled) putBoolean(PREF_TORRENT_ENABLED, true)
+                else remove(PREF_TORRENT_ENABLED)
+            }?.apply()
+        }
+
+        fun isTorrentSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
+            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
+                ?: return false
+            return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
+        }
+
+        fun setTorrentSourceEnabled(
+            sharedPref: SharedPreferences?,
+            prefKey: String,
+            enabled: Boolean,
+        ) {
+            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
+                ?: return
+            sharedPref?.edit()?.apply {
+                if (enabled == source.defaultEnabled) remove(prefKey)
+                else putBoolean(prefKey, enabled)
+            }?.apply()
         }
 
         internal fun getStremioAddons(sharedPref: SharedPreferences?): List<StreamCenterStremioAddon> {
@@ -599,9 +655,32 @@ class StreamCenterPlugin : Plugin() {
             }?.apply()
         }
 
-        fun resetSourceUrls(sharedPref: SharedPreferences?) {
+        fun getTorrentSourceUrl(sharedPref: SharedPreferences?, prefKey: String): String {
+            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
+                ?: return ""
+            val defaultUrl = normalizeSourceUrl(source.displayUrl)
+            return sharedPref
+                ?.getString(source.urlPrefKey, null)
+                ?.let(::normalizeSourceUrl)
+                ?.takeIf { it.isNotBlank() }
+                ?: defaultUrl
+        }
+
+        fun setTorrentSourceUrl(
+            sharedPref: SharedPreferences?,
+            prefKey: String,
+            url: String,
+        ) {
+            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
+                ?: return
+            val cleaned = normalizeSourceUrl(url)
+            val defaultUrl = normalizeSourceUrl(source.displayUrl)
             sharedPref?.edit()?.apply {
-                streamingSources.forEach { remove(it.urlPrefKey) }
+                if (cleaned.isBlank() || cleaned == defaultUrl) {
+                    remove(source.urlPrefKey)
+                } else {
+                    putString(source.urlPrefKey, cleaned)
+                }
             }?.apply()
         }
 
@@ -610,11 +689,17 @@ class StreamCenterPlugin : Plugin() {
             val stremioEnabledKeys = preferences.all.keys.filter {
                 it.startsWith(PREF_STREMIO_ADDON_ENABLED_PREFIX)
             }
+            val torrentSourceKeys = preferences.all.keys.filter(
+                StreamCenterTorrentSources::isSourcePreferenceKey,
+            )
             preferences.edit().apply {
                 streamingSources.forEach { source ->
                     remove(source.key)
                     remove(source.urlPrefKey)
                 }
+                remove(PREF_TORRENT_ENABLED)
+                torrentSourceKeys.forEach(::remove)
+                StreamCenterTorrentFilterPreferences.reset(this)
                 remove(PREF_SOURCE_PRIORITY)
                 remove(PREF_STREMIO_ADDONS)
                 remove(PREF_AUTO_UPDATE_SOURCE_URLS)
@@ -622,7 +707,24 @@ class StreamCenterPlugin : Plugin() {
             }.apply()
         }
 
+        internal fun isObsoleteTorrentSourcePreference(key: String): Boolean {
+            return StreamCenterTorrentSources.isSourcePreferenceKey(key) &&
+                key !in StreamCenterTorrentSources.preferenceKeys
+        }
+
+        internal fun isDefaultTorrentPreference(key: String, value: Any?): Boolean {
+            if (key == PREF_TORRENT_ENABLED) return value == false
+            StreamCenterTorrentSources.definitions.forEach { source ->
+                if (key == source.key) return value == source.defaultEnabled
+                if (key == source.urlPrefKey && value is String) {
+                    return normalizeSourceUrl(value) == normalizeSourceUrl(source.displayUrl)
+                }
+            }
+            return StreamCenterTorrentFilterPreferences.isDefaultPreference(key, value)
+        }
+
         fun getSourcePriorityOrder(sharedPref: SharedPreferences?): List<String> {
+            val pinnedKeys = streamingSources.filter(StreamCenterStreamingSource::isPinned).map { it.key }
             val defaultOrder = streamingSources.map { it.key } + getStremioAddons(sharedPref).map { it.key }
             val stored = sharedPref
                 ?.getString(PREF_SOURCE_PRIORITY, null)
@@ -631,13 +733,28 @@ class StreamCenterPlugin : Plugin() {
                 ?.filter { key -> key in defaultOrder }
                 ?.distinct()
                 .orEmpty()
-            return stored + defaultOrder.filterNot { it in stored }
+                .toMutableList()
+            if (
+                PREF_SOURCE_VIXSRC !in stored &&
+                (PREF_SOURCE_VIXCLOUD in stored || PREF_SOURCE_VIDXGO in stored)
+            ) {
+                val insertAt = when {
+                    PREF_SOURCE_VIXCLOUD in stored -> stored.indexOf(PREF_SOURCE_VIXCLOUD) + 1
+                    PREF_SOURCE_VIDXGO in stored -> stored.indexOf(PREF_SOURCE_VIDXGO)
+                    else -> 0
+                }
+                stored.add(insertAt, PREF_SOURCE_VIXSRC)
+            }
+            val orderedKeys = stored + defaultOrder.filterNot { it in stored }
+            return pinnedKeys + orderedKeys.filterNot { it in pinnedKeys }
         }
 
         fun setSourcePriorityOrder(sharedPref: SharedPreferences?, order: List<String>) {
+            val pinnedKeys = streamingSources.filter(StreamCenterStreamingSource::isPinned).map { it.key }
             val validKeys = streamingSources.map { it.key } + getStremioAddons(sharedPref).map { it.key }
             val normalized = order.filter { it in validKeys }.distinct() + validKeys.filterNot { it in order }
-            sharedPref?.edit()?.putString(PREF_SOURCE_PRIORITY, normalized.joinToString(","))?.apply()
+            val pinnedFirst = pinnedKeys + normalized.filterNot { it in pinnedKeys }
+            sharedPref?.edit()?.putString(PREF_SOURCE_PRIORITY, pinnedFirst.joinToString(","))?.apply()
         }
 
         private fun stremioEnabledPrefKey(addonKey: String): String =
@@ -1024,6 +1141,14 @@ class StreamCenterPlugin : Plugin() {
             prefs.edit().apply {
                 obsoletePreferenceKeys.forEach(::remove)
                 if (shouldUpdateOrder) putString(PREF_HOME_ORDER, normalizedOrder.joinToString(","))
+            }.apply()
+        }
+
+        private fun removeObsoleteTorrentSourcePreferences(prefs: SharedPreferences) {
+            val obsoleteKeys = prefs.all.keys.filter(::isObsoleteTorrentSourcePreference)
+            if (obsoleteKeys.isEmpty()) return
+            prefs.edit().apply {
+                obsoleteKeys.forEach(::remove)
             }.apply()
         }
 
@@ -1631,6 +1756,16 @@ class StreamCenterPlugin : Plugin() {
         activeSharedPref = sharedPref
         activeContext = context.applicationContext
         activePlugin = this
+        StreamCenterLogger.startSession(
+            context = context,
+            preferences = sharedPref,
+            sessionMetadata = mapOf(
+                "plugin" to "StreamCenter",
+                "versione_plugin" to BuildConfig.PLUGIN_VERSION,
+                "commit_build" to BuildConfig.BUILD_COMMIT_SHA,
+                "build_completata" to BuildConfig.BUILD_COMPLETED_AT_ROME,
+            ),
+        )
 
         sharedPref?.let { prefs ->
             if (prefs.getInt(PREF_HOME_LAYOUT_VERSION, 0) < CURRENT_HOME_LAYOUT_VERSION) {
@@ -1647,6 +1782,7 @@ class StreamCenterPlugin : Plugin() {
             }
             migrateLegacyIptvFavorites(prefs)
             removeObsoleteHomeSectionPreferences(prefs)
+            removeObsoleteTorrentSourcePreferences(prefs)
             migrateTrackingHomeCategory(prefs)
         }
 

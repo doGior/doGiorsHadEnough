@@ -47,30 +47,42 @@ internal object StreamCenterAvailabilityChecker {
     ): List<Pair<String, Boolean>> = coroutineScope {
         fun sourceUrl(key: String) = StreamCenterPlugin.getSourceBaseUrl(sharedPref, key)
 
-        val checks: List<Pair<String, suspend () -> CheckResult>> = listOf(
-            "AniList" to ::isAnilistAvailable,
-            "MyAnimeList (Jikan)" to ::isJikanAvailable,
-            "Kitsu" to {
-                jsonApiReachable("https://kitsu.io/api/edge/anime/1", "application/vnd.api+json")
-            },
-            "AniZip" to {
+        val checks: List<Pair<String, suspend () -> CheckResult>> = buildList {
+            add("AnimeUnity" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY))
+            })
+            add("AnimeWorld" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD))
+            })
+            add("AnimeSaturn" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN))
+            })
+            add("StreamingCommunity" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY))
+            })
+            add("VixCloud" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD))
+            })
+            add("VixSrc" to suspend {
+                urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_VIXSRC))
+            })
+            add("VidxGo" to suspend {
+                isVidxGoAvailable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_VIDXGO))
+            })
+            add("AniZip" to suspend {
                 jsonApiReachable(
                     "https://api.ani.zip/mappings?anilist_id=1",
                     "application/json",
                     expectedKey = "episodes",
                 )
-            },
-            "TMDB" to { urlReachable("https://www.themoviedb.org") },
-            "StreamingCommunity" to {
-                urlReachable("${sourceUrl(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)}/it")
-            },
-            "VidxGo" to {
-                isVidxGoAvailable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_VIDXGO))
-            },
-            "AnimeUnity" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) },
-            "AnimeWorld" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) },
-            "AnimeSaturn" to { urlReachable(sourceUrl(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) },
-        )
+            })
+            add("MyAnimeList" to ::isJikanAvailable)
+            add("AniList" to ::isAnilistAvailable)
+            add("Kitsu" to suspend {
+                jsonApiReachable("https://kitsu.io/api/edge/anime/1", "application/vnd.api+json")
+            })
+            add("TMDB" to suspend { urlReachable("https://www.themoviedb.org") })
+        }
 
         checks.map { (name, check) ->
             async(Dispatchers.IO) {
@@ -103,7 +115,7 @@ internal object StreamCenterAvailabilityChecker {
 
     private suspend fun isJikanAvailable(): CheckResult {
         val response = app.get(
-            "https://api.jikan.moe/v4/anime/1",
+            "https://api.jikan.moe/v4/genres/anime",
             headers = requestHeaders + ("Accept" to "application/json"),
             cacheTime = 0,
             timeout = 10L,
@@ -116,22 +128,40 @@ internal object StreamCenterAvailabilityChecker {
     }
 
     private suspend fun isVidxGoAvailable(baseUrl: String): CheckResult {
-        val url = "${baseUrl.trimEnd('/')}/26657236"
+        if (baseUrl.isBlank()) return CheckResult(false, "URL non configurato")
+        val normalizedBaseUrl = baseUrl.trimEnd('/')
         val headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
             "Sec-Fetch-Dest" to "iframe",
             "Sec-Fetch-Mode" to "navigate",
             "Sec-Fetch-Site" to "cross-site",
-            "Referer" to "https://altadefinizione.study/",
+            "Referer" to "$normalizedBaseUrl/",
             "DNT" to "1",
         )
-        return httpClient.newCall(Request.Builder().url(url).apply {
-            headers.forEach { (key, value) -> header(key, value) }
-        }.build()).execute().use { response ->
-            if (response.code in 200..399) CheckResult(true) else CheckResult(false, "HTTP ${response.code}")
+
+        var lastHttpCode: Int? = null
+        var lastFailure: Throwable? = null
+        val checkUrls = listOf("$normalizedBaseUrl/26657236", "$normalizedBaseUrl/")
+        for (url in checkUrls) {
+            val response = runCatching {
+                app.get(url, headers = headers, cacheTime = 0, timeout = 10L)
+            }.onFailure { error ->
+                lastFailure = error
+            }.getOrNull() ?: continue
+
+            lastHttpCode = response.code
+            when {
+                response.code in 200..399 -> return CheckResult(true)
+                response.code in setOf(401, 403, 429) -> {
+                    return CheckResult(true, "Host raggiungibile, accesso protetto (HTTP ${response.code})")
+                }
+            }
         }
+        lastHttpCode?.let { return CheckResult(false, "HTTP $it") }
+        lastFailure?.let { throw it }
+        return CheckResult(false, "Risposta non disponibile")
     }
 
     private fun jikanJsonResult(body: String): CheckResult {
@@ -144,11 +174,6 @@ internal object StreamCenterAvailabilityChecker {
         val detail = listOf(type, message).filter(String::isNotBlank).joinToString(": ")
         if (status == 429 || detail.contains("rate", ignoreCase = true)) {
             return CheckResult(true, "Limite temporaneo di richieste (Jikan 429)")
-        }
-        if (type.equals("UpstreamException", ignoreCase = true) ||
-            detail.contains("MyAnimeList.net", ignoreCase = true)
-        ) {
-            return CheckResult(true, "Errore temporaneo upstream MyAnimeList")
         }
         return CheckResult(
             false,

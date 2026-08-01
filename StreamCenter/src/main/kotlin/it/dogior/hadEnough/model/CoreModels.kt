@@ -3,6 +3,7 @@ package it.dogior.hadEnough.model
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ShowStatus
 import it.dogior.hadEnough.stremio.StreamCenterStremioPlaybackContext
+import it.dogior.hadEnough.torrent.StreamCenterTorrentPlaybackContext
 
 internal data class StreamCenterMetadata(
     val title: String,
@@ -46,6 +47,7 @@ internal data class StreamCenterPlaybackData(
     val animeSaturn: List<AnimeSaturnPlaybackData> = emptyList(),
     val streamingCommunity: StreamingCommunityPlaybackData? = null,
     val stremio: StreamCenterStremioPlaybackContext? = null,
+    val torrent: StreamCenterTorrentPlaybackContext? = null,
 )
 
 internal data class ResolvedLoadSources(

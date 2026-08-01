@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.util.StreamCenterLogger
 
 import android.animation.ArgbEvaluator
 import android.animation.AnimatorListenerAdapter
@@ -21,6 +22,7 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PixelFormat
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -526,10 +528,26 @@ private class SettingsParticleBackground(
     }
 
     private fun drawNebulae(canvas: Canvas) {
+        val blueShiftX = sin(motionPhase * 0.035f) * width * 0.028f
+        val blueShiftY = cos(motionPhase * 0.029f) * height * 0.018f
+        val violetShiftX = cos(motionPhase * 0.031f) * width * 0.024f
+        val violetShiftY = sin(motionPhase * 0.026f) * height * 0.022f
+
+        canvas.save()
+        canvas.translate(blueShiftX, blueShiftY)
         paint.shader = blueNebula
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+        paint.alpha = (226f + sin(motionPhase * 0.041f) * 18f).toInt()
+        canvas.drawRect(-width * 0.08f, -height * 0.08f, width * 1.08f, height * 1.08f, paint)
+        canvas.restore()
+
+        canvas.save()
+        canvas.translate(violetShiftX, violetShiftY)
         paint.shader = violetNebula
-        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+        paint.alpha = (224f + cos(motionPhase * 0.037f) * 20f).toInt()
+        canvas.drawRect(-width * 0.08f, -height * 0.08f, width * 1.08f, height * 1.08f, paint)
+        canvas.restore()
+
+        paint.alpha = 255
         paint.shader = null
     }
 
@@ -602,10 +620,12 @@ private class SettingsParticleBackground(
 private class BorderSparkleOverlay(context: Context, private val color: Int) : View(context) {
     private val routePath = Path()
     private val segmentPath = Path()
+    private val cardPath = Path()
     private val routeMeasure = PathMeasure()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
     }
+    private val shimmerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val position = FloatArray(2)
     private var routeLength = 0f
     private var startFraction = 0f
@@ -640,6 +660,13 @@ private class BorderSparkleOverlay(context: Context, private val color: Int) : V
             radius,
             Path.Direction.CW,
         )
+        cardPath.reset()
+        cardPath.addRoundRect(
+            RectF(inset, inset, width - inset, height - inset),
+            radius,
+            radius,
+            Path.Direction.CW,
+        )
         routeMeasure.setPath(routePath, false)
         routeLength = routeMeasure.length
     }
@@ -652,6 +679,7 @@ private class BorderSparkleOverlay(context: Context, private val color: Int) : V
             progress > 0.82f -> (1f - progress) / 0.18f
             else -> 1f
         }.coerceIn(0f, 1f)
+        drawShimmer(canvas, strength)
         val headDistance = ((startFraction + progress) % 1f) * routeLength
         val tailLength = (routeLength * 0.10f).coerceAtMost(resources.displayMetrics.density * 58f)
         val tailDistance = headDistance - tailLength
@@ -671,6 +699,33 @@ private class BorderSparkleOverlay(context: Context, private val color: Int) : V
         canvas.drawCircle(position[0], position[1], resources.displayMetrics.density * 6f, paint)
         paint.alpha = (255 * strength).toInt()
         canvas.drawCircle(position[0], position[1], resources.displayMetrics.density * 2.1f, paint)
+    }
+
+    private fun drawShimmer(canvas: Canvas, strength: Float) {
+        val bandWidth = width * 0.13f
+        val diagonalOffset = height * 0.42f
+        val travel = width + bandWidth * 2f + diagonalOffset
+        val center = -bandWidth - diagonalOffset + travel * progress
+        shimmerPaint.shader = LinearGradient(
+            center - bandWidth,
+            0f,
+            center + bandWidth + diagonalOffset,
+            height.toFloat(),
+            intArrayOf(
+                Color.TRANSPARENT,
+                ColorUtils.setAlphaComponent(color, (7f * strength).toInt()),
+                ColorUtils.setAlphaComponent(Color.WHITE, (24f * strength).toInt()),
+                ColorUtils.setAlphaComponent(color, (9f * strength).toInt()),
+                Color.TRANSPARENT,
+            ),
+            floatArrayOf(0f, 0.34f, 0.5f, 0.66f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.save()
+        canvas.clipPath(cardPath)
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), shimmerPaint)
+        canvas.restore()
+        shimmerPaint.shader = null
     }
 
     private fun drawSegment(canvas: Canvas, start: Float, end: Float) {
@@ -851,8 +906,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         private const val SETTINGS_CATEGORY_RADIUS_DP = 14
         private const val SETTINGS_CATEGORY_ICON_DP = 40
         private const val SETTINGS_DIALOG_TILE_HEIGHT_DP = 126
+        private const val SUBMENU_HEIGHT_DP = 625
+        private const val SUBMENU_SCREEN_HEIGHT_RATIO = 0.88f
+        private const val CHEVRON_INITIAL_DELAY_MS = 1_800L
+        private const val CHEVRON_INTERVAL_MS = 1_600L
+        private const val CHEVRON_FORWARD_DURATION_MS = 240L
+        private const val CHEVRON_RETURN_DURATION_MS = 360L
         private const val HEADER_INFO_SHINE_CYCLE_MS = 12_000L
-
         private fun dismissActiveSettingsToast() {
             activeSettingsToast?.cancel()
             activeSettingsToast = null
@@ -885,6 +945,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     private val particleBackgrounds = mutableListOf<SettingsParticleBackground>()
     private val borderSparkleCycles = mutableListOf<BorderSparkleCycle>()
     private val dynamicBorderSparkleCycles = mutableMapOf<String, BorderSparkleCycle>()
+    private val chevronTargets = mutableListOf<TextView>()
+    private var nextChevronIndex = 0
+    private val chevronPulse = Runnable { playNextChevronPulse() }
 
     protected enum class HeaderInfoEffectStyle {
         COMMIT,
@@ -1241,6 +1304,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         particleBackgrounds.forEach { it.setActive(visualParticlesEnabled) }
         borderSparkleCycles.forEach { it.setActive(visualAnimationsEnabled) }
         dynamicBorderSparkleCycles.values.forEach { it.setActive(visualAnimationsEnabled) }
+        refreshChevronAnimations()
         refreshVisualEffectBackdrops()
     }
 
@@ -1366,6 +1430,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
         }
+        refreshChevronAnimations()
+    }
+
+    override fun onStop() {
+        stopChevronAnimations()
+        super.onStop()
     }
 
     override fun onDismiss(dialog: DialogInterface) {
@@ -1387,6 +1457,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         stopHeaderInfoShineAnimation()
         titleEffectTargets.clear()
         headerInfoEffectTargets.clear()
+        stopChevronAnimations()
+        chevronTargets.clear()
+        nextChevronIndex = 0
         super.onDestroyView()
     }
 
@@ -1400,7 +1473,10 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun standardSubmenuMinimumHeight(): Int {
-        return minOf(dp(520), (resources.displayMetrics.heightPixels * 0.82f).toInt())
+        return minOf(
+            dp(SUBMENU_HEIGHT_DP),
+            (resources.displayMetrics.heightPixels * SUBMENU_SCREEN_HEIGHT_RATIO).toInt(),
+        )
     }
 
     protected fun rootContainer(): LinearLayout {
@@ -1670,12 +1746,69 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     protected fun chevron(accent: String): TextView {
         return TextView(requireContext()).apply {
-            text = "›"
-            textSize = 22f
+            text = "→"
+            textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor(accent))
-            setPadding(dp(10), 0, dp(4), dp(2))
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            contentDescription = "Apri sezione"
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                marginStart = dp(8)
+            }
+        }.also(chevronTargets::add)
+    }
+
+    protected open fun shouldAnimateChevrons(): Boolean = visualAnimationsEnabled
+
+    protected fun refreshChevronAnimations() {
+        stopChevronAnimations()
+        val host = view ?: return
+        if (!shouldAnimateChevrons()) return
+        host.postDelayed(chevronPulse, CHEVRON_INITIAL_DELAY_MS)
+    }
+
+    private fun stopChevronAnimations() {
+        view?.removeCallbacks(chevronPulse)
+        chevronTargets.forEach { chevron ->
+            chevron.animate().cancel()
+            chevron.translationX = 0f
         }
+    }
+
+    private fun playNextChevronPulse() {
+        val host = view ?: return
+        if (!shouldAnimateChevrons()) {
+            stopChevronAnimations()
+            return
+        }
+        chevronTargets.removeAll { chevron -> chevron.parent == null && !chevron.isAttachedToWindow }
+        val available = chevronTargets.filter { chevron ->
+            val visibleBounds = Rect()
+            chevron.isAttachedToWindow &&
+                chevron.visibility == View.VISIBLE &&
+                chevron.getGlobalVisibleRect(visibleBounds) &&
+                !visibleBounds.isEmpty
+        }
+        if (available.isNotEmpty()) {
+            val chevron = available[nextChevronIndex % available.size]
+            nextChevronIndex = (nextChevronIndex + 1) % available.size
+            chevron.animate().cancel()
+            chevron.animate()
+                .translationX(dp(5).toFloat())
+                .setDuration(CHEVRON_FORWARD_DURATION_MS)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    if (!chevron.isAttachedToWindow) return@withEndAction
+                    chevron.animate()
+                        .translationX(0f)
+                        .setDuration(CHEVRON_RETURN_DURATION_MS)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+                .start()
+        }
+        host.postDelayed(chevronPulse, CHEVRON_INTERVAL_MS)
     }
 
     protected fun siteIconBadge(
@@ -1691,13 +1824,19 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply {
                 this.marginEnd = dp(marginEnd)
             }
-            addView(iconBadge(fallback, accent, size = size).apply {
+            val fallbackView = iconBadge(fallback, accent, size = size).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
-            })
-            val logoView = ImageView(requireContext()).apply {
+            }
+            addView(fallbackView)
+            val logoView = object : ImageView(requireContext()) {
+                override fun setImageDrawable(drawable: Drawable?) {
+                    super.setImageDrawable(drawable)
+                    fallbackView.visibility = if (drawable == null) View.VISIBLE else View.INVISIBLE
+                }
+            }.apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 this.contentDescription = contentDescription
                 background = GradientDrawable().apply {
@@ -1735,11 +1874,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         icon: View? = null,
         chevron: View? = null,
     ) {
-        if (reduceMotion) return
         card.clipChildren = false
         card.clipToPadding = false
 
         fun animateState(pressed: Boolean) {
+            chevron?.isPressed = pressed
+            if (reduceMotion) return
             val scale = if (pressed) 0.98f else 1f
             val duration = if (pressed) 80L else 140L
             card.animate()
@@ -1751,11 +1891,6 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             icon?.animate()
                 ?.scaleX(if (pressed) 1.035f else 1f)
                 ?.scaleY(if (pressed) 1.035f else 1f)
-                ?.setDuration(duration)
-                ?.setInterpolator(DecelerateInterpolator())
-                ?.start()
-            chevron?.animate()
-                ?.translationX(if (pressed) dp(4).toFloat() else 0f)
                 ?.setDuration(duration)
                 ?.setInterpolator(DecelerateInterpolator())
                 ?.start()
@@ -1817,6 +1952,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     ): LinearLayout {
         lateinit var views: SettingsRowViews
         val toggle = styledSwitch(checked, accent) { isChecked ->
+            StreamCenterLogger.logMenu(
+                action = "Impostazione aggiornata",
+                metadata = mapOf(
+                    "voce" to title,
+                    "nuovo_valore" to if (isChecked) "abilitato" else "disabilitato",
+                ),
+            )
             playToggleFeedback(views.view, views.badge, accent, isChecked)
             onChanged(isChecked)
         }
@@ -1830,6 +1972,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             trailingViews = listOf(toggle),
             topMargin = topMargin,
             fixedHeight = fixedHeight,
+            logAction = false,
         ) { toggle.toggle() }
         return views.view
     }
@@ -1850,6 +1993,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         enabledAppearance: Boolean = true,
         disabledAlpha: Float = 0.52f,
         touchTarget: View? = trailingViews.lastOrNull(),
+        logAction: Boolean = true,
         onClick: (() -> Unit)? = null,
     ): SettingsRowViews {
         val row = LinearLayout(requireContext()).apply {
@@ -1869,7 +2013,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             if (onClick != null) {
                 isClickable = true
                 isFocusable = true
-                setOnClickListener { onClick() }
+                setOnClickListener {
+                    if (logAction) {
+                        StreamCenterLogger.logMenu(
+                            action = "Azione impostazioni selezionata",
+                            metadata = mapOf("voce" to title),
+                        )
+                    }
+                    onClick()
+                }
             }
         }
         val badge = leadingView ?: icon?.let {
@@ -1923,6 +2075,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 trailingViews = listOf(selectedBadge),
                 topMargin = 8,
             ) {
+                StreamCenterLogger.logMenu(
+                    action = "Scelta impostazione confermata",
+                    metadata = mapOf(
+                        "impostazione" to title,
+                        "scelta" to option.label,
+                    ),
+                )
                 onSelected(option)
                 dialog.dismiss()
             }.view)
@@ -1964,7 +2123,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             isClickable = true
             isFocusable = true
             contentDescription = title
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                StreamCenterLogger.logMenu(
+                    action = "Categoria impostazioni selezionata",
+                    metadata = mapOf("categoria" to title),
+                )
+                onClick()
+            }
         }
         val badge = leadingBadge ?: iconBadge(
             icon,
@@ -2051,7 +2216,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             isClickable = true
             isFocusable = true
             contentDescription = label.replace("\n", " ")
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                StreamCenterLogger.logMenu(
+                    action = "Azione dialogo selezionata",
+                    metadata = mapOf("azione" to label.replace("\n", " ")),
+                )
+                onClick()
+            }
             addView(badge)
             addView(titleText(label, 14, true).apply {
                 gravity = Gravity.CENTER
@@ -2236,7 +2407,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             background = interactiveBackground(tint(color, "18"), color, 12, strokeColor = tint(color, "88"))
             isClickable = true
             isFocusable = true
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                StreamCenterLogger.logMenu(
+                    action = "Pulsante impostazioni selezionato",
+                    metadata = mapOf("azione" to textValue),
+                )
+                onClick()
+            }
         }
     }
 
@@ -2261,7 +2438,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply {
                 marginStart = dp(8)
             }
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                StreamCenterLogger.logMenu(
+                    action = "Pulsante icona selezionato",
+                    metadata = mapOf("azione" to (description ?: symbol)),
+                )
+                onClick()
+            }
         }
     }
 
@@ -2271,7 +2454,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         size: Int = 34,
         onClick: () -> Unit,
     ): TextView {
-        return iconButton("×", description, accent, size, onClick)
+        return iconButton("\uD83D\uDDD1\uFE0F", description, accent, size, onClick)
     }
 
     protected fun reorderIconButton(
@@ -2471,9 +2654,18 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun openUrl(url: String) {
+        StreamCenterLogger.logMenu(
+            action = "Apertura collegamento esterno richiesta",
+            metadata = mapOf("destinazione" to url),
+        )
         runCatching {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }.onFailure {
+            StreamCenterLogger.logMenuError(
+                action = "Apertura collegamento esterno non riuscita",
+                throwable = it,
+                metadata = mapOf("destinazione" to url),
+            )
             saveToast("Impossibile aprire il link.")
         }
     }
@@ -2485,7 +2677,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             .setCustomTitle(dialogTitle("Riavvia l'app"))
             .setMessage(message)
             .setPositiveButton("Riavvia") { _, _ ->
-                restartApp(appContext)
+                restartApplication(appContext)
             }
             .setNegativeButton("Più tardi", null)
             .create()
@@ -2493,7 +2685,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         alertDialog.show()
     }
 
-    private fun restartApp(appContext: Context) {
+    protected fun restartApplication() {
+        val appContext = context?.applicationContext ?: return
+        restartApplication(appContext)
+    }
+
+    private fun restartApplication(appContext: Context) {
+        StreamCenterLogger.logMenu("Riavvio dell'app confermato")
         val packageManager = appContext.packageManager
         val intent = packageManager.getLaunchIntentForPackage(appContext.packageName)
         val component = intent?.component ?: return

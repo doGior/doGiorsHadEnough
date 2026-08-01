@@ -30,10 +30,21 @@ internal class AnimeSaturnSourceClient(
         anilistMetadata: AnilistMetadata?,
         syncIds: List<AnimeSyncIds>,
     ): List<AnimeSaturnTitleSources> {
-        if (syncIds.isEmpty()) return emptyList()
+        if (syncIds.isEmpty()) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Ricerca sorgenti ignorata: identificativi assenti")
+            return emptyList()
+        }
 
         val titleCandidates = buildAnimeSourceTitleCandidates(metadata, anilistMetadata)
             .take(queryLimit())
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca sorgenti avviata",
+            mapOf(
+                "titoli_candidati" to titleCandidates.size,
+                "identificativi_sincronizzazione" to syncIds.size,
+            ),
+        )
         val searchResults = titleCandidates
             .mapChunkedParallel(SEARCH_PARALLELISM) { search(it) }
             .flatten()
@@ -46,24 +57,59 @@ internal class AnimeSaturnSourceClient(
                     .thenBy { it.url },
             )
             .take(detailCandidateLimit())
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Candidati dettaglio selezionati",
+            mapOf(
+                "risultati_ricerca" to searchResults.size,
+                "candidati_dettaglio" to searchCandidates.size,
+            ),
+        )
         val pageData = coroutineScope {
             searchCandidates
                 .map { item -> async(Dispatchers.IO) { fetchPage(item) } }
                 .awaitAll()
                 .filterNotNull()
         }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Dettagli candidati completati",
+            mapOf("dettagli_con_episodi" to pageData.size),
+        )
         val exactTitleKeys = exactAnimeTitleKeys(metadata, anilistMetadata)
 
-        return syncIds.mapNotNull { sync ->
-            val matches = pageData.filter { it.matches(sync) }
-                .ifEmpty {
-                    if (syncIds.size > 1) return@mapNotNull null
-                    pageData.filter { page ->
-                        page.anilistId == null && page.malId == null && page.kitsuId == null &&
-                            sourceTitleDedupKey(page.searchItem.title) in exactTitleKeys
-                    }
+        val resolvedSources = syncIds.mapNotNull { sync ->
+            val idMatches = pageData.filter { it.matches(sync) }
+            val matches = idMatches.ifEmpty {
+                if (syncIds.size > 1) {
+                    AnimeSourceLog.warning(
+                        SOURCE_NAME,
+                        "Fallback titolo non applicato: piu identificativi disponibili",
+                    )
+                    return@mapNotNull null
                 }
-            if (matches.isEmpty()) return@mapNotNull null
+                pageData.filter { page ->
+                    page.anilistId == null && page.malId == null && page.kitsuId == null &&
+                        sourceTitleDedupKey(page.searchItem.title) in exactTitleKeys
+                }
+            }
+            when {
+                idMatches.isNotEmpty() -> AnimeSourceLog.info(
+                    SOURCE_NAME,
+                    "Corrispondenza tramite identificativi",
+                    mapOf("corrispondenze" to idMatches.size),
+                )
+
+                matches.isNotEmpty() -> AnimeSourceLog.warning(
+                    SOURCE_NAME,
+                    "Fallback titolo applicato: identificativi mancanti nella sorgente",
+                    mapOf("corrispondenze" to matches.size),
+                )
+            }
+            if (matches.isEmpty()) {
+                AnimeSourceLog.warning(SOURCE_NAME, "Nessuna sorgente corrispondente")
+                return@mapNotNull null
+            }
 
             val subSources = matches.filter { !it.searchItem.isDub }.mergeEpisodeSources()
             val dubSources = matches.filter { it.searchItem.isDub }.mergeEpisodeSources()
@@ -73,16 +119,43 @@ internal class AnimeSaturnSourceClient(
                 subSources = subSources,
                 dubSources = dubSources,
             ).takeIf { it.subSources.isNotEmpty() || it.dubSources.isNotEmpty() }
+                ?.also {
+                    AnimeSourceLog.info(
+                        SOURCE_NAME,
+                        "Sorgenti episodio disponibili",
+                        mapOf(
+                            "episodi_sub" to subSources.size,
+                            "episodi_doppiati" to dubSources.size,
+                        ),
+                    )
+                }
         }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca sorgenti conclusa",
+            mapOf("contenuti_risolti" to resolvedSources.size),
+        )
+        return resolvedSources
     }
 
     private suspend fun search(query: String): List<AnimeSaturnSearchItem> {
-        ensureDomain()
+        AnimeSourceLog.info(SOURCE_NAME, "Tentativo di ricerca provider avviato")
+        try {
+            ensureDomain()
+        } catch (error: Throwable) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Aggiornamento dominio non riuscito", error = error)
+            throw error
+        }
         val providerUrl = baseUrl()
         val url = "$providerUrl/filter?key=${URLEncoder.encode(query, "UTF-8")}"
-        val doc = Jsoup.parse(app.get(url, headers = headers).text, url)
+        val doc = try {
+            Jsoup.parse(app.get(url, headers = headers).text, url)
+        } catch (error: Throwable) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Ricerca provider non riuscita", error = error)
+            throw error
+        }
 
-        return doc.select(
+        val results = doc.select(
             "a.ac[href^='/anime/'], a.ac[href*='/anime/'], " +
                 "a[href^='/anime/'], a[href*='animesaturn.net/anime/']"
         ).mapNotNull { item ->
@@ -110,10 +183,26 @@ internal class AnimeSaturnSourceClient(
                 score = score,
             )
         }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Tentativo di ricerca provider completato",
+            mapOf("risultati_validi" to results.size),
+        )
+        return results
     }
 
     private suspend fun fetchPage(item: AnimeSaturnSearchItem): AnimeSaturnPageData? {
-        val html = app.get(item.url, headers = headers).text
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Dettaglio candidato richiesto",
+            mapOf("candidato_doppiato" to item.isDub),
+        )
+        val html = try {
+            app.get(item.url, headers = headers).text
+        } catch (error: Throwable) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio candidato non riuscito", error = error)
+            throw error
+        }
         val doc = Jsoup.parse(html, item.url)
         val isDub = item.isDub ||
             Regex("""(?i)(?:^|[-/])ita(?:$|[-/])""").containsMatchIn(item.url) ||
@@ -143,7 +232,7 @@ internal class AnimeSaturnSourceClient(
             .distinctBy { it.first }
             .toMap()
 
-        return AnimeSaturnPageData(
+        val pageData = AnimeSaturnPageData(
             searchItem = item.copy(isDub = isDub),
             anilistId = doc.selectFirst("a[href*='anilist.co/anime/'][href]")
                 ?.attr("href")
@@ -158,7 +247,22 @@ internal class AnimeSaturnSourceClient(
                 ?.let(::extractKitsuId)
                 ?: extractKitsuId(html),
             episodeSources = episodeSources,
-        ).takeIf { it.episodeSources.isNotEmpty() }
+        )
+        if (pageData.episodeSources.isEmpty()) {
+            AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio candidato senza episodi")
+            return null
+        }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Dettaglio candidato completato",
+            mapOf(
+                "episodi_rilevati" to pageData.episodeSources.size,
+                "anilist_disponibile" to (pageData.anilistId != null),
+                "mal_disponibile" to (pageData.malId != null),
+                "kitsu_disponibile" to (pageData.kitsuId != null),
+            ),
+        )
+        return pageData
     }
 
     private fun titleFromHref(href: String): String? {
@@ -211,6 +315,7 @@ internal class AnimeSaturnSourceClient(
     }
 
     private companion object {
+        const val SOURCE_NAME = "AnimeSaturn"
         const val SEARCH_PARALLELISM = 4
     }
 }

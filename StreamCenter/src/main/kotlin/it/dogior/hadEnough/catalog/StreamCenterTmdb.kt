@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.mapChunkedParallel
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -30,6 +31,22 @@ internal class StreamCenterTmdbCatalog(
     )
 
     private val scoreCache = ConcurrentHashMap<String, Score>()
+    private val englishTitleCache = ConcurrentHashMap<String, String>()
+
+    suspend fun englishTitle(type: String, id: String): String? {
+        val normalizedType = type.lowercase(Locale.ROOT)
+            .takeIf { value -> value == "movie" || value == "tv" }
+            ?: return null
+        val normalizedId = id.trim().takeIf { value -> value.all(Char::isDigit) }
+            ?: return null
+        val cacheKey = "$normalizedType:$normalizedId"
+        englishTitleCache[cacheKey]?.let { return it }
+        val title = extractTmdbPageTitle(
+            document("$TMDB_BASE_URL/$normalizedType/$normalizedId?language=en-US"),
+        ).takeIf(String::isNotBlank) ?: return null
+        englishTitleCache[cacheKey] = title
+        return title
+    }
 
     override suspend fun section(
         api: MainAPI,
@@ -254,3 +271,35 @@ internal class StreamCenterTmdbCatalog(
         private val VOTE_REGEX = Regex("\\d+(?:[.,]\\d+)?")
     }
 }
+
+internal fun extractTmdbPageTitle(document: Document): String {
+    return sequenceOf(
+        document.selectFirst("section.header.poster h2 a")?.text(),
+        document.selectFirst("section.header h2 a")?.text(),
+        document.selectFirst("section[class*=header] h2 a")?.text(),
+        document.selectFirst("h2 a[href*='/movie/'], h2 a[href*='/tv/']")?.text(),
+        document.selectFirst("meta[property=og:title]")?.attr("content"),
+        document.selectFirst("meta[name=twitter:title]")?.attr("content"),
+        document.selectFirst("meta[name=title]")?.attr("content"),
+        document.selectFirst("title")?.text(),
+    ).mapNotNull(::cleanTmdbPageTitle).firstOrNull().orEmpty()
+}
+
+private fun cleanTmdbPageTitle(value: String?): String? {
+    return cleanText(value)
+        ?.replace(
+            Regex(
+                """\s*[-–—]\s*(?:The Movie Database|TMDB)(?:\s*\([^)]*\))?\s*$""",
+                RegexOption.IGNORE_CASE,
+            ),
+            "",
+        )
+        ?.let(::cleanText)
+        ?.takeUnless { it.equals("The Movie Database (TMDB)", ignoreCase = true) }
+        ?.takeUnless { TMDB_ERROR_TITLE_REGEX.matches(it) }
+}
+
+private val TMDB_ERROR_TITLE_REGEX = Regex(
+    """.*\b(?:too many requests|access denied|forbidden|not found|internal server error|just a moment)\b.*""",
+    RegexOption.IGNORE_CASE,
+)

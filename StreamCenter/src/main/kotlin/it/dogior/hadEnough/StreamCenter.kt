@@ -6,12 +6,17 @@ import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ActorRole
 import com.lagradost.cloudstream3.AnimeLoadResponse
+import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.NextAiring
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.LiveStreamLoadResponse
+import com.lagradost.cloudstream3.LiveSearchResponse
+import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.MovieSearchResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addScore
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.MainAPI
@@ -23,6 +28,8 @@ import com.lagradost.cloudstream3.SeasonData
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.TvSeriesLoadResponse
+import com.lagradost.cloudstream3.TvSeriesSearchResponse
 import com.lagradost.cloudstream3.addDate
 import com.lagradost.cloudstream3.addDubStatus
 import com.lagradost.cloudstream3.addEpisodes
@@ -57,6 +64,8 @@ import it.dogior.hadEnough.anime.metadata.AniZipMetadataClient
 import it.dogior.hadEnough.anime.metadata.AniListMetadataClient
 import it.dogior.hadEnough.anime.metadata.AnimeMetadataHttpClient
 import it.dogior.hadEnough.anime.metadata.AnimeEpisodeMetadataMerger
+import it.dogior.hadEnough.anime.metadata.AnimeJapaneseTitleHints
+import it.dogior.hadEnough.anime.metadata.AnimeJapaneseTitleResolver
 import it.dogior.hadEnough.anime.metadata.KitsuMetadataClient
 import it.dogior.hadEnough.anime.metadata.TmdbAnimeEpisodeMetadataClient
 import it.dogior.hadEnough.anime.source.absoluteProviderUrl
@@ -81,6 +90,7 @@ import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.serie_movie.StreamingCommunityClient
 import it.dogior.hadEnough.stremio.*
+import it.dogior.hadEnough.torrent.*
 import it.dogior.hadEnough.tracking.*
 import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.mapChunkedParallel
@@ -89,6 +99,7 @@ import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
 import it.dogior.hadEnough.util.parseWholeAnimeEpisodeNumber
 import it.dogior.hadEnough.util.sortedEpisodeNumbers
+import it.dogior.hadEnough.util.StreamCenterLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -114,6 +125,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Calendar
 import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -190,6 +202,9 @@ class StreamCenter internal constructor(
     private val vidxGoUrl: String
         get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_VIDXGO)
             .ifBlank { StreamCenterPlugin.DEFAULT_URL_VIDXGO }
+    private val vixSrcBaseUrl: String
+        get() = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_VIXSRC)
+            .ifBlank { StreamCenterPlugin.DEFAULT_URL_VIXSRC }
     private val headers = mapOf(
         "Accept-Language" to "it-IT,it;q=0.9,en-US;q=0.5,en;q=0.3",
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
@@ -208,6 +223,32 @@ class StreamCenter internal constructor(
     }
     private val simklCatalog = StreamCenterSimklCatalog()
     private val searchTitleAliases = ConcurrentHashMap<String, List<String>>()
+    private data class CardProvenance(
+        val defaultSource: String,
+        val fieldSources: Map<String, List<String>> = emptyMap(),
+        val fieldNotes: Map<String, String> = emptyMap(),
+    ) {
+        fun sources(path: String): List<String> {
+            val direct = fieldSources[path]
+            if (!direct.isNullOrEmpty()) return direct
+            var parent = path
+            while ('.' in parent) {
+                parent = parent.substringBeforeLast('.')
+                val inherited = fieldSources[parent]
+                if (!inherited.isNullOrEmpty()) return inherited
+            }
+            return listOf(defaultSource)
+        }
+
+        fun note(path: String): String? {
+            return fieldNotes[path] ?: fieldNotes.entries
+                .firstOrNull { (key, _) -> path.startsWith("$key.") }
+                ?.value
+        }
+    }
+    private val pendingCardProvenance = Collections.synchronizedMap(
+        IdentityHashMap<LoadResponse, CardProvenance>(),
+    )
     private val stremioCatalogClient: StreamCenterStremioCatalog? by lazy {
         catalogDefinition?.let { definition ->
             definition.stremioAddon?.let { addon ->
@@ -240,6 +281,11 @@ class StreamCenter internal constructor(
     private val aniListMetadataClient = AniListMetadataClient(
         performanceMode = { performanceMode },
         minRequestIntervalMs = { StreamCenterPlugin.getAnilistMinIntervalMs(sharedPref) },
+    )
+    private val animeJapaneseTitleResolver = AnimeJapaneseTitleResolver(
+        kitsuMetadataClient = kitsuMetadataClient,
+        aniListMetadataClient = aniListMetadataClient,
+        jikanMetadataClient = jikanMetadataClient,
     )
     private val animeWorldSourceClient = AnimeWorldSourceClient(
         baseUrl = { animeWorldUrl },
@@ -321,22 +367,79 @@ class StreamCenter internal constructor(
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         catalogDefinition?.takeIf { catalogIsActive }?.let { catalog ->
             val section = StreamCenterCatalogs.sectionForData(catalog, request.data)
+            StreamCenterLogger.logMenu(
+                action = "Caricamento sezione catalogo avviato",
+                metadata = mapOf(
+                    "catalogo" to catalog.displayName,
+                    "catalogo_key" to catalog.key,
+                    "sezione" to (section?.title ?: request.name),
+                    "dati_sezione" to request.data,
+                    "pagina" to page,
+                    "modalita_prestazioni" to performanceMode,
+                ),
+            )
             val catalogPage = section?.let {
                 if (it.trackingServiceKey != null) {
                     catalogTrackingConfig(it)?.let { config ->
-                        runCatching { fetchTrackingListHomePage(config, page) }.getOrNull()
+                        runCatching { fetchTrackingListHomePage(config, page) }
+                            .onFailure { error ->
+                                StreamCenterLogger.logMenuError(
+                                    action = "Caricamento lista di tracciamento non riuscito",
+                                    throwable = error,
+                                    metadata = mapOf(
+                                        "catalogo" to catalog.displayName,
+                                        "sezione" to it.title,
+                                        "pagina" to page,
+                                    ),
+                                )
+                            }
+                            .getOrNull()
                     }
                 } else {
-                    runCatching { catalogClient?.section(this, it, page, showCardScores) }.getOrNull()
+                    runCatching { catalogClient?.section(this, it, page, showCardScores) }
+                        .onFailure { error ->
+                            StreamCenterLogger.logMenuError(
+                                action = "Caricamento sezione catalogo non riuscito",
+                                throwable = error,
+                                metadata = mapOf(
+                                    "catalogo" to catalog.displayName,
+                                    "sezione" to it.title,
+                                    "pagina" to page,
+                                ),
+                            )
+                        }
+                        .getOrNull()
                 }
             } ?: StreamCenterCatalogPage(emptyList(), false)
+            val title = StreamCenterPlugin.resolveHomeTitlePlaceholders(
+                request.name,
+                Calendar.getInstance(),
+                itemCount = catalogPage.items.size,
+            )
+            StreamCenterLogger.logMenu(
+                action = "Sezione catalogo caricata",
+                metadata = mapOf(
+                    "catalogo" to catalog.displayName,
+                    "catalogo_key" to catalog.key,
+                    "sezione" to title,
+                    "pagina" to page,
+                    "elementi" to catalogPage.items.size,
+                    "altra_pagina_disponibile" to catalogPage.hasNext,
+                ),
+            )
+            logSearchCards(
+                action = "Schede complete mostrate nella sezione catalogo",
+                contextDetails = mapOf(
+                    "catalogo" to catalog.displayName,
+                    "sezione" to title,
+                    "pagina" to page,
+                    "altra_pagina_disponibile" to catalogPage.hasNext,
+                ),
+                items = catalogPage.items,
+            )
             return newHomePageResponse(
                 HomePageList(
-                    name = StreamCenterPlugin.resolveHomeTitlePlaceholders(
-                        request.name,
-                        Calendar.getInstance(),
-                        itemCount = catalogPage.items.size,
-                    ),
+                    name = title,
                     list = catalogPage.items,
                     isHorizontalImages = false,
                 ),
@@ -349,7 +452,19 @@ class StreamCenter internal constructor(
         val showAnimeEpisodeNumber = !performanceMode && StreamCenterPlugin.shouldShowAnimeHomeEpisodeNumber(sharedPref)
         val limit = StreamCenterPlugin.getHomeSectionCount(sharedPref, data)
 
-        val items = runCatching {
+        StreamCenterLogger.logMenu(
+            action = "Caricamento sezione Home avviato",
+            metadata = mapOf(
+                "api" to name,
+                "sezione" to request.name,
+                "dati_sezione" to data,
+                "pagina" to page,
+                "limite" to limit,
+                "modalita_prestazioni" to performanceMode,
+                "punteggi_visibili" to showHomeScores,
+            ),
+        )
+        val itemsResult = runCatching {
             when {
                 data == "au:calendar" -> fetchAnimeUnityCalendarHome(
                     limit,
@@ -411,7 +526,20 @@ class StreamCenter internal constructor(
                 }
                 else -> emptyList()
             }
-        }.getOrDefault(emptyList())
+        }
+        itemsResult.exceptionOrNull()?.let { error ->
+            StreamCenterLogger.logMenuError(
+                action = "Caricamento sezione Home non riuscito",
+                throwable = error,
+                metadata = mapOf(
+                    "api" to name,
+                    "sezione" to request.name,
+                    "dati_sezione" to data,
+                    "pagina" to page,
+                ),
+            )
+        }
+        val items = itemsResult.getOrDefault(emptyList())
 
         val hasNext = (
             data == "au:popular" ||
@@ -419,13 +547,35 @@ class StreamCenter internal constructor(
                 data.startsWith("sc:archive:tv_custom:") ||
                 data.startsWith("sc:archive:movie_custom:")
             ) && items.size >= limit
+        val title = StreamCenterPlugin.resolveHomeTitlePlaceholders(
+            request.name,
+            Calendar.getInstance(),
+            itemCount = items.size,
+        )
+        StreamCenterLogger.logMenu(
+            action = "Sezione Home caricata",
+            metadata = mapOf(
+                "api" to name,
+                "sezione" to title,
+                "dati_sezione" to data,
+                "pagina" to page,
+                "elementi" to items.size,
+                "altra_pagina_disponibile" to hasNext,
+            ),
+        )
+        logSearchCards(
+            action = "Schede complete mostrate nella sezione Home",
+            contextDetails = mapOf(
+                "sezione" to title,
+                "dati_sezione" to data,
+                "pagina" to page,
+                "altra_pagina_disponibile" to hasNext,
+            ),
+            items = items,
+        )
         return newHomePageResponse(
             HomePageList(
-                name = StreamCenterPlugin.resolveHomeTitlePlaceholders(
-                    request.name,
-                    Calendar.getInstance(),
-                    itemCount = items.size,
-                ),
+                name = title,
                 list = items,
                 isHorizontalImages = false,
             ),
@@ -1115,20 +1265,89 @@ class StreamCenter internal constructor(
 
     private suspend fun fetchSearchResults(query: String, page: Int): Pair<List<SearchResponse>, Boolean> = coroutineScope {
         val empty = emptyList<SearchResponse>() to false
-        if (query.isBlank() || page < 1) return@coroutineScope empty
+        if (query.isBlank() || page < 1) {
+            StreamCenterLogger.warning(
+                action = "Ricerca ignorata",
+                details = mapOf(
+                    "motivo" to if (query.isBlank()) "query_vuota" else "pagina_non_valida",
+                    "pagina" to page,
+                    "api" to name,
+                ),
+            )
+            return@coroutineScope empty
+        }
+        StreamCenterLogger.logMenu(
+            action = "Ricerca avviata",
+            metadata = mapOf(
+                "query" to query,
+                "pagina" to page,
+                "api" to name,
+                "sezione_ricerca" to searchSection,
+                "catalogo" to (catalogDefinition?.displayName ?: "nessuno"),
+                "modalita_prestazioni" to performanceMode,
+            ),
+        )
         if (catalogDefinition != null) {
-            if (!catalogIsActive) return@coroutineScope empty
+            if (!catalogIsActive) {
+                StreamCenterLogger.warning(
+                    action = "Ricerca catalogo ignorata",
+                    details = mapOf(
+                        "catalogo" to catalogDefinition.displayName,
+                        "motivo" to "catalogo_non_attivo",
+                    ),
+                )
+                return@coroutineScope empty
+            }
             val catalogPage = runCatching { catalogClient?.search(this@StreamCenter, query, page, showCardScores) }
+                .onFailure { error ->
+                    StreamCenterLogger.logMenuError(
+                        action = "Ricerca catalogo non riuscita",
+                        throwable = error,
+                        metadata = mapOf(
+                            "catalogo" to catalogDefinition.displayName,
+                            "query" to query,
+                            "pagina" to page,
+                        ),
+                    )
+                }
                 .getOrNull()
                 ?: StreamCenterCatalogPage(emptyList(), false)
-            return@coroutineScope filterRelevantSearchResults(query, catalogPage.items) to catalogPage.hasNext
+            val result = filterRelevantSearchResults(query, catalogPage.items) to catalogPage.hasNext
+            StreamCenterLogger.logMenu(
+                action = "Ricerca catalogo completata",
+                metadata = mapOf(
+                    "catalogo" to catalogDefinition.displayName,
+                    "query" to query,
+                    "pagina" to page,
+                    "risultati" to result.first.size,
+                    "altra_pagina_disponibile" to result.second,
+                ),
+            )
+            logSearchCards(
+                action = "Schede complete restituite dalla ricerca catalogo",
+                contextDetails = mapOf(
+                    "catalogo" to catalogDefinition.displayName,
+                    "query" to query,
+                    "pagina" to page,
+                    "altra_pagina_disponibile" to result.second,
+                ),
+                items = result.first,
+            )
+            return@coroutineScope result
         }
-        when (searchSection) {
+        val result = when (searchSection) {
             SEARCH_SECTION_MAIN -> {
                 fetchHomeSearchResults(query, page)
             }
             SEARCH_SECTION_MOVIES, SEARCH_SECTION_SERIES -> {
                 val (scItems, scHasNext) = runCatching { searchStreamingCommunityWithTypoFallback(query, page) }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca StreamingCommunity non riuscita",
+                            throwable = error,
+                            metadata = mapOf("query" to query, "pagina" to page),
+                        )
+                    }
                     .getOrDefault(empty)
                 val wantedType = if (searchSection == SEARCH_SECTION_MOVIES) {
                     TvType.Movie
@@ -1142,17 +1361,54 @@ class StreamCenter internal constructor(
             }
             SEARCH_SECTION_ANIME -> {
                 runCatching { searchAnimeUnityWithTypoFallback(query, page) }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca AnimeUnity non riuscita",
+                            throwable = error,
+                            metadata = mapOf("query" to query, "pagina" to page),
+                        )
+                    }
                     .map { (items, hasNext) -> filterRelevantSearchResults(query, items) to hasNext }
                     .getOrDefault(empty)
             }
             SEARCH_SECTION_LIVE -> {
                 if (page > 1) return@coroutineScope empty
-                runCatching { searchIptv(query) to false }.getOrDefault(empty)
+                runCatching { searchIptv(query) to false }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca IPTV non riuscita",
+                            throwable = error,
+                            metadata = mapOf("query" to query, "pagina" to page),
+                        )
+                    }
+                    .getOrDefault(empty)
             }
             else -> {
                 empty
             }
         }
+        StreamCenterLogger.logMenu(
+            action = "Ricerca completata",
+            metadata = mapOf(
+                "query" to query,
+                "pagina" to page,
+                "api" to name,
+                "sezione_ricerca" to searchSection,
+                "risultati" to result.first.size,
+                "altra_pagina_disponibile" to result.second,
+            ),
+        )
+        logSearchCards(
+            action = "Schede complete restituite dalla ricerca",
+            contextDetails = mapOf(
+                "query" to query,
+                "pagina" to page,
+                "sezione_ricerca" to searchSection,
+                "altra_pagina_disponibile" to result.second,
+            ),
+            items = result.first,
+        )
+        result
     }
 
     private suspend fun fetchHomeSearchResults(
@@ -1162,21 +1418,80 @@ class StreamCenter internal constructor(
         val empty = emptyList<SearchResponse>() to false
         val streamingCommunity = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)) {
             async(Dispatchers.IO) {
-                runCatching { searchStreamingCommunityWithTypoFallback(query, page) }.getOrDefault(empty)
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte avviata",
+                    metadata = mapOf("fonte" to "StreamingCommunity", "query" to query, "pagina" to page),
+                )
+                val result = runCatching { searchStreamingCommunityWithTypoFallback(query, page) }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca fonte non riuscita",
+                            throwable = error,
+                            metadata = mapOf("fonte" to "StreamingCommunity", "query" to query, "pagina" to page),
+                        )
+                    }
+                    .getOrDefault(empty)
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte completata",
+                    metadata = mapOf(
+                        "fonte" to "StreamingCommunity",
+                        "risultati" to result.first.size,
+                        "altra_pagina_disponibile" to result.second,
+                    ),
+                )
+                result
             }
         } else {
             null
         }
         val animeUnity = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) {
             async(Dispatchers.IO) {
-                runCatching { searchAnimeUnityWithTypoFallback(query, page) }.getOrDefault(empty)
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte avviata",
+                    metadata = mapOf("fonte" to "AnimeUnity", "query" to query, "pagina" to page),
+                )
+                val result = runCatching { searchAnimeUnityWithTypoFallback(query, page) }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca fonte non riuscita",
+                            throwable = error,
+                            metadata = mapOf("fonte" to "AnimeUnity", "query" to query, "pagina" to page),
+                        )
+                    }
+                    .getOrDefault(empty)
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte completata",
+                    metadata = mapOf(
+                        "fonte" to "AnimeUnity",
+                        "risultati" to result.first.size,
+                        "altra_pagina_disponibile" to result.second,
+                    ),
+                )
+                result
             }
         } else {
             null
         }
         val iptv: kotlinx.coroutines.Deferred<List<SearchResponse>>? = if (page == 1) {
             async(Dispatchers.IO) {
-                runCatching { searchIptv(query) }.getOrDefault(emptyList())
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte avviata",
+                    metadata = mapOf("fonte" to "IPTV", "query" to query, "pagina" to page),
+                )
+                val result = runCatching { searchIptv(query) }
+                    .onFailure { error ->
+                        StreamCenterLogger.logMenuError(
+                            action = "Ricerca fonte non riuscita",
+                            throwable = error,
+                            metadata = mapOf("fonte" to "IPTV", "query" to query, "pagina" to page),
+                        )
+                    }
+                    .getOrDefault(emptyList())
+                StreamCenterLogger.logMenu(
+                    action = "Ricerca fonte completata",
+                    metadata = mapOf("fonte" to "IPTV", "risultati" to result.size),
+                )
+                result
             }
         } else {
             null
@@ -1670,7 +1985,18 @@ class StreamCenter internal constructor(
             plot = "Diretta TV · ${channel.regionName} · ${channel.group}"
             tags = listOf("TV", channel.regionName, channel.group)
             recommendations = suggestions
-        }
+        }.withCardProvenance(
+            defaultSource = "Playlist IPTV (${channel.regionName})",
+            fieldSources = mapOf(
+                "tipo_contenuto" to listOf("StreamCenter (routing IPTV)"),
+                "trama" to listOf("Playlist IPTV", "StreamCenter (testo composto)"),
+                "tag" to listOf("Playlist IPTV", "StreamCenter (classificazione)"),
+                "raccomandazioni" to listOf(
+                    "Configurazione sezione IPTV StreamCenter",
+                    "Playlist IPTV",
+                ),
+            ),
+        )
     }
 
     private suspend fun searchStreamingCommunity(
@@ -1790,44 +2116,665 @@ class StreamCenter internal constructor(
             .distinctBy(::sourceTitleDedupKey)
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        if (catalogDefinition != null) {
-            check(catalogIsActive) { "Il Catalogo selezionato non è più attivo." }
-            if (url.contains(trackingHomePath)) return loadTrackingLibraryItem(url)
-            if (catalogDefinition.stremioAddon != null) return loadStremioCatalogMedia(url)
-            return when (catalogDefinition.key) {
-                "tmdb" -> loadTmdbMedia(normalizeTmdbUrl(url), strictTmdbMetadata = true)
-                "anilist" -> loadAniListCatalogMedia(url)
-                "myanimelist" -> loadMyAnimeListMedia(url)
-                "kitsu" -> loadKitsuMedia(url)
-                "simkl" -> loadSimklMedia(url)
-                else -> error("Catalogo non supportato")
+    private fun logLoadedResponse(response: LoadResponse, route: String): LoadResponse {
+        if (!StreamCenterLogger.isEnabled(sharedPref)) {
+            pendingCardProvenance.remove(response)
+            return response
+        }
+        val provenance = pendingCardProvenance.remove(response) ?: defaultCardProvenance(route)
+        val fields = completeCardLogFields(response, provenance)
+        fields["rotta_caricamento"] = sourcedCardValue(
+            provenance = provenance,
+            path = "rotta_caricamento",
+            value = route,
+            sources = listOf("StreamCenter (routing)"),
+        )
+        fields["catalogo_streamcenter"] = sourcedCardValue(
+            provenance = provenance,
+            path = "catalogo_streamcenter",
+            value = catalogDefinition?.displayName,
+            sources = listOf("Configurazione StreamCenter"),
+        )
+        fields["modalita_prestazioni"] = sourcedCardValue(
+            provenance = provenance,
+            path = "modalita_prestazioni",
+            value = performanceMode,
+            sources = listOf("Configurazione StreamCenter"),
+            note = if (performanceMode) {
+                "Alcuni valori possono essere null perché la modalità prestazioni evita richieste opzionali."
+            } else {
+                null
+            },
+        )
+        StreamCenterLogger.logTab(
+            tabName = response.name,
+            action = "Scheda completa: tutti i valori finali e relativa provenienza",
+            metadata = fields,
+        )
+        return response
+    }
+
+    private fun defaultCardProvenance(route: String): CardProvenance {
+        val source = when {
+            route == "iptv" -> "Playlist IPTV"
+            route == "streamingcommunity" -> "StreamingCommunity"
+            route == "anilist" || route == "anime" -> "AniList e fonti anime configurate"
+            route == "myanimelist" -> "MyAnimeList (Jikan) e fonti anime configurate"
+            route == "kitsu" -> "Kitsu e fonti anime configurate"
+            route == "simkl" -> "Simkl e fonti configurate"
+            route == "tmdb" -> "TMDB e fonti configurate"
+            route == "tracciamento" -> "Servizio di tracciamento"
+            route.startsWith("catalogo:") -> catalogDefinition?.displayName
+                ?.let { "Catalogo $it" }
+                ?: route.removePrefix("catalogo:")
+            else -> "StreamCenter"
+        }
+        return CardProvenance(defaultSource = source)
+    }
+
+    private fun <T : LoadResponse> T.withCardProvenance(
+        defaultSource: String,
+        fieldSources: Map<String, List<String>> = emptyMap(),
+        fieldNotes: Map<String, String> = emptyMap(),
+    ): T = apply {
+        if (StreamCenterLogger.isEnabled(sharedPref)) {
+            pendingCardProvenance[this] = CardProvenance(
+                defaultSource = defaultSource,
+                fieldSources = fieldSources,
+                fieldNotes = fieldNotes,
+            )
+        }
+    }
+
+    private fun completeCardLogFields(
+        response: LoadResponse,
+        provenance: CardProvenance,
+    ): LinkedHashMap<String, Any?> {
+        val fields = linkedMapOf<String, Any?>(
+            "titolo" to sourcedCardValue(provenance, "titolo", response.name),
+            "url_scheda" to sourcedCardValue(provenance, "url_scheda", response.url),
+            "api_visualizzata" to sourcedCardValue(
+                provenance,
+                "api_visualizzata",
+                response.apiName,
+                sources = listOf("Configurazione StreamCenter"),
+            ),
+            "tipo_contenuto" to sourcedCardValue(
+                provenance,
+                "tipo_contenuto",
+                response.type.name,
+                sources = provenance.sources("tipo_contenuto"),
+            ),
+            "poster" to sourcedCardValue(provenance, "poster", response.posterUrl),
+            "sfondo" to sourcedCardValue(provenance, "sfondo", response.backgroundPosterUrl),
+            "logo" to sourcedCardValue(provenance, "logo", response.logoUrl),
+            "anno" to sourcedCardValue(provenance, "anno", response.year),
+            "trama" to sourcedCardValue(provenance, "trama", response.plot),
+            "punteggio" to sourcedCardValue(
+                provenance,
+                "punteggio",
+                response.score?.toString(),
+            ),
+            "tag" to sourcedCardValue(provenance, "tag", response.tags),
+            "durata_minuti" to sourcedCardValue(provenance, "durata_minuti", response.duration),
+            "classificazione_contenuti" to sourcedCardValue(
+                provenance,
+                "classificazione_contenuti",
+                response.contentRating,
+            ),
+            "in_arrivo" to sourcedCardValue(provenance, "in_arrivo", response.comingSoon),
+            "url_univoco" to sourcedCardValue(provenance, "url_univoco", response.uniqueUrl),
+            "id_sincronizzazione" to response.syncData.entries.map { (key, value) ->
+                linkedMapOf(
+                    "servizio" to sourcedCardValue(
+                        provenance,
+                        "id_sincronizzazione.$key.servizio",
+                        key,
+                    ),
+                    "id" to sourcedCardValue(
+                        provenance,
+                        "id_sincronizzazione.$key.id",
+                        value,
+                    ),
+                )
+            },
+            "header_poster" to response.posterHeaders.orEmpty().entries.map { (key, value) ->
+                linkedMapOf(
+                    "nome" to sourcedCardValue(
+                        provenance,
+                        "header_poster.nome",
+                        key,
+                    ),
+                    "valore" to sourcedCardValue(
+                        provenance,
+                        "header_poster.$key",
+                        value,
+                    ),
+                )
+            },
+            "trailer" to response.trailers.map { trailer ->
+                linkedMapOf(
+                    "url" to sourcedCardValue(
+                        provenance,
+                        "trailer.url",
+                        trailer.extractorUrl,
+                    ),
+                    "referer" to sourcedCardValue(
+                        provenance,
+                        "trailer.referer",
+                        trailer.referer,
+                    ),
+                    "raw" to sourcedCardValue(
+                        provenance,
+                        "trailer.raw",
+                        trailer.raw,
+                    ),
+                    "header" to sourcedCardValue(
+                        provenance,
+                        "trailer.header",
+                        trailer.headers,
+                    ),
+                )
+            },
+            "cast" to response.actors.orEmpty().map { actorData ->
+                linkedMapOf(
+                    "nome" to sourcedCardValue(
+                        provenance,
+                        "cast.nome",
+                        actorData.actor.name,
+                    ),
+                    "immagine" to sourcedCardValue(
+                        provenance,
+                        "cast.immagine",
+                        actorData.actor.image,
+                    ),
+                    "ruolo" to sourcedCardValue(
+                        provenance,
+                        "cast.ruolo",
+                        actorData.role?.name,
+                    ),
+                    "descrizione_ruolo" to sourcedCardValue(
+                        provenance,
+                        "cast.descrizione_ruolo",
+                        actorData.roleString,
+                    ),
+                    "doppiatore_nome" to sourcedCardValue(
+                        provenance,
+                        "cast.doppiatore_nome",
+                        actorData.voiceActor?.name,
+                    ),
+                    "doppiatore_immagine" to sourcedCardValue(
+                        provenance,
+                        "cast.doppiatore_immagine",
+                        actorData.voiceActor?.image,
+                    ),
+                )
+            },
+            "raccomandazioni" to response.recommendations.orEmpty().map { recommendation ->
+                linkedMapOf(
+                    "titolo" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.titolo",
+                        recommendation.name,
+                    ),
+                    "url" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.url",
+                        recommendation.url,
+                    ),
+                    "api" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.api",
+                        recommendation.apiName,
+                    ),
+                    "tipo" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.tipo",
+                        recommendation.type?.name,
+                    ),
+                    "poster" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.poster",
+                        recommendation.posterUrl,
+                    ),
+                    "header_poster" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.header_poster",
+                        recommendation.posterHeaders,
+                    ),
+                    "id_locale" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.id_locale",
+                        recommendation.id,
+                    ),
+                    "qualita" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.qualita",
+                        recommendation.quality?.name,
+                    ),
+                    "punteggio" to sourcedCardValue(
+                        provenance,
+                        "raccomandazioni.punteggio",
+                        recommendation.score?.toString(),
+                    ),
+                )
+            },
+        )
+
+        when (response) {
+            is AnimeLoadResponse -> {
+                fields["titolo_inglese"] = sourcedCardValue(
+                    provenance,
+                    "titolo_inglese",
+                    response.engName,
+                )
+                fields["titolo_originale"] = sourcedCardValue(
+                    provenance,
+                    "titolo_originale",
+                    response.japName,
+                )
+                fields["titoli_alternativi"] = sourcedCardValue(
+                    provenance,
+                    "titoli_alternativi",
+                    response.synonyms,
+                )
+                fields["stato_trasmissione"] = sourcedCardValue(
+                    provenance,
+                    "stato_trasmissione",
+                    response.showStatus?.name,
+                )
+                fields["prossimo_episodio"] = response.nextAiring?.let { next ->
+                    linkedMapOf(
+                        "episodio" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.episodio",
+                            next.episode,
+                        ),
+                        "stagione" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.stagione",
+                            next.season,
+                        ),
+                        "timestamp_unix" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.timestamp_unix",
+                            next.unixTime,
+                        ),
+                    )
+                } ?: sourcedCardValue(provenance, "prossimo_episodio", null)
+                fields["stagioni"] = loggedSeasons(response.seasonNames.orEmpty(), provenance)
+                fields["episodi"] = response.episodes.entries.flatMap { (dubStatus, episodes) ->
+                    episodes.mapIndexed { index, episode ->
+                        loggedEpisode(
+                            episode = episode,
+                            provenance = provenance,
+                            index = index,
+                            audio = dubStatus.name,
+                        )
+                    }
+                }
+            }
+
+            is TvSeriesLoadResponse -> {
+                fields["stato_trasmissione"] = sourcedCardValue(
+                    provenance,
+                    "stato_trasmissione",
+                    response.showStatus?.name,
+                )
+                fields["prossimo_episodio"] = response.nextAiring?.let { next ->
+                    linkedMapOf(
+                        "episodio" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.episodio",
+                            next.episode,
+                        ),
+                        "stagione" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.stagione",
+                            next.season,
+                        ),
+                        "timestamp_unix" to sourcedCardValue(
+                            provenance,
+                            "prossimo_episodio.timestamp_unix",
+                            next.unixTime,
+                        ),
+                    )
+                } ?: sourcedCardValue(provenance, "prossimo_episodio", null)
+                fields["stagioni"] = loggedSeasons(response.seasonNames.orEmpty(), provenance)
+                fields["episodi"] = response.episodes.mapIndexed { index, episode ->
+                    loggedEpisode(episode, provenance, index)
+                }
+            }
+
+            is MovieLoadResponse -> {
+                fields["dati_riproduzione"] = sourcedCardValue(
+                    provenance,
+                    "dati_riproduzione",
+                    response.dataUrl,
+                )
+            }
+
+            is LiveStreamLoadResponse -> {
+                fields["dati_riproduzione"] = sourcedCardValue(
+                    provenance,
+                    "dati_riproduzione",
+                    response.dataUrl,
+                )
             }
         }
+        return fields
+    }
+
+    private fun loggedSeasons(
+        seasons: List<SeasonData>,
+        provenance: CardProvenance,
+    ): List<Map<String, Any?>> {
+        return seasons.map { season ->
+            linkedMapOf(
+                "stagione" to sourcedCardValue(
+                    provenance,
+                    "stagioni.stagione",
+                    season.season,
+                ),
+                "nome" to sourcedCardValue(
+                    provenance,
+                    "stagioni.nome",
+                    season.name,
+                ),
+                "stagione_visualizzata" to sourcedCardValue(
+                    provenance,
+                    "stagioni.stagione_visualizzata",
+                    season.displaySeason,
+                ),
+            )
+        }
+    }
+
+    private fun loggedEpisode(
+        episode: Episode,
+        provenance: CardProvenance,
+        index: Int,
+        audio: String? = null,
+    ): Map<String, Any?> {
+        return linkedMapOf(
+            "indice_lista" to sourcedCardValue(
+                provenance,
+                "episodi.indice_lista",
+                index,
+                sources = listOf("StreamCenter (ordinamento finale)"),
+            ),
+            "audio" to sourcedCardValue(
+                provenance,
+                "episodi.audio",
+                audio,
+                sources = listOf("StreamCenter (raggruppamento audio)"),
+            ),
+            "nome" to sourcedCardValue(provenance, "episodi.nome", episode.name),
+            "stagione" to sourcedCardValue(provenance, "episodi.stagione", episode.season),
+            "episodio" to sourcedCardValue(provenance, "episodi.episodio", episode.episode),
+            "poster" to sourcedCardValue(provenance, "episodi.poster", episode.posterUrl),
+            "punteggio" to sourcedCardValue(
+                provenance,
+                "episodi.punteggio",
+                episode.score?.toString(),
+            ),
+            "descrizione" to sourcedCardValue(
+                provenance,
+                "episodi.descrizione",
+                episode.description,
+            ),
+            "data_timestamp" to sourcedCardValue(provenance, "episodi.data", episode.date),
+            "durata_minuti" to sourcedCardValue(
+                provenance,
+                "episodi.durata_minuti",
+                episode.runTime,
+            ),
+            "dati_riproduzione" to sourcedCardValue(
+                provenance,
+                "episodi.dati_riproduzione",
+                episode.data,
+            ),
+        )
+    }
+
+    private fun sourcedCardValue(
+        provenance: CardProvenance,
+        path: String,
+        value: Any?,
+        sources: List<String> = provenance.sources(path),
+        note: String? = provenance.note(path),
+    ): StreamCenterLogger.SourcedValue {
+        return StreamCenterLogger.SourcedValue(
+            value = value,
+            sources = sources,
+            note = note,
+        )
+    }
+
+    private fun animeProviderCardSources(
+        metadataSource: String,
+        playbackSources: List<String>,
+        episodeMetadataSources: List<String> = listOf(metadataSource),
+        trackingSources: List<String> = listOf(metadataSource),
+        torrentContext: StreamCenterTorrentPlaybackContext? = null,
+    ): Map<String, List<String>> {
+        val finalPlaybackSources = (
+            playbackSources +
+                "Add-on Stremio abilitati" +
+                torrentPlaybackProvenance(torrentContext) +
+                "StreamCenter (payload di riproduzione)"
+            ).distinct()
+        val episodeSources = (episodeMetadataSources + finalPlaybackSources).distinct()
+        return mapOf(
+            "titolo" to listOf(metadataSource),
+            "titolo_inglese" to listOf(metadataSource),
+            "titolo_originale" to listOf(metadataSource),
+            "titoli_alternativi" to listOf(metadataSource),
+            "poster" to listOf(metadataSource),
+            "sfondo" to listOf(metadataSource),
+            "trama" to listOf(metadataSource),
+            "tag" to listOf(metadataSource, "StreamCenter (etichette derivate)"),
+            "anno" to listOf(metadataSource),
+            "punteggio" to listOf(metadataSource),
+            "durata_minuti" to listOf(metadataSource),
+            "classificazione_contenuti" to listOf(metadataSource),
+            "cast" to listOf(metadataSource),
+            "raccomandazioni" to listOf(metadataSource),
+            "trailer" to listOf(metadataSource),
+            "stato_trasmissione" to listOf(metadataSource),
+            "prossimo_episodio" to listOf(metadataSource),
+            "in_arrivo" to listOf(metadataSource),
+            "id_sincronizzazione" to trackingSources,
+            "stagioni" to listOf(metadataSource, "StreamCenter (normalizzazione stagioni)"),
+            "episodi" to episodeSources,
+            "episodi.nome" to episodeMetadataSources + "StreamCenter (fallback nome)",
+            "episodi.poster" to episodeMetadataSources + "$metadataSource (poster scheda fallback)",
+            "episodi.punteggio" to episodeMetadataSources,
+            "episodi.descrizione" to episodeMetadataSources,
+            "episodi.data" to episodeMetadataSources,
+            "episodi.durata_minuti" to episodeMetadataSources,
+            "episodi.stagione" to episodeMetadataSources + "StreamCenter (normalizzazione)",
+            "episodi.episodio" to episodeSources,
+            "episodi.dati_riproduzione" to finalPlaybackSources,
+            "dati_riproduzione" to finalPlaybackSources,
+        )
+    }
+
+    private fun logSearchCards(
+        action: String,
+        contextDetails: Map<String, Any?>,
+        items: List<SearchResponse>,
+    ) {
+        if (!StreamCenterLogger.isEnabled(sharedPref)) return
+        StreamCenterLogger.logMenu(
+            action = action,
+            metadata = linkedMapOf<String, Any?>().apply {
+                contextDetails.forEach { (key, value) ->
+                    put(
+                        key,
+                        StreamCenterLogger.SourcedValue(
+                            value = value,
+                            sources = listOf("StreamCenter"),
+                        ),
+                    )
+                }
+                put(
+                    "numero_schede",
+                    StreamCenterLogger.SourcedValue(
+                        value = items.size,
+                        sources = listOf("StreamCenter (conteggio finale)"),
+                    ),
+                )
+                put(
+                    "schede_complete",
+                    StreamCenterLogger.SourcedValue(
+                        value = items.mapIndexed(::completeSearchCardLogFields),
+                        sources = listOf("Fonti indicate accanto a ogni campo"),
+                        note = "Nessun elemento o valore della lista è troncato.",
+                    ),
+                )
+            },
+        )
+    }
+
+    private fun completeSearchCardLogFields(
+        index: Int,
+        response: SearchResponse,
+    ): Map<String, Any?> {
+        val source = searchCardSource(response)
+        fun sourced(value: Any?, vararg overrideSources: String): StreamCenterLogger.SourcedValue {
+            return StreamCenterLogger.SourcedValue(
+                value = value,
+                sources = overrideSources.toList().takeIf { it.isNotEmpty() } ?: source,
+            )
+        }
+
+        return linkedMapOf<String, Any?>(
+            "indice" to sourced(index, "StreamCenter (ordinamento finale)"),
+            "titolo" to sourced(response.name),
+            "url" to sourced(response.url),
+            "api" to sourced(response.apiName, "Configurazione StreamCenter"),
+            "tipo" to sourced(
+                response.type?.name,
+                *(source + "StreamCenter (conversione tipo)").toTypedArray(),
+            ),
+            "poster" to sourced(response.posterUrl),
+            "header_poster" to sourced(response.posterHeaders),
+            "id_locale" to sourced(response.id, "CloudStream / StreamCenter"),
+            "qualita" to sourced(response.quality?.name),
+            "punteggio" to sourced(response.score?.toString()),
+        ).apply {
+            when (response) {
+                is AnimeSearchResponse -> {
+                    put("anno", sourced(response.year))
+                    put("stato_doppiaggio", sourced(response.dubStatus?.map { it.name }))
+                    put("altro_titolo", sourced(response.otherName))
+                    put(
+                        "episodi_disponibili",
+                        sourced(
+                            response.episodes.entries.associate { (status, count) ->
+                                status.name to count
+                            },
+                        ),
+                    )
+                }
+
+                is MovieSearchResponse -> put("anno", sourced(response.year))
+                is TvSeriesSearchResponse -> {
+                    put("anno", sourced(response.year))
+                    put("episodi_disponibili", sourced(response.episodes))
+                }
+
+                is LiveSearchResponse -> put("lingua", sourced(response.lang))
+            }
+        }
+    }
+
+    private fun searchCardSource(response: SearchResponse): List<String> {
+        val url = response.url
+        return when {
+            catalogDefinition?.stremioAddon != null -> listOf(
+                "Add-on Stremio: ${catalogDefinition.stremioAddon.name}",
+            )
+            catalogDefinition != null -> listOf("Catalogo ${catalogDefinition.displayName}")
+            url.startsWith(StreamCenterIptv.ROUTE_PREFIX) -> listOf("Playlist IPTV")
+            url.contains(trackingHomePath) -> listOf("Servizio di tracciamento")
+            url.contains(scHomePath) -> listOf("StreamingCommunity")
+            url.contains(animeMarker) || isAnilistOnlyUrl(url) || isMalOnlyUrl(url) ->
+                listOf("AnimeUnity", "AniList")
+            url.contains("anilist.co", ignoreCase = true) -> listOf("AniList")
+            url.contains("myanimelist.net", ignoreCase = true) -> listOf("MyAnimeList (Jikan)")
+            url.contains("kitsu.", ignoreCase = true) -> listOf("Kitsu")
+            url.contains("simkl.com", ignoreCase = true) -> listOf("Simkl")
+            url.contains("themoviedb.org", ignoreCase = true) -> listOf("TMDB")
+            else -> listOf("StreamCenter (fonte non identificata dalla rotta)")
+        }
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val route = when {
+            catalogDefinition != null -> "catalogo:${catalogDefinition.key}"
+            url.startsWith(StreamCenterIptv.ROUTE_PREFIX) -> "iptv"
+            kitsuCatalog.mediaId(url) != null -> "kitsu"
+            simklCatalog.mediaRoute(url) != null -> "simkl"
+            url.contains(trackingHomePath) -> "tracciamento"
+            url.contains(scHomePath) -> "streamingcommunity"
+            isAnilistOnlyUrl(url) -> "anilist"
+            isMalOnlyUrl(url) -> "myanimelist"
+            url.contains(animeMarker) -> "anime"
+            else -> "tmdb"
+        }
+        StreamCenterLogger.logMenu(
+            action = "Apertura scheda avviata",
+            metadata = mapOf(
+                "api" to name,
+                "rotta" to route,
+                "catalogo" to (catalogDefinition?.displayName ?: "nessuno"),
+                "destinazione" to url,
+                "modalita_prestazioni" to performanceMode,
+            ),
+        )
+        try {
+        if (catalogDefinition != null) {
+            check(catalogIsActive) { "Il Catalogo selezionato non è più attivo." }
+            if (url.contains(trackingHomePath)) return logLoadedResponse(loadTrackingLibraryItem(url), route)
+            if (catalogDefinition.stremioAddon != null) return logLoadedResponse(loadStremioCatalogMedia(url), route)
+            return logLoadedResponse(
+                response = when (catalogDefinition.key) {
+                    "tmdb" -> loadTmdbMedia(normalizeTmdbUrl(url), strictTmdbMetadata = true)
+                    "anilist" -> loadAniListCatalogMedia(url)
+                    "myanimelist" -> loadMyAnimeListMedia(url)
+                    "kitsu" -> loadKitsuMedia(url)
+                    "simkl" -> loadSimklMedia(url)
+                    else -> error("Catalogo non supportato")
+                },
+                route = route,
+            )
+        }
         if (url.startsWith(StreamCenterIptv.ROUTE_PREFIX)) {
-            return loadIptvChannel(url)
+            return logLoadedResponse(loadIptvChannel(url), route)
         }
         if (kitsuCatalog.mediaId(url) != null) {
-            return loadKitsuMedia(url)
+            return logLoadedResponse(loadKitsuMedia(url), route)
         }
         if (simklCatalog.mediaRoute(url) != null) {
-            return loadSimklMedia(url)
+            return logLoadedResponse(loadSimklMedia(url), route)
         }
         if (url.contains(trackingHomePath)) {
-            return loadTrackingLibraryItem(url)
+            return logLoadedResponse(loadTrackingLibraryItem(url), route)
         }
         if (url.contains(scHomePath)) {
-            return loadStreamingCommunityHomeTitle(url)
+            return logLoadedResponse(loadStreamingCommunityHomeTitle(url), route)
         }
         if (isAnilistOnlyUrl(url)) {
             val anilistId = extractAnilistIdFromText(url)
             val malId = parseQueryParams(url)[animeMalParam]?.toIntOrNull()
-            return loadAnilistMedia(anilistId, malId)
+            return logLoadedResponse(loadAnilistMedia(anilistId, malId), route)
         }
         if (isMalOnlyUrl(url)) {
             val malId = extractMalIdFromText(url)
                 ?: parseQueryParams(url)[animeMalParam]?.toIntOrNull()
-            return loadAnilistMedia(null, malId)
+            return logLoadedResponse(loadAnilistMedia(null, malId), route)
         }
 
         val actualUrl = normalizeTmdbUrl(url)
@@ -1836,12 +2783,27 @@ class StreamCenter internal constructor(
             val anilistId = selection?.anilistId
             val malId = selection?.malId
             if (anilistId != null || malId != null) {
-                return loadAnilistMedia(anilistId, malId)
+                return logLoadedResponse(loadAnilistMedia(anilistId, malId), route)
             }
             error("Identificativo AniList o MyAnimeList mancante")
         }
 
-        return loadTmdbMedia(actualUrl)
+        return logLoadedResponse(loadTmdbMedia(actualUrl), route)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            StreamCenterLogger.logMenuError(
+                action = "Apertura scheda non riuscita",
+                throwable = error,
+                metadata = mapOf(
+                    "api" to name,
+                    "rotta" to route,
+                    "catalogo" to (catalogDefinition?.displayName ?: "nessuno"),
+                    "destinazione" to url,
+                ),
+            )
+            throw error
+        }
     }
 
     private suspend fun loadTrackingLibraryItem(url: String): LoadResponse {
@@ -1873,7 +2835,7 @@ class StreamCenter internal constructor(
         return createTrackingLoadResponse(url, service, item, mediaId, details, personal)
     }
 
-    private fun providerTrackingRoute(
+    private suspend fun providerTrackingRoute(
         service: StreamCenterTrackingService,
         item: SyncAPI.LibraryItem,
     ): String? {
@@ -1884,16 +2846,30 @@ class StreamCenter internal constructor(
                 ?.let { "https://myanimelist.net/anime/$it" }
             "kitsu" -> trackingMediaId(service, item).toIntOrNull()
                 ?.let { "https://kitsu.io/anime/$it" }
-            "simkl" -> item.url.takeIf { simklCatalog.mediaRoute(it) != null }
-                ?: item.syncId.toIntOrNull()?.let { id ->
-                    val category = when (item.type) {
-                        TvType.Movie -> "movies"
-                        TvType.Anime, TvType.AnimeMovie, TvType.OVA -> "anime"
-                        else -> "tv"
-                    }
-                    "https://simkl.com/$category/$id"
-                }
+            "simkl" -> resolveSimklLibraryRoute(item)
             else -> null
+        }
+    }
+
+    private suspend fun resolveSimklLibraryRoute(item: SyncAPI.LibraryItem): String? {
+        val parsedRoute = simklCatalog.mediaRoute(item.url)
+        val simklId = parsedRoute?.second
+            ?: item.syncId.substringBefore('/').trim().toIntOrNull()
+            ?: return null
+        val canonicalRoute = runCatching {
+            simklCatalog.resolveMediaUrl(simkl = simklId)
+        }.getOrNull()
+        if (canonicalRoute != null) return canonicalRoute
+
+        return parsedRoute?.let { (category, id) ->
+            "https://simkl.com/$category/$id"
+        } ?: run {
+            val category = when (item.type) {
+                TvType.Movie -> "movies"
+                TvType.Anime, TvType.AnimeMovie, TvType.OVA -> "anime"
+                else -> "tv"
+            }
+            "https://simkl.com/$category/$simklId"
         }
     }
 
@@ -1983,7 +2959,7 @@ class StreamCenter internal constructor(
             }
             addStreamCenterTrackingId(service.syncIdName, mediaId)
         }
-        return when (item.type) {
+        val response = when (item.type) {
             TvType.TvSeries -> newTvSeriesLoadResponse(
                 metadata.title,
                 route,
@@ -2017,6 +2993,43 @@ class StreamCenter internal constructor(
                 applySharedMetadata()
             }
         }
+        val librarySource = "${service.title} (libreria personale)"
+        val detailsSource = "${service.title} (dettagli metadati)"
+        return response.withCardProvenance(
+            defaultSource = service.title,
+            fieldSources = mapOf(
+                "titolo" to listOf(
+                    if (!details?.title.isNullOrBlank()) detailsSource else librarySource,
+                ),
+                "poster" to listOf(
+                    if (!details?.posterUrl.isNullOrBlank()) detailsSource else librarySource,
+                ),
+                "sfondo" to listOf(
+                    if (!details?.backgroundPosterUrl.isNullOrBlank()) detailsSource else librarySource,
+                ),
+                "trama" to listOf(
+                    if (!details?.synopsis.isNullOrBlank()) detailsSource else librarySource,
+                ),
+                "tag" to listOf(detailsSource, librarySource, "${service.title} (dati personali)"),
+                "anno" to listOf(
+                    if (item.releaseDate != null) librarySource else detailsSource,
+                ),
+                "punteggio" to listOf(
+                    if (details?.publicScore != null) detailsSource else librarySource,
+                ),
+                "durata_minuti" to listOf(detailsSource),
+                "cast" to listOf(detailsSource),
+                "stato_trasmissione" to listOf(detailsSource),
+                "prossimo_episodio" to listOf(detailsSource),
+                "titoli_alternativi" to listOf(detailsSource),
+                "header_poster" to listOf(librarySource),
+                "id_sincronizzazione" to listOf(service.title),
+                "episodi" to listOf("StreamCenter (nessun episodio fornito dalla libreria)"),
+            ),
+            fieldNotes = mapOf(
+                "tag" to "Il valore finale può combinare generi pubblici, progresso e dati personali della libreria.",
+            ),
+        )
     }
 
     private suspend fun loadStremioCatalogMedia(url: String): LoadResponse {
@@ -2034,8 +3047,37 @@ class StreamCenter internal constructor(
             stremioId = media.id,
             imdbId = media.imdbId,
             tmdbId = media.tmdbId,
+            anilistId = media.anilistId,
+            malId = media.malId,
+            kitsuId = media.kitsuId,
             catalogAddonKey = catalogDefinition?.stremioAddon?.key,
         )
+        val tmdbEnglishTitle = when (type) {
+            TvType.Movie -> resolveTmdbEnglishTitle(media.tmdbId, isMovie = true)
+            TvType.TvSeries -> resolveTmdbEnglishTitle(media.tmdbId, isMovie = false)
+            else -> null
+        }
+        val torrentContext = when (type) {
+            TvType.Live -> null
+            TvType.Anime -> animeTorrentPlaybackContext(
+                titles = listOf(media.name),
+                year = media.year,
+                isMovie = false,
+                imdbId = media.imdbId,
+                tabName = media.name,
+                anilistId = media.anilistId,
+                malId = media.malId,
+                kitsuId = media.kitsuId,
+            )
+            else -> torrentPlaybackContext(
+                titles = listOf(media.name),
+                englishTitle = tmdbEnglishTitle,
+                year = media.year,
+                isAnime = false,
+                isMovie = type == TvType.Movie,
+                imdbId = media.imdbId,
+            )
+        }
         val applyMetadata: LoadResponse.() -> Unit = {
             apiName = this@StreamCenter.name
             posterUrl = media.posterUrl
@@ -2048,15 +3090,21 @@ class StreamCenter internal constructor(
                 StreamCenterTrackingIds(
                     tmdb = media.tmdbId,
                     imdb = media.imdbId,
+                    anilist = media.anilistId,
+                    mal = media.malId,
+                    kitsu = media.kitsuId,
                 ),
             )
         }
-        return when (type) {
+        val response = when (type) {
             TvType.Movie -> newMovieLoadResponse(
                 media.name,
                 url,
                 TvType.Movie,
-                dataUrl = StreamCenterPlaybackData(stremio = stremioContext).toJson(),
+                dataUrl = StreamCenterPlaybackData(
+                    stremio = stremioContext,
+                    torrent = torrentContext,
+                ).toJson(),
             ) {
                 applyMetadata()
             }
@@ -2068,7 +3116,7 @@ class StreamCenter internal constructor(
                 applyMetadata()
             }
             TvType.Anime -> {
-                val episodes = buildStremioCatalogEpisodes(media, stremioContext)
+                val episodes = buildStremioCatalogEpisodes(media, stremioContext, torrentContext)
                 check(episodes.isNotEmpty()) { "L'add-on non fornisce gli episodi per questo anime" }
                 newAnimeLoadResponse(media.name, url, TvType.Anime) {
                     applyMetadata()
@@ -2077,7 +3125,7 @@ class StreamCenter internal constructor(
                 }
             }
             else -> {
-                val episodes = buildStremioCatalogEpisodes(media, stremioContext)
+                val episodes = buildStremioCatalogEpisodes(media, stremioContext, torrentContext)
                 check(episodes.isNotEmpty()) { "L'add-on non fornisce gli episodi per questa serie" }
                 newTvSeriesLoadResponse(media.name, url, TvType.TvSeries, episodes) {
                     applyMetadata()
@@ -2085,11 +3133,291 @@ class StreamCenter internal constructor(
                 }
             }
         }
+        val addonSource = catalogDefinition?.stremioAddon?.name
+            ?.let { "Add-on Stremio: $it" }
+            ?: "Add-on Stremio"
+        val playbackSources = (
+            listOf(addonSource, "StreamCenter (contesto Stremio)") +
+                torrentPlaybackProvenance(torrentContext)
+            ).distinct()
+        return response.withCardProvenance(
+            defaultSource = addonSource,
+            fieldSources = mapOf(
+                "tipo_contenuto" to listOf(addonSource, "StreamCenter (conversione tipo)"),
+                "id_sincronizzazione" to listOf(addonSource),
+                "stagioni" to listOf(addonSource, "StreamCenter (raggruppamento episodi)"),
+                "episodi" to listOf(addonSource),
+                "episodi.dati_riproduzione" to playbackSources,
+                "dati_riproduzione" to playbackSources,
+            ),
+        )
+    }
+
+    private fun torrentPlaybackContext(
+        titles: Iterable<String?>,
+        englishTitle: String? = null,
+        year: Int? = null,
+        isAnime: Boolean,
+        isMovie: Boolean,
+        imdbId: String? = null,
+        japaneseTitle: String? = null,
+    ): StreamCenterTorrentPlaybackContext? {
+        val baseTitles = titles
+            .mapNotNull(::cleanText)
+            .filter(String::isNotBlank)
+            .distinctBy { it.lowercase(Locale.ROOT) }
+        val normalizedEnglishTitle = englishTitle
+            ?.let(::cleanText)
+            ?.takeIf(String::isNotBlank)
+        val normalizedTitles = buildList {
+            baseTitles.firstOrNull()?.let(::add)
+            normalizedEnglishTitle?.let(::add)
+            addAll(baseTitles.drop(1))
+        }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(6)
+        if (normalizedTitles.isEmpty()) return null
+        return StreamCenterTorrentPlaybackContext(
+            titles = normalizedTitles,
+            englishTitle = normalizedEnglishTitle,
+            year = year,
+            isAnime = isAnime,
+            isMovie = isMovie,
+            imdbId = imdbId,
+            japaneseTitle = japaneseTitle?.let(::cleanText),
+        )
+    }
+
+    private fun shouldResolveSukebeiJapaneseTitle(): Boolean {
+        return StreamCenterPlugin.isTorrentEnabled(sharedPref) &&
+            StreamCenterPlugin.isTorrentSourceEnabled(
+                sharedPref,
+                StreamCenterTorrentSources.SUKEBEI_NYAA_KEY,
+            )
+    }
+
+    private fun shouldResolveTmdbEnglishTitle(): Boolean {
+        return StreamCenterPlugin.isTorrentEnabled(sharedPref) &&
+            StreamCenterTorrentSources.definitions.any { source ->
+                source.scope != StreamCenterTorrentSourceScope.ANIME &&
+                    StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
+            }
+    }
+
+    private suspend fun resolveTmdbEnglishTitle(
+        tmdbId: String?,
+        isMovie: Boolean,
+    ): String? {
+        if (!shouldResolveTmdbEnglishTitle()) return null
+        val normalizedId = tmdbId
+            ?.trim()
+            ?.takeIf { value -> value.all(Char::isDigit) }
+            ?: return null
+        return runCatching {
+            tmdbCatalog.englishTitle(
+                type = if (isMovie) "movie" else "tv",
+                id = normalizedId,
+            )
+        }.getOrNull()
+    }
+
+    private fun shouldResolveAnimeTorrentMetadata(): Boolean {
+        return StreamCenterPlugin.isTorrentEnabled(sharedPref) &&
+            StreamCenterTorrentSources.definitions.any { source ->
+                source.scope != StreamCenterTorrentSourceScope.GENERAL &&
+                    StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
+            }
+    }
+
+    private suspend fun animeTorrentPlaybackContext(
+        titles: Iterable<String?>,
+        year: Int? = null,
+        isMovie: Boolean,
+        imdbId: String? = null,
+        tabName: String,
+        aniZipCatalog: AniZipEpisodeCatalog? = null,
+        anilistId: Int? = null,
+        malId: Int? = null,
+        kitsuId: Int? = null,
+        knownKitsuTitle: String? = null,
+        knownAniListTitle: String? = null,
+        knownMyAnimeListTitle: String? = null,
+    ): StreamCenterTorrentPlaybackContext? {
+        val baseContext = torrentPlaybackContext(
+            titles = titles,
+            year = year,
+            isAnime = true,
+            isMovie = isMovie,
+            imdbId = imdbId,
+        ) ?: return null
+        val shouldResolveJapaneseTitle = shouldResolveSukebeiJapaneseTitle()
+        if (!shouldResolveAnimeTorrentMetadata() && !shouldResolveJapaneseTitle) return baseContext
+
+        val startedAt = System.currentTimeMillis()
+        if (shouldResolveJapaneseTitle) {
+            StreamCenterLogger.logMetadata(
+                tabName = tabName,
+                source = "Torrent · Sukebei Nyaa",
+                action = "Risoluzione titolo giapponese avviata",
+                metadata = mapOf(
+                    "ordine_provider" to listOf("AniZip", "Kitsu", "AniList", "MyAnimeList"),
+                    "id_anilist" to anilistId,
+                    "id_myanimelist" to malId,
+                    "id_kitsu" to kitsuId,
+                    "catalogo_anizip_gia_disponibile" to (aniZipCatalog != null),
+                ),
+            )
+        }
+
+        var aniZipTimedOut = false
+        var aniZipFailed = false
+        val resolvedAniZipCatalog = if (aniZipCatalog != null) {
+            aniZipCatalog
+        } else if (anilistId != null || malId != null) {
+            try {
+                withTimeoutOrNull(ANIME_JAPANESE_TITLE_ANIZIP_TIMEOUT_MS) {
+                    aniZipMetadataClient.fetch(anilistId, malId)
+                } ?: AniZipEpisodeCatalog().also { aniZipTimedOut = true }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                aniZipFailed = true
+                StreamCenterLogger.logTabError(
+                    tabName = tabName,
+                    action = "Recupero metadati Torrent AniZip non riuscito",
+                    throwable = error,
+                    metadata = mapOf("id_anilist" to anilistId, "id_myanimelist" to malId),
+                )
+                AniZipEpisodeCatalog()
+            }
+        } else {
+            AniZipEpisodeCatalog()
+        }
+
+        val episodeNumberAliases = resolvedAniZipCatalog.episodes
+            .mapValues { (localNumber, metadata) ->
+                listOfNotNull(metadata.episodeNumber, metadata.absoluteEpisodeNumber)
+                    .filter { number -> number > 0 && number != localNumber }
+                    .distinct()
+            }
+            .filterValues(List<Int>::isNotEmpty)
+        val contextWithEpisodeAliases = baseContext.copy(
+            episodeNumberAliases = episodeNumberAliases.ifEmpty { null },
+        )
+        StreamCenterLogger.logMetadata(
+            tabName = tabName,
+            source = "Torrent · AniZip",
+            action = if (episodeNumberAliases.isEmpty()) {
+                "Numerazione alternativa episodi Torrent non trovata"
+            } else {
+                "Numerazione alternativa episodi Torrent risolta"
+            },
+            metadata = mapOf(
+                "episodi_anizip" to resolvedAniZipCatalog.episodes.size,
+                "episodi_con_numerazione_alternativa" to episodeNumberAliases.size,
+                "numerazioni_alternative" to episodeNumberAliases,
+            ),
+            level = if (episodeNumberAliases.isEmpty()) {
+                StreamCenterLogger.Level.WARNING
+            } else {
+                StreamCenterLogger.Level.INFO
+            },
+        )
+        if (!shouldResolveJapaneseTitle) return contextWithEpisodeAliases
+
+        val resolution = try {
+            animeJapaneseTitleResolver.resolve(
+                aniZipCatalog = resolvedAniZipCatalog,
+                kitsuId = kitsuId,
+                anilistId = anilistId,
+                malId = malId,
+                hints = AnimeJapaneseTitleHints(
+                    kitsu = listOfNotNull(knownKitsuTitle),
+                    aniList = listOfNotNull(knownAniListTitle),
+                    myAnimeList = listOfNotNull(knownMyAnimeListTitle),
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            StreamCenterLogger.logTabError(
+                tabName = tabName,
+                action = "Risoluzione titolo giapponese Torrent non riuscita",
+                throwable = error,
+                metadata = mapOf(
+                    "id_anilist" to anilistId,
+                    "id_myanimelist" to malId,
+                    "id_kitsu" to kitsuId,
+                ),
+            )
+            return contextWithEpisodeAliases
+        }
+
+        val sourceName = resolution.source?.logName
+        StreamCenterLogger.logMetadata(
+            tabName = tabName,
+            source = "Torrent · Sukebei Nyaa",
+            action = if (resolution.title != null) {
+                "Titolo giapponese Torrent risolto"
+            } else {
+                "Titolo giapponese Torrent non trovato"
+            },
+            metadata = mapOf(
+                "titolo_giapponese" to resolution.title?.let { title ->
+                    StreamCenterLogger.SourcedValue(
+                        value = title,
+                        sources = listOfNotNull(sourceName),
+                        note = "Usato esclusivamente nelle query Sukebei Nyaa.",
+                    )
+                },
+                "fonte_titolo" to sourceName,
+                "fallback_usato" to (sourceName != null && sourceName != "AniZip"),
+                "cache" to resolution.cacheHit,
+                "script_giapponese_valido" to (resolution.title != null),
+                "anizip_timeout" to aniZipTimedOut,
+                "anizip_errore" to aniZipFailed,
+                "durata_ms" to (System.currentTimeMillis() - startedAt),
+                "tentativi" to resolution.attempts.map { attempt ->
+                    mapOf(
+                        "provider" to attempt.source.logName,
+                        "stato" to attempt.status.toString(),
+                        "origine" to attempt.origin,
+                        "identificativo" to attempt.identifier,
+                        "durata_ms" to attempt.durationMs,
+                        "tipo_errore" to attempt.errorType,
+                    )
+                },
+            ),
+            level = if (resolution.title != null) {
+                StreamCenterLogger.Level.INFO
+            } else {
+                StreamCenterLogger.Level.WARNING
+            },
+        )
+        return contextWithEpisodeAliases.copy(japaneseTitle = resolution.title)
+    }
+
+    private fun torrentPlaybackProvenance(
+        context: StreamCenterTorrentPlaybackContext?,
+    ): List<String> {
+        if (context == null || !StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
+            return emptyList()
+        }
+        val hasEnabledSource = StreamCenterTorrentSources.definitions.any { source ->
+            source.supports(context) &&
+                StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
+        }
+        return if (hasEnabledSource) {
+            listOf("Fonti Torrent abilitate", "StreamCenter (contesto Torrent)")
+        } else {
+            emptyList()
+        }
     }
 
     private fun buildStremioCatalogEpisodes(
         media: StreamCenterStremioCatalogItem,
         stremioContext: StreamCenterStremioPlaybackContext,
+        torrentContext: StreamCenterTorrentPlaybackContext?,
     ): List<Episode> {
         return media.videos
             .distinctBy { video -> video.id }
@@ -2100,6 +3428,10 @@ class StreamCenter internal constructor(
                     StreamCenterPlaybackData(
                         stremio = stremioContext.copy(
                             stremioVideoId = video.id,
+                            season = season,
+                            episode = episode,
+                        ),
+                        torrent = torrentContext?.copy(
                             season = season,
                             episode = episode,
                         ),
@@ -2128,8 +3460,16 @@ class StreamCenter internal constructor(
         scHint: StreamingCommunityTitle? = null,
         strictTmdbMetadata: Boolean = false,
     ): LoadResponse {
-        val doc = getTmdbDocument(actualUrl)
         val isTvSeries = actualUrl.contains("/tv/")
+        val (doc, tmdbEnglishTitle) = coroutineScope {
+            val englishTitleDeferred = async(Dispatchers.IO) {
+                resolveTmdbEnglishTitle(
+                    tmdbId = extractTmdbId(actualUrl),
+                    isMovie = !isTvSeries,
+                )
+            }
+            getTmdbDocument(actualUrl) to englishTitleDeferred.await()
+        }
         val metadata = buildMetadata(
             doc,
             actualUrl,
@@ -2194,6 +3534,49 @@ class StreamCenter internal constructor(
         val score = metadata.score ?: sc?.score.takeUnless { strictTmdbMetadata }
         val contentRating = metadata.contentRating
             ?: sc?.age?.let { "$it+" }.takeUnless { strictTmdbMetadata }
+        val torrentContext = torrentPlaybackContext(
+            titles = listOf(title, metadata.originalTitle, cardTitle, sc?.name),
+            englishTitle = tmdbEnglishTitle,
+            year = year,
+            isAnime = false,
+            isMovie = !isTvSeries,
+            imdbId = playbackImdbId,
+        )
+        StreamCenterLogger.logMetadata(
+            tabName = title,
+            source = "TMDB",
+            action = "Metadati TMDB acquisiti",
+            metadata = mapOf(
+                "id_tmdb" to metadata.tmdbId,
+                "tipo" to if (isTvSeries) "serie_tv" else "film",
+                "modalita_minimale" to (performanceMode && !strictTmdbMetadata),
+                "titolo_originale_disponibile" to !metadata.originalTitle.isNullOrBlank(),
+                "titolo_inglese_torrent_disponibile" to !tmdbEnglishTitle.isNullOrBlank(),
+                "trama_disponibile" to !metadata.plot.isNullOrBlank(),
+                "poster_disponibile" to !metadata.poster.isNullOrBlank(),
+                "tag" to metadata.tags.size,
+                "persone" to metadata.people.size,
+                "anno" to metadata.year,
+                "imdb_disponibile" to !tmdbImdbId.isNullOrBlank(),
+            ),
+        )
+        StreamCenterLogger.logMetadata(
+            tabName = title,
+            source = "StreamingCommunity",
+            action = if (sc == null) {
+                "Corrispondenza StreamingCommunity non trovata"
+            } else {
+                "Corrispondenza StreamingCommunity acquisita"
+            },
+            metadata = mapOf(
+                "fonte_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY),
+                "corrispondenza_presente" to (sc != null),
+                "id_streamingcommunity" to sc?.id,
+                "tipo" to sc?.type,
+                "id_tmdb_associazione" to sc?.tmdbId,
+            ),
+            level = if (sc == null) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
+        )
         val recommendations = if (strictTmdbMetadata) {
             runCatching { tmdbCatalog.recommendations(this, actualUrl, showCardScores) }.getOrDefault(emptyList())
         } else if (!performanceMode) {
@@ -2202,7 +3585,7 @@ class StreamCenter internal constructor(
             emptyList()
         }
 
-        return if (isTvSeries) {
+        val response = if (isTvSeries) {
             val streamingCommunityEpisodes = streamingCommunityTitle
                 ?.let { streamingCommunityClient.episodePayloads(it) }
                 .orEmpty()
@@ -2211,6 +3594,7 @@ class StreamCenter internal constructor(
                 actualUrl = actualUrl,
                 streamingCommunityEpisodes = streamingCommunityEpisodes,
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
                 fallbackPoster = poster.takeIf { !performanceMode || strictTmdbMetadata },
                 minimalMetadata = performanceMode && !strictTmdbMetadata,
             ).ifEmpty {
@@ -2221,6 +3605,7 @@ class StreamCenter internal constructor(
                         streamingCommunityEpisodes,
                         poster.takeIf { !performanceMode },
                         stremioContext,
+                        torrentContext,
                     )
                 }
             }
@@ -2230,6 +3615,18 @@ class StreamCenter internal constructor(
             } else {
                 buildAnimeSeasonData(episodes)
             }
+            StreamCenterLogger.logTab(
+                tabName = title,
+                action = "Dettagli serie TMDB aggregati",
+                metadata = mapOf(
+                    "episodi_tmdb" to episodes.size,
+                    "episodi_streamingcommunity" to streamingCommunityEpisodes.size,
+                    "stagioni" to seasonNames.size,
+                    "raccomandazioni" to recommendations.size,
+                    "id_simkl" to resolvedSimklId,
+                    "id_imdb_risolto" to playbackImdbId,
+                ),
+            )
             newTvSeriesLoadResponse(
                 title,
                 actualUrl,
@@ -2270,6 +3667,17 @@ class StreamCenter internal constructor(
                 tmdbUrl = actualUrl,
                 streamingCommunity = streamingCommunityTitle?.let(streamingCommunityClient::moviePlayback),
                 stremio = stremioContext,
+                torrent = torrentContext,
+            )
+            StreamCenterLogger.logTab(
+                tabName = title,
+                action = "Dettagli film TMDB aggregati",
+                metadata = mapOf(
+                    "raccomandazioni" to recommendations.size,
+                    "id_simkl" to resolvedSimklId,
+                    "id_imdb_risolto" to playbackImdbId,
+                    "fonte_riproduzione_streamingcommunity" to (streamingCommunityTitle != null),
+                ),
             )
             newMovieLoadResponse(
                 title,
@@ -2304,6 +3712,100 @@ class StreamCenter internal constructor(
                 }
             }
         }
+        val titleSource = when {
+            metadata.title.isNotBlank() && metadata.title != "Sconosciuto" -> "TMDB"
+            !cardTitle.isNullOrBlank() -> "Parametri della card StreamCenter"
+            !strictTmdbMetadata && !sc?.name.isNullOrBlank() -> "StreamingCommunity"
+            else -> "TMDB"
+        }
+        val posterSource = when {
+            !metadata.poster.isNullOrBlank() -> "TMDB"
+            !cardPoster.isNullOrBlank() -> "Parametri della card StreamCenter"
+            !strictTmdbMetadata && !sc?.posterFilename.isNullOrBlank() -> "StreamingCommunity"
+            else -> "TMDB (valore non disponibile)"
+        }
+        val metadataOrStreamingCommunity = { tmdbAvailable: Boolean, scAvailable: Boolean ->
+            when {
+                tmdbAvailable -> listOf("TMDB")
+                !strictTmdbMetadata && scAvailable -> listOf("StreamingCommunity")
+                else -> listOf("TMDB (valore non disponibile)")
+            }
+        }
+        val episodeSources = buildList {
+            add("TMDB")
+            if (streamingCommunityTitle != null) add("StreamingCommunity")
+            add("Add-on Stremio abilitati")
+            addAll(torrentPlaybackProvenance(torrentContext))
+            add("StreamCenter (aggregazione episodio)")
+        }
+        val playbackPayloadSources = (
+            listOf(
+                "TMDB",
+                "StreamingCommunity",
+                "Add-on Stremio abilitati",
+            ) +
+                torrentPlaybackProvenance(torrentContext) +
+                "StreamCenter (payload di riproduzione)"
+            ).distinct()
+        return response.withCardProvenance(
+            defaultSource = "TMDB",
+            fieldSources = mapOf(
+                "titolo" to listOf(titleSource),
+                "poster" to listOf(posterSource),
+                "sfondo" to metadataOrStreamingCommunity(
+                    !metadata.background.isNullOrBlank(),
+                    !sc?.backgroundFilename.isNullOrBlank(),
+                ),
+                "logo" to metadataOrStreamingCommunity(
+                    !metadata.logo.isNullOrBlank(),
+                    !sc?.logoFilename.isNullOrBlank(),
+                ),
+                "trama" to metadataOrStreamingCommunity(
+                    !metadata.plot.isNullOrBlank(),
+                    !sc?.plot.isNullOrBlank(),
+                ),
+                "tag" to metadataOrStreamingCommunity(
+                    metadata.tags.isNotEmpty(),
+                    !sc?.genres.isNullOrEmpty(),
+                ),
+                "anno" to metadataOrStreamingCommunity(
+                    metadata.year != null,
+                    sc?.year != null,
+                ),
+                "punteggio" to metadataOrStreamingCommunity(
+                    !metadata.score.isNullOrBlank(),
+                    !sc?.score.isNullOrBlank(),
+                ),
+                "classificazione_contenuti" to metadataOrStreamingCommunity(
+                    !metadata.contentRating.isNullOrBlank(),
+                    sc?.age != null,
+                ),
+                "durata_minuti" to metadataOrStreamingCommunity(
+                    metadata.duration != null,
+                    sc?.runtime != null,
+                ),
+                "cast" to listOf("TMDB"),
+                "trailer" to listOf("TMDB"),
+                "in_arrivo" to listOf("TMDB"),
+                "raccomandazioni" to listOf(
+                    if (strictTmdbMetadata) "TMDB" else "StreamingCommunity",
+                ),
+                "id_sincronizzazione" to listOf("TMDB", "IMDb", "Simkl"),
+                "stato_trasmissione" to listOf("TMDB"),
+                "stagioni" to listOf("TMDB", "StreamCenter (normalizzazione stagioni)"),
+                "episodi" to episodeSources,
+                "episodi.dati_riproduzione" to playbackPayloadSources,
+                "dati_riproduzione" to playbackPayloadSources,
+            ),
+            fieldNotes = mapOf(
+                "episodi" to "Ogni episodio conserva integralmente metadati e payload finale; le fonti elencate sono quelle combinate nel builder.",
+                "raccomandazioni" to if (performanceMode && !strictTmdbMetadata) {
+                    "Valore vuoto perché la modalità prestazioni evita la richiesta opzionale."
+                } else {
+                    "Fonte scelta in base alla modalità del catalogo."
+                },
+            ),
+        )
     }
 
     private data class ResolvedIptvStream(
@@ -2413,28 +3915,82 @@ class StreamCenter internal constructor(
         val iptv = runCatching { JSONObject(data) }.getOrNull()
             ?.takeIf { it.optBoolean("streamcenterIptv") }
         if (iptv != null) {
-            val streamUrl = iptv.optString("url").takeIf(String::isNotBlank) ?: return false
+            val channelName = iptv.optString("name", "TV")
+            val streamUrl = iptv.optString("url").takeIf(String::isNotBlank) ?: run {
+                StreamCenterLogger.logTab(
+                    tabName = channelName,
+                    action = "Risoluzione stream IPTV non riuscita",
+                    metadata = mapOf("motivo" to "url_mancante", "casting" to isCasting),
+                    level = StreamCenterLogger.Level.WARNING,
+                )
+                return false
+            }
+            StreamCenterLogger.logTab(
+                tabName = channelName,
+                action = "Risoluzione stream IPTV avviata",
+                metadata = mapOf(
+                    "casting" to isCasting,
+                    "header_personalizzati" to (iptv.has("userAgent") || iptv.has("referer")),
+                ),
+            )
             val linkHeaders = buildMap {
                 iptv.optString("userAgent").takeIf(String::isNotBlank)?.let { put("User-Agent", it) }
                 iptv.optString("referer").takeIf(String::isNotBlank)?.let { put("Referer", it) }
             }
             val resolved = resolveIptvStream(streamUrl, linkHeaders)
-            callback(newExtractorLink(name, iptv.optString("name", "TV"), resolved.url, resolved.type) {
+            callback(newExtractorLink(name, channelName, resolved.url, resolved.type) {
                 quality = Qualities.Unknown.value
                 headers = linkHeaders
             })
+            StreamCenterLogger.logTab(
+                tabName = channelName,
+                action = "Stream IPTV risolto",
+                metadata = mapOf("tipo_stream" to resolved.type.toString(), "header_personalizzati" to linkHeaders.isNotEmpty()),
+            )
             return true
         }
         val playbackData = runCatching { parseJson<StreamCenterPlaybackData>(data) }.getOrNull()
+        val playbackLogTab = playbackData?.stremio?.anilistId?.let { "Anime AniList $it" }
+            ?: playbackData?.stremio?.tmdbId?.let { "Contenuto TMDB $it" }
+            ?: playbackData?.streamingCommunity?.tmdbId?.let { "Contenuto TMDB $it" }
+            ?: "Riproduzione"
+        StreamCenterLogger.logTab(
+            tabName = playbackLogTab,
+            action = "Risoluzione fonti di riproduzione avviata",
+            metadata = mapOf(
+                "casting" to isCasting,
+                "modalita_prestazioni" to performanceMode,
+                "payload_valido" to (playbackData != null),
+                "animeunity_disponibile" to (playbackData?.animeUnity != null),
+                "animeworld_disponibili" to playbackData?.animeWorld.orEmpty().size,
+                "animesaturn_disponibili" to playbackData?.animeSaturn.orEmpty().size,
+                "streamingcommunity_disponibile" to (playbackData?.streamingCommunity != null),
+                "stremio_disponibile" to (playbackData?.stremio != null),
+                "torrent_disponibile" to (playbackData?.torrent != null),
+                "torrent_abilitati" to StreamCenterPlugin.isTorrentEnabled(sharedPref),
+                "link_p2p_esclusi_per_casting" to isCasting,
+            ),
+            level = if (playbackData == null) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
+        )
         val emittedLinkKeys = ConcurrentHashMap.newKeySet<String>()
         val emittedSubtitleKeys = ConcurrentHashMap.newKeySet<String>()
         val emittedAnyLink = AtomicBoolean(false)
         val resultCallbackLock = Any()
-        val uniqueCallback: (ExtractorLink) -> Unit = { link ->
+        val uniqueCallback: (ExtractorLink) -> Unit = linkCallback@{ link ->
+            val isPeerToPeer =
+                link.type == ExtractorLinkType.MAGNET ||
+                    link.type == ExtractorLinkType.TORRENT ||
+                    link.url.startsWith("magnet:", ignoreCase = true)
+            if (isCasting && isPeerToPeer) return@linkCallback
             synchronized(resultCallbackLock) {
                 if (emittedLinkKeys.add(sourceLinkDedupKey(link))) {
                     emittedAnyLink.set(true)
                     callback(link)
+                    StreamCenterLogger.logTab(
+                        tabName = playbackLogTab,
+                        action = "Link di riproduzione emesso",
+                        metadata = mapOf("link_univoci_emessi" to emittedLinkKeys.size),
+                    )
                 }
             }
         }
@@ -2442,13 +3998,59 @@ class StreamCenter internal constructor(
             synchronized(resultCallbackLock) {
                 if (emittedSubtitleKeys.add(subtitle.url.trim().substringBefore('#'))) {
                     subtitleCallback(subtitle)
+                    StreamCenterLogger.logTab(
+                        tabName = playbackLogTab,
+                        action = "Sottotitolo emesso",
+                        metadata = mapOf("sottotitoli_univoci_emessi" to emittedSubtitleKeys.size),
+                    )
                 }
             }
         }
         val tasksBySource = linkedMapOf<String, MutableList<suspend () -> Boolean>>()
+        val torrentTasks = linkedMapOf<String, suspend () -> Boolean>()
         val stremioTasks = linkedMapOf<String, suspend () -> Boolean>()
+        fun loggedSourceTask(
+            sourceName: String,
+            warnWhenEmpty: Boolean = true,
+            task: suspend () -> Boolean,
+        ): suspend () -> Boolean = suspend {
+            StreamCenterLogger.logTab(
+                tabName = playbackLogTab,
+                action = "Tentativo fonte riproduzione avviato",
+                metadata = mapOf("fonte" to sourceName),
+            )
+            try {
+                val result = task()
+                StreamCenterLogger.logTab(
+                    tabName = playbackLogTab,
+                    action = "Tentativo fonte riproduzione completato",
+                    metadata = mapOf("fonte" to sourceName, "link_trovato" to result),
+                    level = if (result || !warnWhenEmpty) {
+                        StreamCenterLogger.Level.INFO
+                    } else {
+                        StreamCenterLogger.Level.WARNING
+                    },
+                )
+                result
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                StreamCenterLogger.logTabError(
+                    tabName = playbackLogTab,
+                    action = "Tentativo fonte riproduzione non riuscito",
+                    throwable = error,
+                    metadata = mapOf("fonte" to sourceName),
+                )
+                throw error
+            }
+        }
         fun addTask(sourceKey: String, task: suspend () -> Boolean) {
-            tasksBySource.getOrPut(sourceKey) { mutableListOf() } += task
+            val sourceName = StreamCenterPlugin.streamingSources
+                .firstOrNull { source -> source.key == sourceKey }
+                ?.title
+                ?: sourceKey
+            tasksBySource.getOrPut(sourceKey) { mutableListOf() } +=
+                loggedSourceTask(sourceName = sourceName, task = task)
         }
 
         playbackData?.animeUnity
@@ -2487,24 +4089,30 @@ class StreamCenter internal constructor(
             }
         }
 
-        playbackData?.streamingCommunity
-            ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) }
-            ?.let { streamingCommunityPlayback ->
-                addTask(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) {
-                    loadStreamingCommunityLinks(
+        playbackData?.streamingCommunity?.let { streamingCommunityPlayback ->
+            val fallbackTmdbId = playbackData.tmdbUrl
+                ?.let(::extractTmdbId)
+                ?.toIntOrNull()
+            if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD)) {
+                addTask(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD) {
+                    loadVixCloudLinks(
                         playbackData = streamingCommunityPlayback,
-                        fallbackTmdbId = playbackData.tmdbUrl
-                            ?.let(::extractTmdbId)
-                            ?.toIntOrNull(),
                         subtitleCallback = uniqueSubtitleCallback,
                         callback = uniqueCallback,
                     )
                 }
             }
-
-        playbackData?.streamingCommunity
-            ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIDXGO) }
-            ?.let { streamingCommunityPlayback ->
+            if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIXSRC)) {
+                addTask(StreamCenterPlugin.PREF_SOURCE_VIXSRC) {
+                    loadVixSrcLinks(
+                        playbackData = streamingCommunityPlayback,
+                        fallbackTmdbId = fallbackTmdbId,
+                        subtitleCallback = uniqueSubtitleCallback,
+                        callback = uniqueCallback,
+                    )
+                }
+            }
+            if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIDXGO)) {
                 addTask(StreamCenterPlugin.PREF_SOURCE_VIDXGO) {
                     loadVidxGoLinks(
                         playbackData = streamingCommunityPlayback,
@@ -2513,6 +4121,37 @@ class StreamCenter internal constructor(
                     )
                 }
             }
+        }
+
+        if (StreamCenterPlugin.isTorrentEnabled(sharedPref) && !isCasting) {
+            playbackData?.torrent?.let { torrentContext ->
+                val torrentFilters = StreamCenterTorrentFilterPreferences.read(sharedPref)
+                StreamCenterTorrentSources.definitions.asSequence()
+                    .filter { source -> source.supports(torrentContext) }
+                    .filter { source ->
+                        StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
+                    }
+                    .forEach { source ->
+                        torrentTasks[source.key] = loggedSourceTask(
+                            sourceName = source.title,
+                            warnWhenEmpty = false,
+                        ) {
+                            StreamCenterTorrentResolver.loadSource(
+                                definition = source,
+                                sourceUrl = StreamCenterPlugin.getTorrentSourceUrl(
+                                    sharedPref,
+                                    source.key,
+                                ),
+                                context = torrentContext,
+                                filters = torrentFilters,
+                                callback = uniqueCallback,
+                                stopAfterFirstResult = performanceMode,
+                                logTabName = playbackLogTab,
+                            )
+                        }
+                    }
+            }
+        }
 
         playbackData?.stremio?.let { stremioContext ->
             val catalogAddon = stremioContext.catalogAddonKey?.let { addonKey ->
@@ -2523,15 +4162,39 @@ class StreamCenter internal constructor(
                 .distinctBy(StreamCenterStremioAddon::key)
                 .forEach { addon ->
                     stremioTasks[addon.key] = suspend {
-                        withTimeoutOrNull(STREMIO_ADDON_TIMEOUT_MS) {
-                            StreamCenterStremioAddonClient.load(
-                                addon = addon,
-                                context = stremioContext,
-                                subtitleCallback = uniqueSubtitleCallback,
-                                callback = uniqueCallback,
-                                stopAfterFirstResult = performanceMode,
+                        StreamCenterLogger.logTab(
+                            tabName = playbackLogTab,
+                            action = "Tentativo add-on Stremio avviato",
+                            metadata = mapOf("add_on" to addon.name, "modalita_prestazioni" to performanceMode),
+                        )
+                        try {
+                            val result = withTimeoutOrNull(STREMIO_ADDON_TIMEOUT_MS) {
+                                StreamCenterStremioAddonClient.load(
+                                    addon = addon,
+                                    context = stremioContext,
+                                    subtitleCallback = uniqueSubtitleCallback,
+                                    callback = uniqueCallback,
+                                    stopAfterFirstResult = performanceMode,
+                                )
+                            } ?: false
+                            StreamCenterLogger.logTab(
+                                tabName = playbackLogTab,
+                                action = "Tentativo add-on Stremio completato",
+                                metadata = mapOf("add_on" to addon.name, "link_trovato" to result),
+                                level = if (result) StreamCenterLogger.Level.INFO else StreamCenterLogger.Level.WARNING,
                             )
-                        } ?: false
+                            result
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            StreamCenterLogger.logTabError(
+                                tabName = playbackLogTab,
+                                action = "Tentativo add-on Stremio non riuscito",
+                                throwable = error,
+                                metadata = mapOf("add_on" to addon.name),
+                            )
+                            throw error
+                        }
                     }
                 }
         }
@@ -2540,59 +4203,149 @@ class StreamCenter internal constructor(
         val orderedKeys = tasksBySource.keys.sortedBy { key ->
             priorityOrder.indexOf(key).takeIf { it >= 0 } ?: priorityOrder.size
         }
+        StreamCenterLogger.logTab(
+            tabName = playbackLogTab,
+            action = "Piano risoluzione fonti preparato",
+            metadata = mapOf(
+                "fonti_native" to orderedKeys.size,
+                "fonti_torrent" to torrentTasks.size,
+                "add_on_stremio" to stremioTasks.size,
+                "ordine_priorita" to priorityOrder.joinToString(", "),
+                "timeout_fonte_ms" to sourceGroupTimeoutMs,
+                "timeout_torrent_ms" to TORRENT_SOURCE_TIMEOUT_MS,
+                "timeout_torrent_totale_ms" to TORRENT_TOTAL_TIMEOUT_MS,
+            ),
+        )
         if (performanceMode) {
-            val performanceKeys = (tasksBySource.keys + stremioTasks.keys)
+            val performanceKeys = (tasksBySource.keys + torrentTasks.keys + stremioTasks.keys)
                 .distinct()
                 .sortedBy { key ->
                     priorityOrder.indexOf(key).takeIf { it >= 0 } ?: priorityOrder.size
                 }
+            var torrentDeadlineNanos: Long? = null
             for (sourceKey in performanceKeys) {
-                val sourceLoaded = stremioTasks[sourceKey]?.invoke() ?: withTimeoutOrNull(sourceGroupTimeoutMs) {
-                    runParallelSourceTasks(tasksBySource[sourceKey].orEmpty())
-                } ?: false
-                if (sourceLoaded || emittedAnyLink.get()) return true
+                when {
+                    stremioTasks[sourceKey] != null -> stremioTasks.getValue(sourceKey).invoke()
+                    torrentTasks[sourceKey] != null -> {
+                        val deadline = torrentDeadlineNanos
+                            ?: (
+                                System.nanoTime() +
+                                    TORRENT_PERFORMANCE_TOTAL_TIMEOUT_MS * 1_000_000L
+                                ).also { torrentDeadlineNanos = it }
+                        val remainingMs = ((deadline - System.nanoTime()) / 1_000_000L)
+                            .coerceAtLeast(0L)
+                        if (remainingMs > 0L) {
+                            withTimeoutOrNull(
+                                minOf(TORRENT_SOURCE_TIMEOUT_MS, remainingMs),
+                            ) {
+                                torrentTasks.getValue(sourceKey).invoke()
+                            } ?: false
+                        } else {
+                            false
+                        }
+                    }
+                    else -> withTimeoutOrNull(sourceGroupTimeoutMs) {
+                        runParallelSourceTasks(tasksBySource[sourceKey].orEmpty())
+                    }
+                        ?: false
+                }
+                if (emittedAnyLink.get()) {
+                    StreamCenterLogger.logTab(
+                        tabName = playbackLogTab,
+                        action = "Risoluzione fonti di riproduzione completata",
+                        metadata = mapOf(
+                            "esito" to "link_trovato",
+                            "fonte_risolutiva" to sourceKey,
+                            "link_univoci_emessi" to emittedLinkKeys.size,
+                            "sottotitoli_univoci_emessi" to emittedSubtitleKeys.size,
+                        ),
+                    )
+                    return true
+                }
             }
-            return emittedAnyLink.get()
+            val result = emittedAnyLink.get()
+            StreamCenterLogger.logTab(
+                tabName = playbackLogTab,
+                action = "Risoluzione fonti di riproduzione completata",
+                metadata = mapOf(
+                    "esito" to if (result) "link_trovato" else "nessun_link",
+                    "link_univoci_emessi" to emittedLinkKeys.size,
+                    "sottotitoli_univoci_emessi" to emittedSubtitleKeys.size,
+                ),
+                level = if (result) StreamCenterLogger.Level.INFO else StreamCenterLogger.Level.WARNING,
+            )
+            return result
         }
-        return supervisorScope {
+        val result = supervisorScope {
             val stremioDeferred = stremioTasks.values.toList().takeIf { it.isNotEmpty() }?.let { tasks ->
                 async(Dispatchers.IO) {
                     runParallelSourceTasks(tasks, STREMIO_ADDON_CONCURRENCY)
                 }
             }
-            val nativeDeferred = orderedKeys.takeIf { it.isNotEmpty() }?.let { sourceKeys ->
+            val torrentDeferred = torrentTasks.values.toList().takeIf { it.isNotEmpty() }?.let { tasks ->
                 async(Dispatchers.IO) {
-                    runParallelSourceTasks(
-                        tasks = sourceKeys.map { sourceKey ->
-                            suspend {
-                                withTimeoutOrNull(sourceGroupTimeoutMs) {
-                                    runParallelSourceTasks(tasksBySource[sourceKey].orEmpty())
-                                } ?: false
-                            }
-                        },
-                        maxConcurrency = NATIVE_SOURCE_CONCURRENCY,
-                    )
+                    withTimeoutOrNull(TORRENT_TOTAL_TIMEOUT_MS) {
+                        runParallelSourceTasks(tasks, TORRENT_SOURCE_CONCURRENCY)
+                    } ?: false
                 }
             }
-            val nativeLoaded = nativeDeferred?.await() ?: false
-            val stremioLoaded = stremioDeferred?.await() ?: false
-            nativeLoaded || stremioLoaded || emittedAnyLink.get()
+            val nativeDeferred = orderedKeys.takeIf { it.isNotEmpty() }?.let { sourceKeys ->
+                async(Dispatchers.IO) {
+                    sourceKeys.fold(false) { anySourceLoaded, sourceKey ->
+                        val sourceLoaded = withTimeoutOrNull(sourceGroupTimeoutMs) {
+                            runParallelSourceTasks(tasksBySource[sourceKey].orEmpty())
+                        } ?: false
+                        anySourceLoaded || sourceLoaded
+                    }
+                }
+            }
+            nativeDeferred?.await()
+            torrentDeferred?.await()
+            stremioDeferred?.await()
+            emittedAnyLink.get()
         }
+        StreamCenterLogger.logTab(
+            tabName = playbackLogTab,
+            action = "Risoluzione fonti di riproduzione completata",
+            metadata = mapOf(
+                "esito" to if (result) "link_trovato" else "nessun_link",
+                "link_univoci_emessi" to emittedLinkKeys.size,
+                "sottotitoli_univoci_emessi" to emittedSubtitleKeys.size,
+            ),
+            level = if (result) StreamCenterLogger.Level.INFO else StreamCenterLogger.Level.WARNING,
+        )
+        return result
     }
 
-    private fun sourceLinkDedupKey(link: ExtractorLink): String = buildString {
-        append(link.url.trim().substringBefore('#'))
-        append('|')
-        append(link.referer)
-        append('|')
-        link.headers.entries
-            .sortedBy { entry -> entry.key.lowercase(Locale.ROOT) }
-            .forEach { entry ->
-                append(entry.key.lowercase(Locale.ROOT))
-                append('=')
-                append(entry.value)
-                append(';')
+    private fun sourceLinkDedupKey(link: ExtractorLink): String {
+        val normalizedUrl = link.url.trim().substringBefore('#')
+        if (normalizedUrl.startsWith("magnet:?", ignoreCase = true)) {
+            val infoHash = MAGNET_INFO_HASH_REGEX.find(normalizedUrl)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.uppercase(Locale.ROOT)
+            if (infoHash != null) {
+                val fileIndex = MAGNET_FILE_INDEX_REGEX.find(normalizedUrl)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    .orEmpty()
+                return "magnet|$infoHash|$fileIndex"
             }
+        }
+        return buildString {
+            append(normalizedUrl)
+            append('|')
+            append(link.referer)
+            append('|')
+            link.headers.entries
+                .sortedBy { entry -> entry.key.lowercase(Locale.ROOT) }
+                .forEach { entry ->
+                    append(entry.key.lowercase(Locale.ROOT))
+                    append('=')
+                    append(entry.value)
+                    append(';')
+                }
+        }
     }
 
     private suspend fun runParallelSourceTasks(
@@ -2858,14 +4611,6 @@ class StreamCenter internal constructor(
             ?.toIntOrNull()
     }
 
-    private fun extractKitsuIdFromText(text: String): Int? {
-        return Regex("""(?:kitsu\.(?:io|app)/anime/|/kitsu/)(\d+)""")
-            .find(text)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-    }
-
     private fun buildAnilistEpisodes(metadata: List<AnilistEpisodeMetadata>): List<Episode> {
         return metadata.map { item ->
             newEpisode("") {
@@ -2899,11 +4644,30 @@ class StreamCenter internal constructor(
     private suspend fun loadAnilistMedia(anilistId: Int?, malId: Int?): LoadResponse {
         val metadata = aniListMetadataClient.fetchMetadata(anilistId, malId)
             ?: error("Metadati AniList non trovati")
+        StreamCenterLogger.logMetadata(
+            tabName = metadata.title,
+            source = "AniList",
+            action = "Metadati AniList acquisiti",
+            metadata = mapOf(
+                "id_anilist_richiesto" to anilistId,
+                "id_mal_richiesto" to malId,
+                "id_anilist" to metadata.anilistId,
+                "id_mal" to metadata.malId,
+                "formato" to metadata.format,
+                "episodi_dichiarati" to metadata.episodes,
+                "modalita_prestazioni" to performanceMode,
+                "titoli_alternativi" to metadata.titleCandidates.size,
+                "personaggi" to metadata.characters.size,
+                "raccomandazioni" to metadata.recommendations.size,
+                "episodi_anilist" to metadata.episodeMetadata.size,
+            ),
+        )
         val anilistEpisodes = buildAnilistEpisodes(metadata.episodeMetadata)
         val recommendations = buildAnilistRecommendations(metadata.recommendations)
         val resolvedAnilistId = metadata.anilistId
         val resolvedMalId = metadata.malId
         val isMovie = metadata.format.equals("MOVIE", ignoreCase = true)
+        val shouldResolveJapaneseTitle = shouldResolveSukebeiJapaneseTitle()
         val shouldResolveKitsu = !performanceMode ||
             activeStremioResolversNeedKitsuId() ||
             trackingServiceIsConnected(SyncIdName.Kitsu)
@@ -2916,6 +4680,23 @@ class StreamCenter internal constructor(
         } else {
             kitsuMetadataClient.resolveAnimeId(resolvedMalId, resolvedAnilistId)
         }
+        StreamCenterLogger.logMetadata(
+            tabName = metadata.title,
+            source = "Kitsu",
+            action = "Identificativo Kitsu risolto",
+            metadata = mapOf(
+                "risoluzione_richiesta" to shouldResolveKitsu,
+                "id_anilist" to resolvedAnilistId,
+                "id_mal" to resolvedMalId,
+                "id_kitsu" to resolvedKitsuId,
+                "timeout_modalita_prestazioni" to (performanceMode && shouldResolveKitsu),
+            ),
+            level = if (shouldResolveKitsu && resolvedKitsuId == null) {
+                StreamCenterLogger.Level.WARNING
+            } else {
+                StreamCenterLogger.Level.INFO
+            },
+        )
         val sourceSyncIds = listOf(
             AnimeSyncIds(
                 anilistId = resolvedAnilistId,
@@ -2929,6 +4710,9 @@ class StreamCenter internal constructor(
             titleCandidates = metadata.titleCandidates,
         )
         val animeTitlePreference = StreamCenterPlugin.getAnimeCardTitle(sharedPref)
+        val includeAniZip = shouldResolveAnimeTorrentMetadata() ||
+            (!performanceMode &&
+                (!isMovie || animeTitlePreference == StreamCenterPlugin.ANIME_CARD_TITLE_ANIZIP))
         val (resolvedSources, kitsuContentRating, resolvedSimklId) = coroutineScope {
             val sourcesDeferred = async(Dispatchers.IO) {
                 resolveAnimePlaybackSources(
@@ -2936,8 +4720,7 @@ class StreamCenter internal constructor(
                     matchMetadata = matchMetadata,
                     syncIds = sourceSyncIds,
                     aniZipIds = resolvedAnilistId to resolvedMalId,
-                    includeAniZip = !performanceMode &&
-                        (!isMovie || animeTitlePreference == StreamCenterPlugin.ANIME_CARD_TITLE_ANIZIP),
+                    includeAniZip = includeAniZip,
                     ignoreSourceFailures = true,
                 )
             }
@@ -2984,6 +4767,61 @@ class StreamCenter internal constructor(
                 ?: metadata.titleEnglish
                 ?: metadata.titleRomaji
         }?.trim()?.takeIf(String::isNotBlank) ?: metadata.title
+        val torrentContext = animeTorrentPlaybackContext(
+            titles = listOf(
+                cardTitle,
+                metadata.title,
+                metadata.titleRomaji,
+                metadata.titleEnglish,
+                metadata.titleNative,
+                metadata.originalTitle,
+            ) + metadata.titleCandidates + aniZipCatalog.titles.values,
+            year = metadata.year,
+            isMovie = isMovie,
+            tabName = cardTitle,
+            aniZipCatalog = aniZipCatalog,
+            anilistId = resolvedAnilistId,
+            malId = resolvedMalId,
+            kitsuId = resolvedKitsuId,
+            knownAniListTitle = metadata.titleNative,
+        )
+        StreamCenterLogger.logTab(
+            tabName = cardTitle,
+            action = "Risoluzione fonti anime completata",
+            metadata = mapOf(
+                "preferenza_titolo" to animeTitlePreference,
+                "titoli_animeunity" to animeUnitySources.size,
+                "episodi_animeunity" to animeUnitySources.sumOf { it.episodeNumbers().size },
+                "titoli_animeworld" to animeWorldSources.size,
+                "episodi_animeworld" to animeWorldSources.sumOf { it.episodeNumbers().size },
+                "titoli_animesaturn" to animeSaturnSources.size,
+                "episodi_animesaturn" to animeSaturnSources.sumOf { it.episodeNumbers().size },
+                "episodi_anizip" to aniZipCatalog.episodes.size,
+                "titoli_anizip" to aniZipCatalog.titles.size,
+                "id_kitsu" to resolvedKitsuId,
+                "id_simkl" to resolvedSimklId,
+            ),
+        )
+        StreamCenterLogger.logMetadata(
+            tabName = cardTitle,
+            source = "AniZip",
+            action = "Catalogo episodi AniZip valutato",
+            metadata = mapOf(
+                "richiesto" to includeAniZip,
+                "richiesto_per_sukebei" to shouldResolveJapaneseTitle,
+                "episodi" to aniZipCatalog.episodes.size,
+                "titoli_localizzati" to aniZipCatalog.titles.size,
+                "id_anilist" to aniZipCatalog.anilistId,
+                "id_mal" to aniZipCatalog.malId,
+                "id_kitsu" to aniZipCatalog.kitsuId,
+                "id_tmdb" to aniZipCatalog.tmdbId,
+            ),
+            level = if (aniZipCatalog.episodes.isEmpty() && aniZipCatalog.titles.isEmpty()) {
+                StreamCenterLogger.Level.WARNING
+            } else {
+                StreamCenterLogger.Level.INFO
+            },
+        )
         val sourceUrl = markAnilistUrl(resolvedAnilistId, resolvedMalId)
         val resolvedPlot = aniZipCatalog.description
             ?: animeUnitySources.firstNotNullOfOrNull { it.plot?.takeIf(String::isNotBlank) }
@@ -3005,12 +4843,32 @@ class StreamCenter internal constructor(
             ).distinctBy { it.lowercase(Locale.ROOT) }
         val contentRating = kitsuContentRating ?: if (metadata.isAdult) "18+" else null
 
-        return if (isMovie) {
+        val response = if (isMovie) {
             val playbackData = StreamCenterPlaybackData(
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
                 animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 stremio = stremioContext,
+                torrent = torrentContext,
+            )
+            StreamCenterLogger.logTab(
+                tabName = cardTitle,
+                action = "Dettagli film anime aggregati",
+                metadata = mapOf(
+                    "fonte_metadati_principale" to "AniList",
+                    "fonte_trama" to when {
+                        !aniZipCatalog.description.isNullOrBlank() -> "AniZip"
+                        animeUnitySources.any { !it.plot.isNullOrBlank() } -> "AnimeUnity"
+                        else -> "AniList"
+                    },
+                    "fonti_riproduzione_disponibili" to listOf(
+                        "AnimeUnity" to animeUnitySources.isNotEmpty(),
+                        "AnimeWorld" to animeWorldSources.isNotEmpty(),
+                        "AnimeSaturn" to animeSaturnSources.isNotEmpty(),
+                    ).filter { it.second }.joinToString(", ") { it.first },
+                    "contesto_stremio_preparato" to true,
+                    "raccomandazioni" to recommendations.size,
+                ),
             )
             newMovieLoadResponse(
                 cardTitle,
@@ -3068,6 +4926,7 @@ class StreamCenter internal constructor(
                             animeSaturnSources = animeSaturnSources,
                         ),
                     ).maxOrNull(),
+                    tabName = cardTitle,
                     episodeFactory = { initializer -> newEpisode("", initializer) },
                 )
             }
@@ -3078,14 +4937,33 @@ class StreamCenter internal constructor(
                 episodeMetadata = episodeMetadata,
                 fallbackPoster = episodeFallbackPoster.takeIf { !performanceMode },
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
             ).ifEmpty {
                 buildAnimeFallbackEpisodes(
                     metadata.episodes,
                     episodeMetadata,
                     episodeFallbackPoster.takeIf { !performanceMode },
                     stremioContext,
+                    torrentContext,
                 )
             }
+            StreamCenterLogger.logTab(
+                tabName = cardTitle,
+                action = "Episodi anime aggregati",
+                metadata = mapOf(
+                    "fonte_metadati_principale" to if (performanceMode) "AniList" else "Merger episodi",
+                    "episodi_metadata" to episodeMetadata.size,
+                    "episodi_finali" to episodes.size,
+                    "episodi_anilist" to anilistEpisodes.size,
+                    "episodi_anizip" to aniZipCatalog.episodes.size,
+                    "fallback_episodi_usato" to (episodes.size != episodeMetadata.size),
+                    "fonti_streaming_trovate" to listOf(
+                        "AnimeUnity" to animeUnitySources.isNotEmpty(),
+                        "AnimeWorld" to animeWorldSources.isNotEmpty(),
+                        "AnimeSaturn" to animeSaturnSources.isNotEmpty(),
+                    ).filter { it.second }.joinToString(", ") { it.first },
+                ),
+            )
             val animeType = when (metadata.format?.uppercase(Locale.ROOT)) {
                 "OVA", "ONA", "SPECIAL" -> TvType.OVA
                 else -> TvType.Anime
@@ -3142,6 +5020,109 @@ class StreamCenter internal constructor(
                 }
             }
         }
+        val cardTitleSource = when (animeTitlePreference) {
+            StreamCenterPlugin.ANIME_CARD_TITLE_ANIMEUNITY ->
+                if (animeUnitySources.any { !it.title.isNullOrBlank() }) "AnimeUnity" else "AniList"
+            StreamCenterPlugin.ANIME_CARD_TITLE_ROMAJI -> "AniList"
+            StreamCenterPlugin.ANIME_CARD_TITLE_ENGLISH ->
+                if (!metadata.titleEnglish.isNullOrBlank()) "AniList" else "AniZip"
+            StreamCenterPlugin.ANIME_CARD_TITLE_NATIVE -> "AniList"
+            else -> if (
+                !aniZipMetadataClient.localizedText(aniZipCatalog.titles, "it").isNullOrBlank()
+            ) {
+                "AniZip"
+            } else {
+                "AniList"
+            }
+        }
+        val plotSource = when {
+            !aniZipCatalog.description.isNullOrBlank() -> "AniZip"
+            animeUnitySources.any { !it.plot.isNullOrBlank() } -> "AnimeUnity"
+            else -> "AniList"
+        }
+        val playbackSources = buildList {
+            if (animeUnitySources.isNotEmpty()) add("AnimeUnity")
+            if (animeWorldSources.isNotEmpty()) add("AnimeWorld")
+            if (animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+            add("Add-on Stremio abilitati")
+            addAll(torrentPlaybackProvenance(torrentContext))
+            add("StreamCenter (payload di riproduzione)")
+        }
+        val episodeMetadataSources = listOf("TMDB", "AniZip", "Kitsu", "AniList", "Jikan")
+        return response.withCardProvenance(
+            defaultSource = "AniList",
+            fieldSources = mapOf(
+                "titolo" to listOf(cardTitleSource),
+                "titolo_inglese" to listOf("AniList"),
+                "titolo_originale" to listOf("AniList"),
+                "titoli_alternativi" to listOf("AniList", "AniZip"),
+                "poster" to listOf("AniList"),
+                "sfondo" to listOf("AniList"),
+                "trama" to listOf(plotSource),
+                "tag" to listOf("AniList"),
+                "anno" to listOf("AniList"),
+                "punteggio" to listOf("AniList"),
+                "durata_minuti" to listOf("AniList"),
+                "classificazione_contenuti" to listOf(
+                    if (!kitsuContentRating.isNullOrBlank()) "Kitsu" else "AniList",
+                ),
+                "cast" to listOf("AniList"),
+                "raccomandazioni" to listOf("AniList"),
+                "trailer" to listOf("AniList"),
+                "stato_trasmissione" to listOf("AniList"),
+                "prossimo_episodio" to listOf("AniList"),
+                "in_arrivo" to listOf("AniList"),
+                "id_sincronizzazione" to listOf(
+                    "AniList",
+                    "MyAnimeList",
+                    "Kitsu",
+                    "Simkl",
+                ),
+                "stagioni" to listOf(
+                    "Fonti di riproduzione anime",
+                    "StreamCenter (normalizzazione stagioni)",
+                ),
+                "episodi" to episodeMetadataSources + playbackSources,
+                "episodi.nome" to listOf(
+                    "TMDB",
+                    "AniZip",
+                    "Kitsu",
+                    "AniList",
+                    "Jikan",
+                    "StreamCenter (fallback nome)",
+                ),
+                "episodi.poster" to listOf(
+                    "Kitsu",
+                    "AniZip",
+                    "AniList",
+                    "AnimeUnity (fallback scheda)",
+                ),
+                "episodi.descrizione" to listOf("TMDB", "AniZip", "Kitsu"),
+                "episodi.punteggio" to listOf("Jikan", "AniZip"),
+                "episodi.durata_minuti" to listOf("Kitsu", "AniZip"),
+                "episodi.data" to listOf("AniZip", "Kitsu", "Jikan"),
+                "episodi.stagione" to listOf(
+                    "Aggregatore metadati episodi",
+                    "StreamCenter (normalizzazione)",
+                ),
+                "episodi.episodio" to listOf(
+                    "Fonti di riproduzione anime",
+                    "Aggregatore metadati episodi",
+                ),
+                "episodi.dati_riproduzione" to playbackSources,
+                "dati_riproduzione" to playbackSources,
+            ),
+            fieldNotes = mapOf(
+                "trama" to "Fallback applicato nell'ordine AniZip → AnimeUnity → AniList.",
+                "classificazione_contenuti" to "Kitsu ha precedenza; AniList fornisce il fallback 18+.",
+                "episodi.nome" to "Fallback per campo: TMDB → AniZip → Kitsu → AniList → Jikan.",
+                "episodi.poster" to "Fallback per campo: Kitsu → AniZip → AniList → poster della scheda.",
+                "episodi.descrizione" to "Fallback per campo: TMDB → AniZip (summary) → Kitsu → AniZip (overview).",
+                "episodi.punteggio" to "Fallback per campo: Jikan → AniZip.",
+                "episodi.durata_minuti" to "Fallback per campo: Kitsu → AniZip.",
+                "episodi.data" to "Fallback per campo: AniZip → Kitsu → Jikan → data fallback AniZip.",
+            ),
+        )
     }
 
     private suspend fun loadAniListCatalogMedia(url: String): LoadResponse {
@@ -3172,7 +5153,8 @@ class StreamCenter internal constructor(
                 titleCandidates = metadata.titleCandidates,
             ),
             syncIds = syncIds,
-            includeAniZip = false,
+            aniZipIds = anilistId to malId,
+            includeAniZip = shouldResolveAnimeTorrentMetadata(),
         )
         val animeUnitySources = resolvedSources.animeUnitySources
         val animeWorldSources = resolvedSources.animeWorldSources
@@ -3184,6 +5166,24 @@ class StreamCenter internal constructor(
             kitsuId = kitsuId,
         )
         val title = aniListCatalog.preferredTitle(metadata)
+        val torrentContext = animeTorrentPlaybackContext(
+            titles = listOf(
+                title,
+                metadata.title,
+                metadata.titleRomaji,
+                metadata.titleEnglish,
+                metadata.titleNative,
+                metadata.originalTitle,
+            ) + metadata.titleCandidates,
+            year = metadata.year,
+            isMovie = isMovie,
+            tabName = title,
+            aniZipCatalog = resolvedSources.aniZipCatalog,
+            anilistId = anilistId,
+            malId = malId,
+            kitsuId = kitsuId,
+            knownAniListTitle = metadata.titleNative,
+        )
         val sourceUrl = "https://anilist.co/anime/$anilistId"
         val recommendations = metadata.recommendations.map { recommendation ->
             val type = if (recommendation.format.equals("MOVIE", ignoreCase = true)) {
@@ -3218,12 +5218,13 @@ class StreamCenter internal constructor(
             ).distinctBy { it.lowercase(Locale.ROOT) }
         val contentRating = if (metadata.isAdult) "18+" else null
 
-        return if (isMovie) {
+        val response = if (isMovie) {
             val playbackData = StreamCenterPlaybackData(
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
                 animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 stremio = stremioContext,
+                torrent = torrentContext,
             )
             newMovieLoadResponse(
                 title,
@@ -3264,6 +5265,7 @@ class StreamCenter internal constructor(
                 episodeMetadata = episodeMetadata,
                 fallbackPoster = metadata.poster,
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
             )
             val animeType = when (metadata.format?.uppercase(Locale.ROOT)) {
                 "OVA", "ONA", "SPECIAL", "MUSIC" -> TvType.OVA
@@ -3316,6 +5318,21 @@ class StreamCenter internal constructor(
                 addScore(metadata.score)
             }
         }
+        val playbackSourceNames = buildList {
+            if (animeUnitySources.isNotEmpty()) add("AnimeUnity")
+            if (animeWorldSources.isNotEmpty()) add("AnimeWorld")
+            if (animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+        }
+        return response.withCardProvenance(
+            defaultSource = "AniList",
+            fieldSources = animeProviderCardSources(
+                metadataSource = "AniList",
+                playbackSources = playbackSourceNames,
+                episodeMetadataSources = listOf("AniList"),
+                trackingSources = listOf("AniList", "MyAnimeList", "Kitsu"),
+                torrentContext = torrentContext,
+            ),
+        )
     }
 
     private suspend fun loadMyAnimeListMedia(url: String): LoadResponse {
@@ -3361,7 +5378,8 @@ class StreamCenter internal constructor(
                     metadata = sourceMetadata,
                     matchMetadata = matchMetadata,
                     syncIds = syncIds,
-                    includeAniZip = false,
+                    aniZipIds = null to media.id,
+                    includeAniZip = shouldResolveAnimeTorrentMetadata(),
                 )
             }
             episodesDeferred.await() to sourcesDeferred.await()
@@ -3373,6 +5391,16 @@ class StreamCenter internal constructor(
             contentTypes = if (isMovie) listOf("movie", "anime") else listOf("series", "anime"),
             malId = media.id,
             kitsuId = resolvedKitsuId,
+        )
+        val torrentContext = animeTorrentPlaybackContext(
+            titles = media.titleCandidates,
+            year = media.year,
+            isMovie = isMovie,
+            tabName = media.title,
+            aniZipCatalog = resolvedSources.aniZipCatalog,
+            malId = media.id,
+            kitsuId = resolvedKitsuId,
+            knownMyAnimeListTitle = media.japaneseTitle,
         )
         val recommendations = media.recommendations.map { recommendation ->
             newAnimeSearchResponse(
@@ -3396,12 +5424,13 @@ class StreamCenter internal constructor(
             media.broadcast?.let { add("Trasmissione: $it") }
         }.distinctBy { it.lowercase(Locale.ROOT) }
 
-        return if (isMovie) {
+        val response = if (isMovie) {
             val playbackData = StreamCenterPlaybackData(
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
                 animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 stremio = stremioContext,
+                torrent = torrentContext,
             )
             newMovieLoadResponse(
                 media.title,
@@ -3446,6 +5475,7 @@ class StreamCenter internal constructor(
                 episodeMetadata = episodeMetadata,
                 fallbackPoster = media.posterUrl,
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
             )
             newAnimeLoadResponse(
                 media.title,
@@ -3486,6 +5516,21 @@ class StreamCenter internal constructor(
                 addScore(media.score)
             }
         }
+        val playbackSourceNames = buildList {
+            if (animeUnitySources.isNotEmpty()) add("AnimeUnity")
+            if (animeWorldSources.isNotEmpty()) add("AnimeWorld")
+            if (animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+        }
+        return response.withCardProvenance(
+            defaultSource = "MyAnimeList (Jikan)",
+            fieldSources = animeProviderCardSources(
+                metadataSource = "MyAnimeList (Jikan)",
+                playbackSources = playbackSourceNames,
+                episodeMetadataSources = listOf("MyAnimeList (Jikan)"),
+                trackingSources = listOf("MyAnimeList", "Kitsu"),
+                torrentContext = torrentContext,
+            ),
+        )
     }
 
     private suspend fun loadKitsuMedia(url: String): LoadResponse {
@@ -3533,7 +5578,8 @@ class StreamCenter internal constructor(
                     metadata = sourceMetadata,
                     matchMetadata = matchMetadata,
                     syncIds = syncIds,
-                    includeAniZip = false,
+                    aniZipIds = media.anilistId to media.malId,
+                    includeAniZip = shouldResolveAnimeTorrentMetadata(),
                 )
             }
             episodesDeferred?.await().orEmpty() to sourcesDeferred.await()
@@ -3546,6 +5592,17 @@ class StreamCenter internal constructor(
             anilistId = media.anilistId,
             malId = media.malId,
             kitsuId = media.id,
+        )
+        val torrentContext = animeTorrentPlaybackContext(
+            titles = listOf(title) + media.titleCandidates,
+            year = media.year,
+            isMovie = isMovie,
+            tabName = title,
+            aniZipCatalog = resolvedSources.aniZipCatalog,
+            anilistId = media.anilistId,
+            malId = media.malId,
+            kitsuId = media.id,
+            knownKitsuTitle = media.nativeTitle,
         )
         val recommendations = media.recommendations.map { recommendation ->
             newAnimeSearchResponse(
@@ -3567,12 +5624,13 @@ class StreamCenter internal constructor(
         val tags = (listOfNotNull(subtype) + media.categories)
             .distinctBy { it.lowercase(Locale.ROOT) }
 
-        return if (isMovie) {
+        val response = if (isMovie) {
             val playbackData = StreamCenterPlaybackData(
                 animeUnity = animeUnitySources.firstNotNullOfOrNull { it.firstPlayback() },
                 animeWorld = animeWorldSources.flatMap { it.firstPlaybacks() },
                 animeSaturn = animeSaturnSources.flatMap { it.firstPlaybacks() },
                 stremio = stremioContext,
+                torrent = torrentContext,
             )
             newMovieLoadResponse(
                 title,
@@ -3623,6 +5681,7 @@ class StreamCenter internal constructor(
                 episodeMetadata = episodeMetadata,
                 fallbackPoster = media.posterUrl,
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
             )
             newAnimeLoadResponse(
                 title,
@@ -3665,6 +5724,21 @@ class StreamCenter internal constructor(
                 addScore(media.score)
             }
         }
+        val playbackSourceNames = buildList {
+            if (animeUnitySources.isNotEmpty()) add("AnimeUnity")
+            if (animeWorldSources.isNotEmpty()) add("AnimeWorld")
+            if (animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+        }
+        return response.withCardProvenance(
+            defaultSource = "Kitsu",
+            fieldSources = animeProviderCardSources(
+                metadataSource = "Kitsu",
+                playbackSources = playbackSourceNames,
+                episodeMetadataSources = listOf("Kitsu"),
+                trackingSources = listOf("Kitsu", "AniList", "MyAnimeList"),
+                torrentContext = torrentContext,
+            ),
+        )
     }
 
     private suspend fun loadSimklMedia(url: String): LoadResponse {
@@ -3705,7 +5779,8 @@ class StreamCenter internal constructor(
                     metadata = sourceMetadata,
                     matchMetadata = AnilistMetadata(media.title, media.titleCandidates),
                     syncIds = syncIds,
-                    includeAniZip = false,
+                    aniZipIds = media.ids.anilist to media.ids.mal,
+                    includeAniZip = shouldResolveAnimeTorrentMetadata(),
                 )
             } else {
                 null
@@ -3744,6 +5819,33 @@ class StreamCenter internal constructor(
             kitsuId = media.ids.kitsu,
             simklId = media.ids.simkl,
         )
+        val tmdbEnglishTitle = if (isAnime) {
+            null
+        } else {
+            resolveTmdbEnglishTitle(media.ids.tmdb, isMovie)
+        }
+        val torrentContext = if (isAnime) {
+            animeTorrentPlaybackContext(
+                titles = media.titleCandidates,
+                year = media.year,
+                isMovie = isMovie,
+                imdbId = media.ids.imdb,
+                tabName = media.title,
+                aniZipCatalog = resolvedSources.aniZipCatalog,
+                anilistId = media.ids.anilist,
+                malId = media.ids.mal,
+                kitsuId = media.ids.kitsu,
+            )
+        } else {
+            torrentPlaybackContext(
+                titles = media.titleCandidates,
+                englishTitle = tmdbEnglishTitle ?: media.englishTitle,
+                year = media.year,
+                isAnime = false,
+                isMovie = isMovie,
+                imdbId = media.ids.imdb,
+            )
+        }
         val recommendations = media.recommendations.map { recommendation ->
             when (recommendation.type) {
                 TvType.Movie -> newMovieSearchResponse(recommendation.title, recommendation.url, recommendation.type) {
@@ -3771,8 +5873,9 @@ class StreamCenter internal constructor(
                 animeSaturn = resolvedSources.animeSaturnSources.flatMap { it.firstPlaybacks() },
                 streamingCommunity = streamingCommunityTitle?.let(streamingCommunityClient::moviePlayback),
                 stremio = stremioContext,
+                torrent = torrentContext,
             )
-            return newMovieLoadResponse(media.title, media.url, media.type, dataUrl = playbackData.toJson()) {
+            val response = newMovieLoadResponse(media.title, media.url, media.type, dataUrl = playbackData.toJson()) {
                 apiName = this@StreamCenter.name
                 posterUrl = media.posterUrl
                 backgroundPosterUrl = media.backgroundUrl
@@ -3788,6 +5891,29 @@ class StreamCenter internal constructor(
                 media.trailerUrl?.let { addTrailer(it) }
                 addScore(media.score)
             }
+            val playbackSourceNames = buildList {
+                if (resolvedSources.animeUnitySources.isNotEmpty()) add("AnimeUnity")
+                if (resolvedSources.animeWorldSources.isNotEmpty()) add("AnimeWorld")
+                if (resolvedSources.animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+                if (streamingCommunityTitle != null) add("StreamingCommunity")
+            }
+            return response.withCardProvenance(
+                defaultSource = "Simkl",
+                fieldSources = animeProviderCardSources(
+                    metadataSource = "Simkl",
+                    playbackSources = playbackSourceNames,
+                    episodeMetadataSources = listOf("Simkl"),
+                    trackingSources = listOf(
+                        "Simkl",
+                        "TMDB",
+                        "IMDb",
+                        "AniList",
+                        "MyAnimeList",
+                        "Kitsu",
+                    ),
+                    torrentContext = torrentContext,
+                ),
+            )
         }
 
         val metadataEpisodes = simklEpisodes.map { episode ->
@@ -3811,6 +5937,7 @@ class StreamCenter internal constructor(
                 episodeMetadata = metadataEpisodes,
                 fallbackPoster = media.posterUrl,
                 stremioContext = stremioContext,
+                torrentContext = torrentContext,
             )
         } else {
             metadataEpisodes.map { episode ->
@@ -3818,6 +5945,10 @@ class StreamCenter internal constructor(
                     StreamCenterPlaybackData(
                         streamingCommunity = streamingCommunityEpisodes[episode.season to episode.episode],
                         stremio = stremioContext.copy(
+                            season = episode.season,
+                            episode = episode.episode,
+                        ),
+                        torrent = torrentContext?.copy(
                             season = episode.season,
                             episode = episode.episode,
                         ),
@@ -3837,7 +5968,7 @@ class StreamCenter internal constructor(
         val synonyms = (listOfNotNull(media.englishTitle) + media.alternativeTitles)
             .filterNot { it.equals(media.title, ignoreCase = true) }
             .distinctBy { it.lowercase(Locale.ROOT) }
-        return if (isAnime) {
+        val response = if (isAnime) {
             newAnimeLoadResponse(media.title, media.url, media.type) {
                 apiName = this@StreamCenter.name
                 posterUrl = media.posterUrl
@@ -3882,6 +6013,29 @@ class StreamCenter internal constructor(
                 addScore(media.score)
             }
         }
+        val playbackSourceNames = buildList {
+            if (resolvedSources.animeUnitySources.isNotEmpty()) add("AnimeUnity")
+            if (resolvedSources.animeWorldSources.isNotEmpty()) add("AnimeWorld")
+            if (resolvedSources.animeSaturnSources.isNotEmpty()) add("AnimeSaturn")
+            if (streamingCommunityTitle != null) add("StreamingCommunity")
+        }
+        return response.withCardProvenance(
+            defaultSource = "Simkl",
+            fieldSources = animeProviderCardSources(
+                metadataSource = "Simkl",
+                playbackSources = playbackSourceNames,
+                episodeMetadataSources = listOf("Simkl"),
+                trackingSources = listOf(
+                    "Simkl",
+                    "TMDB",
+                    "IMDb",
+                    "AniList",
+                    "MyAnimeList",
+                    "Kitsu",
+                ),
+                torrentContext = torrentContext,
+            ),
+        )
     }
 
     private suspend fun resolveAnimePlaybackSources(
@@ -3892,9 +6046,23 @@ class StreamCenter internal constructor(
         includeAniZip: Boolean,
         ignoreSourceFailures: Boolean = false,
     ): ResolvedLoadSources = coroutineScope {
+        StreamCenterLogger.logTab(
+            tabName = metadata.title,
+            action = "Risoluzione fonti anime avviata",
+            metadata = mapOf(
+                "anilist_id" to syncIds.mapNotNull(AnimeSyncIds::anilistId),
+                "mal_id" to syncIds.mapNotNull(AnimeSyncIds::malId),
+                "kitsu_id" to syncIds.mapNotNull(AnimeSyncIds::kitsuId),
+                "animeunity_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY),
+                "animeworld_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD),
+                "animesaturn_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN),
+                "anizip_richiesto" to (includeAniZip && aniZipIds != null),
+                "fallimenti_ignorati" to ignoreSourceFailures,
+            ),
+        )
         val animeUnityDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) {
             async(Dispatchers.IO) {
-                fetchAnimeSource(ignoreSourceFailures) {
+                fetchAnimeSource(metadata.title, "AnimeUnity", ignoreSourceFailures) {
                     animeUnitySourceClient.fetchSources(metadata, matchMetadata, syncIds)
                 }
             }
@@ -3903,7 +6071,7 @@ class StreamCenter internal constructor(
         }
         val animeWorldDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) {
             async(Dispatchers.IO) {
-                fetchAnimeSource(ignoreSourceFailures) {
+                fetchAnimeSource(metadata.title, "AnimeWorld", ignoreSourceFailures) {
                     animeWorldSourceClient.fetchSources(metadata, matchMetadata, syncIds)
                 }
             }
@@ -3912,7 +6080,7 @@ class StreamCenter internal constructor(
         }
         val animeSaturnDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) {
             async(Dispatchers.IO) {
-                fetchAnimeSource(ignoreSourceFailures) {
+                fetchAnimeSource(metadata.title, "AnimeSaturn", ignoreSourceFailures) {
                     animeSaturnSourceClient.fetchSources(metadata, matchMetadata, syncIds)
                 }
             }
@@ -3921,31 +6089,112 @@ class StreamCenter internal constructor(
         }
         val aniZipDeferred = if (includeAniZip && aniZipIds != null) {
             async(Dispatchers.IO) {
-                runCatching { aniZipMetadataClient.fetch(aniZipIds.first, aniZipIds.second) }
-                    .getOrDefault(AniZipEpisodeCatalog())
+                StreamCenterLogger.logMetadata(
+                    tabName = metadata.title,
+                    source = "AniZip",
+                    action = "Ricerca catalogo episodi avviata",
+                    metadata = mapOf("id_anilist" to aniZipIds.first, "id_mal" to aniZipIds.second),
+                )
+                var timedOut = false
+                val result = try {
+                    if (shouldResolveAnimeTorrentMetadata()) {
+                        withTimeoutOrNull(ANIME_JAPANESE_TITLE_ANIZIP_TIMEOUT_MS) {
+                            aniZipMetadataClient.fetch(aniZipIds.first, aniZipIds.second)
+                        } ?: AniZipEpisodeCatalog().also { timedOut = true }
+                    } else {
+                        aniZipMetadataClient.fetch(aniZipIds.first, aniZipIds.second)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    StreamCenterLogger.logTabError(
+                        tabName = metadata.title,
+                        action = "Ricerca catalogo episodi AniZip non riuscita",
+                        throwable = error,
+                        metadata = mapOf("id_anilist" to aniZipIds.first, "id_mal" to aniZipIds.second),
+                    )
+                    AniZipEpisodeCatalog()
+                }
+                StreamCenterLogger.logMetadata(
+                    tabName = metadata.title,
+                    source = "AniZip",
+                    action = "Ricerca catalogo episodi completata",
+                    metadata = mapOf(
+                        "episodi" to result.episodes.size,
+                        "titoli_localizzati" to result.titles.size,
+                        "id_anilist" to result.anilistId,
+                        "id_mal" to result.malId,
+                        "id_kitsu" to result.kitsuId,
+                        "id_tmdb" to result.tmdbId,
+                        "timeout" to timedOut,
+                    ),
+                    level = if (timedOut || (result.episodes.isEmpty() && result.titles.isEmpty())) {
+                        StreamCenterLogger.Level.WARNING
+                    } else {
+                        StreamCenterLogger.Level.INFO
+                    },
+                )
+                result
             }
         } else {
             null
         }
-        ResolvedLoadSources(
-            animeUnitySources = animeUnityDeferred?.await().orEmpty(),
-            animeWorldSources = animeWorldDeferred?.await().orEmpty(),
-            animeSaturnSources = animeSaturnDeferred?.await().orEmpty(),
-            aniZipCatalog = aniZipDeferred?.await() ?: AniZipEpisodeCatalog(),
+        val animeUnitySources = animeUnityDeferred?.await().orEmpty()
+        val animeWorldSources = animeWorldDeferred?.await().orEmpty()
+        val animeSaturnSources = animeSaturnDeferred?.await().orEmpty()
+        val aniZipCatalog = aniZipDeferred?.await() ?: AniZipEpisodeCatalog()
+        val resolved = ResolvedLoadSources(
+            animeUnitySources = animeUnitySources,
+            animeWorldSources = animeWorldSources,
+            animeSaturnSources = animeSaturnSources,
+            aniZipCatalog = aniZipCatalog,
         )
+        StreamCenterLogger.logTab(
+            tabName = metadata.title,
+            action = "Risoluzione fonti anime completata",
+            metadata = mapOf(
+                "titoli_animeunity" to animeUnitySources.size,
+                "titoli_animeworld" to animeWorldSources.size,
+                "titoli_animesaturn" to animeSaturnSources.size,
+                "episodi_anizip" to aniZipCatalog.episodes.size,
+                "titoli_anizip" to aniZipCatalog.titles.size,
+            ),
+        )
+        resolved
     }
 
     private suspend fun <T> fetchAnimeSource(
+        tabName: String,
+        source: String,
         ignoreFailures: Boolean,
         fetch: suspend () -> List<T>,
     ): List<T> {
-        if (!ignoreFailures) return fetch()
         return try {
-            fetch()
+            StreamCenterLogger.logMetadata(
+                tabName = tabName,
+                source = source,
+                action = "Ricerca fonte anime avviata",
+                metadata = mapOf("fallimenti_ignorati" to ignoreFailures),
+            )
+            val result = fetch()
+            StreamCenterLogger.logMetadata(
+                tabName = tabName,
+                source = source,
+                action = "Ricerca fonte anime completata",
+                metadata = mapOf("corrispondenze_titolo" to result.size),
+                level = if (result.isEmpty()) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
+            )
+            result
         } catch (error: CancellationException) {
             throw error
-        } catch (_: Throwable) {
-            emptyList()
+        } catch (error: Throwable) {
+            StreamCenterLogger.logTabError(
+                tabName = tabName,
+                action = "Ricerca fonte anime non riuscita",
+                throwable = error,
+                metadata = mapOf("fonte_metadati" to source, "fallimenti_ignorati" to ignoreFailures),
+            )
+            if (ignoreFailures) emptyList() else throw error
         }
     }
 
@@ -3971,6 +6220,7 @@ class StreamCenter internal constructor(
         episodeMetadata: List<Episode>,
         fallbackPoster: String?,
         stremioContext: StreamCenterStremioPlaybackContext,
+        torrentContext: StreamCenterTorrentPlaybackContext?,
     ): List<Episode> {
         val metadataByNumber = episodeMetadata.mapNotNull { episode ->
             episode.episode?.takeIf { it > 0 }?.let { it to episode }
@@ -3990,6 +6240,7 @@ class StreamCenter internal constructor(
                     animeWorld = animeWorldTitleSources?.playbacksForEpisode(number.toString()).orEmpty(),
                     animeSaturn = animeSaturnTitleSources?.playbacksForEpisode(number.toString()).orEmpty(),
                     stremio = stremioContext.copy(season = 1, episode = number),
+                    torrent = torrentContext?.copy(season = 1, episode = number),
                 ).toJson(),
             ) {
                 name = metadataEpisode?.name ?: "Episodio $number"
@@ -4009,12 +6260,17 @@ class StreamCenter internal constructor(
         episodeMetadata: List<Episode>,
         fallbackPoster: String?,
         stremioContext: StreamCenterStremioPlaybackContext,
+        torrentContext: StreamCenterTorrentPlaybackContext?,
     ): List<Episode> {
         if (episodeMetadata.isNotEmpty()) {
             return episodeMetadata.map { info ->
                 newEpisode(
                     StreamCenterPlaybackData(
                         stremio = stremioContext.copy(
+                            season = info.season ?: 1,
+                            episode = info.episode,
+                        ),
+                        torrent = torrentContext?.copy(
                             season = info.season ?: 1,
                             episode = info.episode,
                         ),
@@ -4037,6 +6293,7 @@ class StreamCenter internal constructor(
             newEpisode(
                 StreamCenterPlaybackData(
                     stremio = stremioContext.copy(season = 1, episode = number),
+                    torrent = torrentContext?.copy(season = 1, episode = number),
                 ).toJson(),
             ) {
                 this.name = "Episodio $number"
@@ -4059,30 +6316,7 @@ class StreamCenter internal constructor(
     }
 
     private fun getLocalizedTitle(doc: Document): String {
-        return sequenceOf(
-            doc.selectFirst("section.header.poster h2 a")?.text(),
-            doc.selectFirst("section.header h2 a")?.text(),
-            doc.selectFirst("section[class*=header] h2 a")?.text(),
-            doc.selectFirst("h2 a[href*='/movie/'], h2 a[href*='/tv/']")?.text(),
-            doc.selectFirst("meta[property=og:title]")?.attr("content"),
-            doc.selectFirst("meta[name=twitter:title]")?.attr("content"),
-            doc.selectFirst("meta[name=title]")?.attr("content"),
-            doc.selectFirst("title")?.text(),
-        ).mapNotNull(::cleanTmdbTitle).firstOrNull().orEmpty()
-    }
-
-    private fun cleanTmdbTitle(value: String?): String? {
-        return cleanText(value)
-            ?.replace(
-                Regex(
-                    """\s*[-–—]\s*(?:The Movie Database|TMDB)(?:\s*\([^)]*\))?\s*$""",
-                    RegexOption.IGNORE_CASE,
-                ),
-                "",
-            )
-            ?.let(::cleanText)
-            ?.takeUnless { it.equals("The Movie Database (TMDB)", ignoreCase = true) }
-            ?.takeUnless { TMDB_ERROR_TITLE_REGEX.matches(it) }
+        return extractTmdbPageTitle(doc)
     }
 
     private fun parseYear(doc: Document): Int? {
@@ -4226,6 +6460,7 @@ class StreamCenter internal constructor(
         payloads: Map<Pair<Int, Int>, StreamingCommunityPlaybackData>,
         fallbackPoster: String?,
         stremioContext: StreamCenterStremioPlaybackContext? = null,
+        torrentContext: StreamCenterTorrentPlaybackContext? = null,
     ): List<Episode> {
         return payloads.entries
             .sortedWith(compareBy({ it.key.first }, { it.key.second }))
@@ -4234,6 +6469,10 @@ class StreamCenter internal constructor(
                     StreamCenterPlaybackData(
                         streamingCommunity = playback,
                         stremio = stremioContext?.copy(
+                            season = seasonEpisode.first,
+                            episode = seasonEpisode.second,
+                        ),
+                        torrent = torrentContext?.copy(
                             season = seasonEpisode.first,
                             episode = seasonEpisode.second,
                         ),
@@ -4254,6 +6493,18 @@ class StreamCenter internal constructor(
             imdbId = title.imdbId,
             tmdbId = title.tmdbId?.toString(),
         )
+        val tmdbEnglishTitle = resolveTmdbEnglishTitle(
+            tmdbId = title.tmdbId?.toString(),
+            isMovie = title.type != "tv",
+        )
+        val torrentContext = torrentPlaybackContext(
+            titles = listOf(title.name),
+            englishTitle = tmdbEnglishTitle,
+            year = title.year,
+            isAnime = false,
+            isMovie = title.type != "tv",
+            imdbId = title.imdbId,
+        )
         val resolvedSimklId = resolveSimklId(
             imdb = title.imdbId,
             tmdb = title.tmdbId?.toString(),
@@ -4264,11 +6515,12 @@ class StreamCenter internal constructor(
         } else {
             emptyList()
         }
-        return if (title.type == "tv") {
+        val response = if (title.type == "tv") {
             val episodes = buildStreamingCommunityEpisodes(
                 streamingCommunityClient.episodePayloads(title),
                 poster.takeIf { !performanceMode },
                 stremioContext,
+                torrentContext,
             )
             newTvSeriesLoadResponse(title.name, sourceUrl, TvType.TvSeries, episodes) {
                 if (!performanceMode) {
@@ -4302,6 +6554,7 @@ class StreamCenter internal constructor(
                 dataUrl = StreamCenterPlaybackData(
                     streamingCommunity = playback,
                     stremio = stremioContext,
+                    torrent = torrentContext,
                 ).toJson(),
             ) {
                 if (!performanceMode) {
@@ -4326,6 +6579,52 @@ class StreamCenter internal constructor(
                 if (!performanceMode) addScore(title.score)
             }
         }
+        val torrentProvenance = torrentPlaybackProvenance(torrentContext)
+        val playbackPayloadSources = (
+            listOf("StreamingCommunity", "Add-on Stremio abilitati") +
+                torrentProvenance +
+                "StreamCenter (payload di riproduzione)"
+            ).distinct()
+        return response.withCardProvenance(
+            defaultSource = "StreamingCommunity",
+            fieldSources = mapOf(
+                "tipo_contenuto" to listOf("StreamingCommunity", "StreamCenter (conversione tipo)"),
+                "classificazione_contenuti" to listOf(
+                    "StreamingCommunity",
+                    "StreamCenter (formattazione età)",
+                ),
+                "raccomandazioni" to listOf("StreamingCommunity"),
+                "id_sincronizzazione" to listOf(
+                    "StreamingCommunity",
+                    "TMDB",
+                    "IMDb",
+                    "Simkl",
+                ),
+                "stagioni" to listOf(
+                    "StreamingCommunity",
+                    "StreamCenter (normalizzazione stagioni)",
+                ),
+                "episodi" to (
+                    listOf("StreamingCommunity", "Add-on Stremio abilitati") +
+                        torrentProvenance
+                    ).distinct(),
+                "episodi.nome" to listOf("StreamCenter (nome episodio predefinito)"),
+                "episodi.poster" to listOf("StreamingCommunity (poster scheda)"),
+                "episodi.stagione" to listOf("StreamingCommunity"),
+                "episodi.episodio" to listOf("StreamingCommunity"),
+                "episodi.dati_riproduzione" to playbackPayloadSources,
+                "dati_riproduzione" to playbackPayloadSources,
+            ),
+            fieldNotes = if (performanceMode) {
+                mapOf(
+                    "poster" to "Valore omesso dalla scheda finale in modalità prestazioni.",
+                    "trama" to "Valore omesso dalla scheda finale in modalità prestazioni.",
+                    "raccomandazioni" to "Richiesta opzionale non eseguita in modalità prestazioni.",
+                )
+            } else {
+                emptyMap()
+            },
+        )
     }
 
     private fun parseAnimeSelection(url: String): StreamCenterAnimeSelection? {
@@ -4438,6 +6737,7 @@ class StreamCenter internal constructor(
         targetSeason: Int? = null,
         streamingCommunityEpisodes: Map<Pair<Int, Int>, StreamingCommunityPlaybackData> = emptyMap(),
         stremioContext: StreamCenterStremioPlaybackContext? = null,
+        torrentContext: StreamCenterTorrentPlaybackContext? = null,
         fallbackPoster: String? = null,
         minimalMetadata: Boolean = false,
     ): List<Episode> = coroutineScope {
@@ -4459,6 +6759,7 @@ class StreamCenter internal constructor(
                                 fallbackSeason = fallbackSeason,
                                 streamingCommunityEpisodes = streamingCommunityEpisodes,
                                 stremioContext = stremioContext,
+                                torrentContext = torrentContext,
                                 fallbackPoster = fallbackPoster,
                                 minimalMetadata = minimalMetadata,
                             )
@@ -4510,6 +6811,7 @@ class StreamCenter internal constructor(
         fallbackSeason: Int?,
         streamingCommunityEpisodes: Map<Pair<Int, Int>, StreamingCommunityPlaybackData>,
         stremioContext: StreamCenterStremioPlaybackContext? = null,
+        torrentContext: StreamCenterTorrentPlaybackContext? = null,
         fallbackPoster: String? = null,
         minimalMetadata: Boolean = false,
     ): List<Episode> {
@@ -4556,6 +6858,10 @@ class StreamCenter internal constructor(
                     season = seasonNumber,
                     episode = episodeNumber,
                 ),
+                torrentContext = torrentContext?.copy(
+                    season = seasonNumber,
+                    episode = episodeNumber,
+                ),
             )
             newEpisode(sourcePayload) {
                 this.name = if (minimalMetadata) {
@@ -4582,14 +6888,16 @@ class StreamCenter internal constructor(
         tmdbUrl: String,
         streamingCommunity: StreamingCommunityPlaybackData? = null,
         stremioContext: StreamCenterStremioPlaybackContext? = null,
+        torrentContext: StreamCenterTorrentPlaybackContext? = null,
     ): String {
-        if (streamingCommunity == null && stremioContext == null) {
+        if (streamingCommunity == null && stremioContext == null && torrentContext == null) {
             return tmdbUrl
         }
         return StreamCenterPlaybackData(
             tmdbUrl = tmdbUrl.takeIf(String::isNotBlank),
             streamingCommunity = streamingCommunity,
             stremio = stremioContext,
+            torrent = torrentContext,
         ).toJson()
     }
 
@@ -4600,6 +6908,7 @@ class StreamCenter internal constructor(
         episodeMetadata: List<Episode>,
         fallbackPoster: String? = null,
         stremioContext: StreamCenterStremioPlaybackContext,
+        torrentContext: StreamCenterTorrentPlaybackContext?,
     ): List<Episode> {
         val animeUnityTitleSources = animeUnitySources.firstOrNull()
         val animeWorldTitleSources = animeWorldSources.firstOrNull()
@@ -4637,6 +6946,10 @@ class StreamCenter internal constructor(
                     animeWorld = animeWorldPlaybacks,
                     animeSaturn = animeSaturnPlaybacks,
                     stremio = stremioContext.copy(
+                        season = metadataEpisode?.season ?: 1,
+                        episode = episodeNumber?.takeIf { it > 0 } ?: metadataEpisode?.episode,
+                    ),
+                    torrent = torrentContext?.copy(
                         season = metadataEpisode?.season ?: 1,
                         episode = episodeNumber?.takeIf { it > 0 } ?: metadataEpisode?.episode,
                     ),
@@ -4943,13 +7256,11 @@ class StreamCenter internal constructor(
         )
     }
 
-    private suspend fun loadStreamingCommunityLinks(
+    private suspend fun loadVixCloudLinks(
         playbackData: StreamingCommunityPlaybackData,
-        fallbackTmdbId: Int?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val tasks = mutableListOf<suspend () -> Boolean>()
         val iframeSrc = runCatching {
             val html = fetchText {
                 app.get(
@@ -4961,36 +7272,40 @@ class StreamCenter internal constructor(
                 ?.attr("src")
                 ?.takeIf(String::isNotBlank)
         }.getOrNull()
+        if (iframeSrc.isNullOrBlank()) return false
 
-        if (!iframeSrc.isNullOrBlank()) {
-            tasks += {
-                StreamCenterVixCloudExtractor(
-                    sourceName = "VixCloud",
-                    displayName = "StreamingCommunity - VixCloud",
-                ).getUrl(
-                    url = iframeSrc,
-                    referer = streamingCommunityRootUrl,
-                    subtitleCallback = subtitleCallback,
-                    callback = callback,
-                )
-                true
-            }
-        }
+        return runCatching {
+            StreamCenterVixCloudExtractor(
+                sourceName = "VixCloud",
+                displayName = "StreamingCommunity - VixCloud",
+            ).getUrl(
+                url = iframeSrc,
+                referer = streamingCommunityRootUrl,
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+            )
+            true
+        }.getOrDefault(false)
+    }
 
+    private suspend fun loadVixSrcLinks(
+        playbackData: StreamingCommunityPlaybackData,
+        fallbackTmdbId: Int?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit,
+    ): Boolean {
         val vixSrcUrl = buildStreamingCommunityVixSrcUrl(playbackData, fallbackTmdbId)
-        if (!vixSrcUrl.isNullOrBlank()) {
-            tasks += {
-                StreamCenterVixSrcExtractor().getUrl(
-                    url = vixSrcUrl,
-                    referer = "https://vixsrc.to/",
-                    subtitleCallback = subtitleCallback,
-                    callback = callback,
-                )
-                true
-            }
-        }
+        if (vixSrcUrl.isNullOrBlank()) return false
 
-        return runParallelSourceTasks(tasks)
+        return runCatching {
+            StreamCenterVixSrcExtractor().getUrl(
+                url = vixSrcUrl,
+                referer = "$vixSrcBaseUrl/",
+                subtitleCallback = subtitleCallback,
+                callback = callback,
+            )
+            true
+        }.getOrDefault(false)
     }
 
     private suspend fun loadVidxGoLinks(
@@ -5025,11 +7340,11 @@ class StreamCenter internal constructor(
     ): String? {
         val tmdbId = playbackData.tmdbId ?: fallbackTmdbId ?: return null
         return if (playbackData.type == "movie") {
-            "https://vixsrc.to/movie/$tmdbId"
+            "$vixSrcBaseUrl/movie/$tmdbId"
         } else {
             val seasonNumber = playbackData.seasonNumber ?: return null
             val episodeNumber = playbackData.episodeNumber ?: return null
-            "https://vixsrc.to/tv/$tmdbId/$seasonNumber/$episodeNumber"
+            "$vixSrcBaseUrl/tv/$tmdbId/$seasonNumber/$episodeNumber"
         }
     }
 
@@ -5087,18 +7402,22 @@ class StreamCenter internal constructor(
         private const val SOURCE_GROUP_TIMEOUT_MS = 15_000L
         private const val SOURCE_GROUP_TIMEOUT_PERFORMANCE_MS = 10_000L
         private const val STREMIO_KITSU_RESOLUTION_TIMEOUT_MS = 6_000L
+        private const val ANIME_JAPANESE_TITLE_ANIZIP_TIMEOUT_MS = 5_000L
         private const val STREMIO_ADDON_TIMEOUT_MS = 45_000L
         private const val TMDB_ANIME_EPISODE_METADATA_TIMEOUT_MS = 20_000L
-        private const val NATIVE_SOURCE_CONCURRENCY = 4
         private const val STREMIO_ADDON_CONCURRENCY = 4
         private val YEAR_REGEX = Regex("""\b(?:18|19|20|21)\d{2}\b""")
         private val IMDB_ID_REGEX = Regex("""tt\d{5,}""", RegexOption.IGNORE_CASE)
-        private val TMDB_MEDIA_URL_REGEX = Regex(
-            """(?:https?://(?:www\.)?themoviedb\.org/)?(?:[a-z]{2}(?:-[a-z]{2})?/)?(movie|tv)/(\d+)""",
+        private val MAGNET_INFO_HASH_REGEX = Regex(
+            """(?:^|[?&])xt=urn:btih:([^&]+)""",
             RegexOption.IGNORE_CASE,
         )
-        private val TMDB_ERROR_TITLE_REGEX = Regex(
-            ".*\\b(?:too many requests|access denied|forbidden|not found|internal server error)\\b.*",
+        private val MAGNET_FILE_INDEX_REGEX = Regex(
+            """(?:^|[?&])index=(\d+)""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val TMDB_MEDIA_URL_REGEX = Regex(
+            """(?:https?://(?:www\.)?themoviedb\.org/)?(?:[a-z]{2}(?:-[a-z]{2})?/)?(movie|tv)/(\d+)""",
             RegexOption.IGNORE_CASE,
         )
         private val TMDB_IMDB_JSON_REGEX = Regex(

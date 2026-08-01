@@ -148,6 +148,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
             },
         )
         content.addView(animeCardTitleRow())
+        content.addView(visualEffectsRow())
         val displayAccents = listOf(
             COLOR_SCORE,
             COLOR_ANIME_VARIANTS,
@@ -155,6 +156,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
             COLOR_EPISODES,
             COLOR_TRACKING_IDS,
             COLOR_DISPLAY,
+            COLOR_VISUAL_EFFECTS,
         )
         startBorderSparkleCycle(displayAccents.mapIndexedNotNull { index, accent ->
             (content.getChildAt(index + 1) as? ViewGroup)?.let { BorderSparkleTarget(it, accent) }
@@ -175,6 +177,20 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
             touchTarget = arrow,
             fixedHeight = true,
         ) { showAnimeCardTitlePicker(selectedTitle) }.view
+    }
+
+    private fun visualEffectsRow(): LinearLayout {
+        val arrow = chevron(COLOR_VISUAL_EFFECTS)
+        return settingsRow(
+            title = "Effetti visivi",
+            summary = "Toggle per Animazioni, Sfocature, Bagliori e IP pubblico.",
+            icon = "\u2728",
+            accent = COLOR_VISUAL_EFFECTS,
+            fillColor = COLOR_CARD_ALT,
+            trailingViews = listOf(arrow),
+            touchTarget = arrow,
+            fixedHeight = true,
+        ) { showVisualEffectsDialog() }.view
     }
 
     private fun animeCardTitleLabel(): String {
@@ -204,5 +220,77 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
             sharedPref?.edit { putString(StreamCenterPlugin.PREF_ANIME_CARD_TITLE, selected.value) }
             selectedTitle.text = selected.label
         }
+    }
+
+    private fun showVisualEffectsDialog() {
+        val ctx = context ?: return
+        fun effectSelected(preferenceKey: String, defaultValue: Boolean): Boolean {
+            return sharedPref?.getBoolean(preferenceKey, defaultValue) ?: defaultValue
+        }
+
+        fun effectOptionRow(
+            icon: String,
+            title: String,
+            preferenceKey: String,
+            optionAccent: String,
+            defaultValue: Boolean = true,
+        ): LinearLayout {
+            return switchRow(
+                title = title,
+                summary = null,
+                checked = effectSelected(preferenceKey, defaultValue),
+                accent = optionAccent,
+                icon = icon,
+                strokeColor = tint(optionAccent, "55"),
+                topMargin = 8,
+            ) { enabled ->
+                sharedPref?.edit { putBoolean(preferenceKey, enabled) }
+                refreshVisibleSettingsEffects()
+            }
+        }
+
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), dp(4))
+            addView(effectOptionRow(
+                icon = "\uD83C\uDF9E\uFE0F",
+                title = "Animazioni",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_ANIMATIONS,
+                optionAccent = COLOR_VISUAL_EFFECTS,
+            ))
+            addView(effectOptionRow(
+                icon = "\uD83C\uDF2B\uFE0F",
+                title = "Sfocatura finestre",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_BLUR,
+                optionAccent = COLOR_VISUAL_BLUR,
+            ))
+            addView(effectOptionRow(
+                icon = "\u2728",
+                title = "Intestazione StreamCenter",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_TITLE,
+                optionAccent = COLOR_VISUAL_HEADER,
+            ))
+            addView(effectOptionRow(
+                icon = "\uD83C\uDF0C",
+                title = "Universo animato",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PARTICLES,
+                optionAccent = COLOR_PARTICLES,
+            ))
+            addView(effectOptionRow(
+                icon = "\uD83C\uDF10",
+                title = "Mostra IP pubblico",
+                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PUBLIC_IP,
+                optionAccent = COLOR_PUBLIC_IP,
+                defaultValue = true,
+            ))
+        }
+
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Effetti visivi"))
+            .setView(content)
+            .setPositiveButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
     }
 }

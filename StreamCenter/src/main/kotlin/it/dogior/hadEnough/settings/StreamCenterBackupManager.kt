@@ -128,7 +128,7 @@ internal object StreamCenterBackupManager {
         preferences: SharedPreferences,
         requestedName: String,
     ): StreamCenterBackupFile {
-        val content = createBackupJson(configurationSnapshot(preferences)).toString(2)
+        val content = createBackupJson(StreamCenterConfigurationStore.snapshot(preferences)).toString(2)
         val requestedFileName = normalizedFileName(requestedName)
         val treeUri = selectedTreeUri(context)
         return if (treeUri == null) {
@@ -213,30 +213,10 @@ internal object StreamCenterBackupManager {
         backupFile: StreamCenterBackupFile,
     ): StreamCenterBackupRestoreResult {
         val backup = parseBackup(readText(context, backupFile))
-        val previousConfiguration = configurationSnapshot(preferences)
-        val editor = preferences.edit().clear()
-        backup.preferences.forEach { (key, value) ->
-            when (value) {
-                is String -> editor.putString(key, value)
-                is Boolean -> editor.putBoolean(key, value)
-                is Int -> editor.putInt(key, value)
-                is Long -> editor.putLong(key, value)
-                is Float -> editor.putFloat(key, value)
-                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
-            }
-        }
-        check(editor.commit()) { "Il ripristino delle impostazioni non è riuscito." }
-        runCatching {
-            verifyRestoredConfiguration(preferences, backup.preferences)
-        }.getOrElse { error ->
-            val rollbackError = runCatching {
-                restoreConfiguration(preferences, previousConfiguration)
-            }.exceptionOrNull()
-            rollbackError?.let(error::addSuppressed)
-            throw error
-        }
+        val restoredPreferences = StreamCenterConfigurationStore.portable(backup.preferences)
+        StreamCenterConfigurationStore.replace(preferences, restoredPreferences)
         return StreamCenterBackupRestoreResult(
-            preferenceCount = backup.preferences.size,
+            preferenceCount = restoredPreferences.size,
             sourceVersion = backup.pluginVersion,
         )
     }
@@ -245,49 +225,6 @@ internal object StreamCenterBackupManager {
         val pluginVersion: String,
         val preferences: Map<String, Any>,
     )
-
-    private fun configurationSnapshot(preferences: SharedPreferences): Map<String, Any> {
-        return preferences.all.toSortedMap().mapValues { (key, value) ->
-            when (value) {
-                is String, is Boolean, is Int, is Long, is Float -> value
-                is Set<*> -> {
-                    check(value.all { it is String }) {
-                        "La preferenza $key contiene un tipo non supportato."
-                    }
-                    value.filterIsInstance<String>().toSet()
-                }
-                else -> error("Tipo non supportato per la preferenza $key.")
-            }
-        }
-    }
-
-    private fun verifyRestoredConfiguration(
-        preferences: SharedPreferences,
-        expected: Map<String, Any>,
-    ) {
-        check(configurationSnapshot(preferences) == expected) {
-            "Ripristino del backup incompleto."
-        }
-    }
-
-    private fun restoreConfiguration(
-        preferences: SharedPreferences,
-        values: Map<String, Any>,
-    ) {
-        val editor = preferences.edit().clear()
-        values.forEach { (key, value) ->
-            when (value) {
-                is String -> editor.putString(key, value)
-                is Boolean -> editor.putBoolean(key, value)
-                is Int -> editor.putInt(key, value)
-                is Long -> editor.putLong(key, value)
-                is Float -> editor.putFloat(key, value)
-                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
-                else -> error("Tipo non supportato per la preferenza $key.")
-            }
-        }
-        check(editor.commit()) { "Impossibile ripristinare la configurazione precedente." }
-    }
 
     private fun createBackupJson(preferences: Map<String, Any>): JSONObject {
         val values = JSONObject()

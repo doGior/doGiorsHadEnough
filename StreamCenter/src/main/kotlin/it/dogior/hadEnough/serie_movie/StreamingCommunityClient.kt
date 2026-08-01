@@ -11,6 +11,7 @@ import it.dogior.hadEnough.model.StreamingCommunityTitle
 import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
+import it.dogior.hadEnough.util.StreamCenterLogger
 import org.jsoup.Jsoup
 import org.jsoup.parser.Parser
 import org.json.JSONArray
@@ -35,6 +36,36 @@ internal class StreamingCommunityClient(
         "X-Inertia-Version" to "",
         "X-Requested-With" to "XMLHttpRequest",
     )
+
+    private fun log(action: String, details: Map<String, Any?> = emptyMap()) {
+        StreamCenterLogger.logMetadata(
+            tabName = logTabName(details),
+            source = SOURCE_NAME,
+            action = action,
+            metadata = details,
+        )
+    }
+
+    private fun warning(
+        action: String,
+        details: Map<String, Any?> = emptyMap(),
+        error: Throwable? = null,
+    ) {
+        StreamCenterLogger.logMetadata(
+            tabName = logTabName(details),
+            source = SOURCE_NAME,
+            action = action,
+            metadata = details,
+            level = StreamCenterLogger.Level.WARNING,
+            throwable = error,
+        )
+    }
+
+    private fun logTabName(details: Map<String, Any?>): String {
+        return listOf("titolo_scheda", "titolo", "titolo_richiesto", "nome", "title")
+            .firstNotNullOfOrNull { key -> details[key]?.toString()?.trim()?.takeIf(String::isNotBlank) }
+            ?: SOURCE_NAME
+    }
 
     suspend fun fetchPageProps(pageUrl: String): JSONObject? {
         val text = app.get(pageUrl, headers = defaultHeaders).body.string()
@@ -72,38 +103,92 @@ internal class StreamingCommunityClient(
             .map { it.replace(Regex("""\(\d{4}\)"""), "").trim() }
             .filter(String::isNotBlank)
             .distinctBy { it.lowercase(Locale.ROOT) }
+        log(
+            "Ricerca titolo avviata",
+            mapOf(
+                "tipo_richiesto" to expectedType,
+                "titoli_candidati" to titleCandidates.size,
+                "tmdb_disponibile" to (expectedTmdbId != null),
+            ),
+        )
         val searchCandidates = titleCandidates
             .flatMap { query -> search(query) }
             .filter { it.type == expectedType }
             .distinctBy { it.id }
+        log(
+            "Risultati ricerca titolo raccolti",
+            mapOf("candidati_tipo_compatibile" to searchCandidates.size),
+        )
 
         var fallback: StreamingCommunityTitle? = null
-        for (candidate in searchCandidates.take(DETAIL_CANDIDATE_LIMIT)) {
+        for ((index, candidate) in searchCandidates.take(DETAIL_CANDIDATE_LIMIT).withIndex()) {
+            log(
+                "Dettaglio candidato verificato",
+                mapOf(
+                    "indice_candidato" to (index + 1),
+                    "identificativo_candidato" to candidate.id,
+                ),
+            )
             val detail = fetchTitleDetail(candidate) ?: continue
-            if (expectedTmdbId != null && detail.tmdbId == expectedTmdbId) return detail
-            if (fallback == null && detail.matchesFallback(metadata, expectedType)) fallback = detail
+            if (expectedTmdbId != null && detail.tmdbId == expectedTmdbId) {
+                log("Titolo corrispondente tramite TMDB")
+                return detail
+            }
+            if (fallback == null && detail.matchesFallback(metadata, expectedType)) {
+                fallback = detail
+                warning("Fallback titolo disponibile: corrispondenza nome e anno")
+            }
         }
-        return if (expectedTmdbId == null) fallback else null
+        return if (expectedTmdbId == null) {
+            fallback.also {
+                if (it == null) warning("Nessun titolo corrispondente")
+            }
+        } else {
+            warning("Nessun titolo corrispondente tramite TMDB")
+            null
+        }
     }
 
     suspend fun search(query: String): List<StreamingCommunityTitle> {
+        log("Tentativo ricerca provider avviato")
         ensureDomain()
-        val text = app.get(
-            "${mainUrl()}/search",
-            params = mapOf("q" to query),
-        ).body.string()
-        return parseSearchResults(text)
+        val text = try {
+            app.get(
+                "${mainUrl()}/search",
+                params = mapOf("q" to query),
+            ).body.string()
+        } catch (error: Throwable) {
+            warning("Tentativo ricerca provider non riuscito", error = error)
+            throw error
+        }
+        return parseSearchResults(text).also { results ->
+            log("Tentativo ricerca provider completato", mapOf("risultati_estratti" to results.size))
+        }
     }
 
     suspend fun episodePayloads(
         title: StreamingCommunityTitle,
     ): Map<Pair<Int, Int>, StreamingCommunityPlaybackData> {
-        if (title.type != "tv") return emptyMap()
+        if (title.type != "tv") {
+            warning("Recupero episodi ignorato: tipo non televisivo")
+            return emptyMap()
+        }
+        log(
+            "Recupero episodi avviato",
+            mapOf(
+                "identificativo_titolo" to title.id,
+                "stagioni_disponibili" to title.seasons.size,
+            ),
+        )
         val episodes = linkedMapOf<Pair<Int, Int>, StreamingCommunityPlaybackData>()
         for (season in title.seasons) {
             val seasonWithEpisodes = if (season.episodes.isNotEmpty()) {
                 season
             } else {
+                log(
+                    "Dettaglio stagione richiesto",
+                    mapOf("numero_stagione" to season.number),
+                )
                 fetchSeason(title, season.number) ?: season
             }
             seasonWithEpisodes.episodes.forEach { episode ->
@@ -117,7 +202,12 @@ internal class StreamingCommunityClient(
                 )
             }
         }
-        return episodes
+        return episodes.also { resolvedEpisodes ->
+            log(
+                "Recupero episodi completato",
+                mapOf("episodi_disponibili" to resolvedEpisodes.size),
+            )
+        }
     }
 
     fun moviePlayback(title: StreamingCommunityTitle): StreamingCommunityPlaybackData? {
@@ -145,6 +235,7 @@ internal class StreamingCommunityClient(
         sharedPref?.edit()?.remove(PREF_SESSION)?.apply()
         lastForcedRefreshMs = 0L
         applySession(cookie = "", xsrfToken = "", inertiaVersion = "")
+        log("Sessione provider reimpostata")
     }
 
     private fun parseSearchResults(text: String): List<StreamingCommunityTitle> {
@@ -158,23 +249,45 @@ internal class StreamingCommunityClient(
                     titles.optJSONObject(index)?.toTitle()?.let(::add)
                 }
             }
+        }.onFailure {
+            warning("Parsing risultati ricerca non riuscito", error = it)
         }.getOrDefault(emptyList())
     }
 
     suspend fun fetchTitleDetail(title: StreamingCommunityTitle): StreamingCommunityTitle? {
-        fetchTitleDetailAttempt(title)?.let { return it }
-        if (!shouldForceRefresh()) return title
-        if (runCatching { ensureHeaders(forceRefresh = true) }.isFailure) return title
-        return fetchTitleDetailAttempt(title) ?: title
+        log("Dettaglio titolo avviato", mapOf("identificativo_titolo" to title.id))
+        fetchTitleDetailAttempt(title)?.let {
+            log("Dettaglio titolo completato al primo tentativo")
+            return it
+        }
+        if (!shouldForceRefresh()) {
+            warning("Retry dettaglio titolo non eseguito: aggiornamento recente")
+            return title
+        }
+        log("Retry dettaglio titolo avviato: aggiornamento sessione")
+        if (runCatching { ensureHeaders(forceRefresh = true) }.onFailure {
+                warning("Aggiornamento sessione per retry non riuscito", error = it)
+            }.isFailure
+        ) {
+            return title
+        }
+        return (fetchTitleDetailAttempt(title) ?: title).also {
+            log("Retry dettaglio titolo completato")
+        }
     }
 
     private suspend fun fetchTitleDetailAttempt(title: StreamingCommunityTitle): StreamingCommunityTitle? {
-        runCatching { ensureHeaders() }.getOrElse { return null }
+        runCatching { ensureHeaders() }.getOrElse {
+            warning("Sessione per dettaglio titolo non disponibile", error = it)
+            return null
+        }
         val text = runCatching {
             app.get(
                 "${mainUrl()}/titles/${title.id}-${title.slug}",
                 headers = sessionHeaders,
             ).body.string()
+        }.onFailure {
+            warning("Richiesta dettaglio titolo non riuscita", error = it)
         }.getOrNull() ?: return null
 
         return runCatching {
@@ -187,6 +300,8 @@ internal class StreamingCommunityClient(
             } else {
                 resolvedTitle.copy(seasons = resolvedTitle.seasons.mergeSeason(loadedSeason))
             }
+        }.onFailure {
+            warning("Parsing dettaglio titolo non riuscito", error = it)
         }.getOrNull()
     }
 
@@ -194,27 +309,73 @@ internal class StreamingCommunityClient(
         title: StreamingCommunityTitle,
         seasonNumber: Int,
     ): StreamingCommunitySeason? {
-        fetchSeasonAttempt(title, seasonNumber)?.let { return it }
-        if (!shouldForceRefresh()) return null
-        if (runCatching { ensureHeaders(forceRefresh = true) }.isFailure) return null
-        return fetchSeasonAttempt(title, seasonNumber)
+        fetchSeasonAttempt(title, seasonNumber)?.let {
+            log("Dettaglio stagione completato al primo tentativo", mapOf("numero_stagione" to seasonNumber))
+            return it
+        }
+        if (!shouldForceRefresh()) {
+            warning(
+                "Retry dettaglio stagione non eseguito: aggiornamento recente",
+                mapOf("numero_stagione" to seasonNumber),
+            )
+            return null
+        }
+        log("Retry dettaglio stagione avviato", mapOf("numero_stagione" to seasonNumber))
+        if (runCatching { ensureHeaders(forceRefresh = true) }.onFailure {
+                warning(
+                    "Aggiornamento sessione per retry stagione non riuscito",
+                    mapOf("numero_stagione" to seasonNumber),
+                    it,
+                )
+            }.isFailure
+        ) {
+            return null
+        }
+        return fetchSeasonAttempt(title, seasonNumber).also {
+            log(
+                "Retry dettaglio stagione completato",
+                mapOf(
+                    "numero_stagione" to seasonNumber,
+                    "dettaglio_disponibile" to (it != null),
+                ),
+            )
+        }
     }
 
     private suspend fun fetchSeasonAttempt(
         title: StreamingCommunityTitle,
         seasonNumber: Int,
     ): StreamingCommunitySeason? {
-        runCatching { ensureHeaders() }.getOrElse { return null }
+        runCatching { ensureHeaders() }.getOrElse {
+            warning(
+                "Sessione per dettaglio stagione non disponibile",
+                mapOf("numero_stagione" to seasonNumber),
+                it,
+            )
+            return null
+        }
         val text = runCatching {
             app.get(
                 "${mainUrl()}/titles/${title.id}-${title.slug}/season-$seasonNumber",
                 headers = sessionHeaders,
             ).body.string()
+        }.onFailure {
+            warning(
+                "Richiesta dettaglio stagione non riuscita",
+                mapOf("numero_stagione" to seasonNumber),
+                it,
+            )
         }.getOrNull() ?: return null
         return runCatching {
             val json = JSONObject(extractPageJson(text) ?: text)
             val props = json.optJSONObject("props") ?: json
             props.optJSONObject("loadedSeason")?.toSeason()
+        }.onFailure {
+            warning(
+                "Parsing dettaglio stagione non riuscito",
+                mapOf("numero_stagione" to seasonNumber),
+                it,
+            )
         }.getOrNull()
     }
 
@@ -414,6 +575,7 @@ internal class StreamingCommunityClient(
     }
 
     private companion object {
+        const val SOURCE_NAME = "StreamingCommunity"
         const val PREF_SESSION = "streamcenter_sc_session"
         const val SESSION_TTL_MS = 24L * 60L * 60L * 1000L
         const val FORCE_REFRESH_INTERVAL_MS = 60_000L

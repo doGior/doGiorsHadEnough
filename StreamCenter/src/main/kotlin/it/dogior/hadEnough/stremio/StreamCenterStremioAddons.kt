@@ -62,6 +62,9 @@ internal data class StreamCenterStremioCatalogItem(
     val genres: List<String> = emptyList(),
     val imdbId: String? = null,
     val tmdbId: String? = null,
+    val anilistId: Int? = null,
+    val malId: Int? = null,
+    val kitsuId: Int? = null,
     val videos: List<StreamCenterStremioCatalogVideo> = emptyList(),
 )
 
@@ -87,9 +90,6 @@ internal data class StreamCenterStremioAddon(
             resource.name.equals("stream", ignoreCase = true) ||
                 resource.name.equals("subtitles", ignoreCase = true)
         }
-
-    val hasCatalogs: Boolean
-        get() = catalogs.isNotEmpty()
 }
 
 internal data class StreamCenterStremioPlaybackContext(
@@ -772,6 +772,14 @@ internal object StreamCenterStremioAddonClient {
         ).firstNotNullOfOrNull { value ->
             TMDB_ID.matchEntire(value)?.groupValues?.getOrNull(1)
         }
+        val prefixedAnimeId = ANIME_PROVIDER_ID.matchEntire(id)
+        fun providerId(provider: String, vararg fields: String): Int? {
+            val explicit = root.optNonBlank(*fields)?.toIntOrNull()?.takeIf { it > 0 }
+            if (explicit != null) return explicit
+            val matchedProvider = prefixedAnimeId?.groupValues?.getOrNull(1)
+            if (!matchedProvider.equals(provider, ignoreCase = true)) return null
+            return prefixedAnimeId?.groupValues?.getOrNull(2)?.toIntOrNull()?.takeIf { it > 0 }
+        }
         return StreamCenterStremioCatalogItem(
             id = id,
             type = type,
@@ -791,6 +799,10 @@ internal object StreamCenterStremioAddonClient {
             genres = root.stringList("genres"),
             imdbId = imdbId,
             tmdbId = tmdbId,
+            anilistId = providerId("anilist", "anilist_id", "anilistId"),
+            malId = providerId("mal", "mal_id", "malId", "myanimelist_id", "myAnimeListId")
+                ?: providerId("myanimelist", "mal_id", "malId", "myanimelist_id", "myAnimeListId"),
+            kitsuId = providerId("kitsu", "kitsu_id", "kitsuId"),
             videos = videos,
         )
     }
@@ -921,7 +933,7 @@ internal object StreamCenterStremioAddonClient {
                         newExtractorLink(
                             source = addon.name,
                             name = "[${addon.name}] $label",
-                            url = url,
+                            url = cloudstreamMagnetUrl(stream, url),
                             type = ExtractorLinkType.MAGNET,
                         ) {
                             quality = qualityFrom(label)
@@ -1011,7 +1023,7 @@ internal object StreamCenterStremioAddonClient {
     private fun stremioMagnetUrl(stream: JSONObject, hash: String): String {
         val parameters = mutableListOf("xt=urn:btih:$hash")
         stream.optNullableInt("fileIdx")?.let { fileIndex ->
-            parameters += "so=$fileIndex"
+            parameters += "index=$fileIndex"
         }
         val filename = stream.optJSONObject("behaviorHints")
             ?.optNonBlank("filename")
@@ -1031,6 +1043,19 @@ internal object StreamCenterStremioAddonClient {
             }
         }
         return "magnet:?${parameters.joinToString("&")}"
+    }
+
+    private fun cloudstreamMagnetUrl(stream: JSONObject, url: String): String {
+        if (CLOUDSTREAM_MAGNET_INDEX.containsMatchIn(url)) return url
+        STREMIO_MAGNET_INDEX.find(url)?.let { match ->
+            return url.replaceRange(
+                match.range,
+                "${match.groupValues[1]}index=${match.groupValues[2]}",
+            )
+        }
+        val fileIndex = stream.optNullableInt("fileIdx") ?: return url
+        val separator = if (url.endsWith("?") || url.endsWith("&")) "" else "&"
+        return "$url${separator}index=$fileIndex"
     }
 
     private suspend fun emitSubtitles(
@@ -1306,6 +1331,10 @@ internal object StreamCenterStremioAddonClient {
         "^(?:tmdb:(?:(?:movie|tv|series|anime):)?)?(\\d+)$",
         RegexOption.IGNORE_CASE,
     )
+    private val ANIME_PROVIDER_ID = Regex(
+        "^(anilist|mal|myanimelist|kitsu):(?:anime:)?(\\d+)$",
+        RegexOption.IGNORE_CASE,
+    )
     private val SEASON_EPISODE_SUFFIX = Regex(":\\d+:\\d+$")
     private val ANIME_EPISODE_ID = Regex(
         "^(?:kitsu|anilist|mal):[^:]+:\\d+$",
@@ -1315,6 +1344,14 @@ internal object StreamCenterStremioAddonClient {
     private val YEAR_REGEX = Regex("(?<!\\d)(?:19|20)\\d{2}(?!\\d)")
     private val INFO_HASH = Regex(
         "^(?:[A-Fa-f0-9]{40}|[A-Za-z2-7]{32})$",
+    )
+    private val CLOUDSTREAM_MAGNET_INDEX = Regex(
+        """(?:^|[?&])index=\d+""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val STREMIO_MAGNET_INDEX = Regex(
+        """([?&])(?:so|fileIdx)=(\d+)""",
+        RegexOption.IGNORE_CASE,
     )
     private val RESOLUTION_REGEX = Regex("(?<!\\d)(\\d{3,4})p?(?!\\d)")
     private val MANIFEST_SUFFIX_REGEX = Regex(

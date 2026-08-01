@@ -37,6 +37,7 @@ import android.text.Spanned
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -143,6 +144,17 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         )
 
         content.addView(supportCard(
+            icon = "\uD83D\uDCCB",
+            title = "Log",
+            summary = "Gestisci la registrazione e consulta tutti i dettagli e le relative fonti.",
+            accent = COLOR_LOG,
+        ) {
+            val tag = "StreamCenterLogsSettings"
+            if (parentFragmentManager.findFragmentByTag(tag) == null) {
+                StreamCenterLogsSettingsFragment().show(parentFragmentManager, tag)
+            }
+        })
+        content.addView(supportCard(
             icon = "💬",
             title = "Invia feedback",
             summary = "Segnala un problema o proponi un miglioramento.",
@@ -153,18 +165,10 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "\uD83D\uDCDD",
             title = "Cambiamenti",
-            summary = "Consulta le novità.",
+            summary = "Consulta le modifiche delle vecchie versioni e dell'attuale versione.",
             accent = COLOR_SUPPORT,
         ) {
             showChangelogDialog()
-        })
-        content.addView(supportCard(
-            icon = "✨",
-            title = "Effetti visivi",
-            summary = "Animazioni, sfocature, bagliori e IP pubblico.",
-            accent = COLOR_VISUAL_EFFECTS,
-        ) {
-            showVisualEffectsDialog()
         })
         content.addView(supportCard(
             icon = "\uD83D\uDCBE",
@@ -173,6 +177,14 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             accent = COLOR_BACKUP,
         ) {
             showBackupChoiceDialog()
+        })
+        content.addView(supportCard(
+            icon = "🔐",
+            title = "Sync locale",
+            summary = "Trasferisci tutto oppure scegli CloudStream, Libreria o StreamCenter.",
+            accent = COLOR_LOCAL_SYNC,
+        ) {
+            showLocalSyncWarningDialog()
         })
         content.addView(supportCard(
             icon = "♻️",
@@ -234,6 +246,56 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         ).view
         supportSparkleTargets += BorderSparkleTarget(card, accent)
         return card
+    }
+
+    private fun showLocalSyncWarningDialog() {
+        val alertDialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Funzionalità sperimentale", COLOR_LOCAL_SYNC))
+            .setMessage(localSyncWarningMessage())
+            .setPositiveButton("Continua") { _, _ -> openLocalSync() }
+            .setNegativeButton("Annulla", null)
+            .create()
+        applyDialogBackdrop(alertDialog)
+        alertDialog.show()
+    }
+
+    private fun localSyncWarningMessage(): SpannableString {
+        val backupLabel = "Back up data"
+        val warning = "ATTENZIONE: potresti perdere l’intera lista locale."
+        val message =
+            "Questa funzionalità è ancora sperimentale.\n\n" +
+                "Prima di continuare, è consigliato creare un $backupLabel " +
+                "tramite le impostazioni di CloudStream.\n\n" +
+                warning
+        return SpannableString(message).apply {
+            val backupStart = message.indexOf(backupLabel)
+            setSpan(
+                StyleSpan(Typeface.BOLD),
+                backupStart,
+                backupStart + backupLabel.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            val warningStart = message.indexOf(warning)
+            setSpan(
+                ForegroundColorSpan(Color.parseColor(COLOR_DANGER)),
+                warningStart,
+                warningStart + warning.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+            setSpan(
+                StyleSpan(Typeface.BOLD),
+                warningStart,
+                warningStart + warning.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+            )
+        }
+    }
+
+    private fun openLocalSync() {
+        val tag = "StreamCenterLocalSyncSettings"
+        if (parentFragmentManager.findFragmentByTag(tag) == null) {
+            StreamCenterLocalSyncSettingsFragment().show(parentFragmentManager, tag)
+        }
     }
 
     private fun showChangelogDialog() {
@@ -1263,77 +1325,6 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
     }
 
-    private fun showVisualEffectsDialog() {
-        val ctx = context ?: return
-        fun effectSelected(preferenceKey: String, defaultValue: Boolean): Boolean {
-            return sharedPref?.getBoolean(preferenceKey, defaultValue) ?: defaultValue
-        }
-
-        fun effectOptionRow(
-            icon: String,
-            title: String,
-            preferenceKey: String,
-            optionAccent: String,
-            defaultValue: Boolean = true,
-        ): LinearLayout {
-            return switchRow(
-                title = title,
-                summary = null,
-                checked = effectSelected(preferenceKey, defaultValue),
-                accent = optionAccent,
-                icon = icon,
-                strokeColor = tint(optionAccent, "55"),
-                topMargin = 8,
-            ) { enabled ->
-                sharedPref?.edit { putBoolean(preferenceKey, enabled) }
-                refreshVisibleSettingsEffects()
-            }
-        }
-        val content = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(10), dp(20), dp(4))
-            addView(effectOptionRow(
-                icon = "\uD83C\uDF9E\uFE0F",
-                title = "Animazioni",
-                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_ANIMATIONS,
-                optionAccent = COLOR_VISUAL_EFFECTS,
-            ))
-            addView(effectOptionRow(
-                icon = "\uD83C\uDF2B\uFE0F",
-                title = "Sfocatura finestre",
-                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_BLUR,
-                optionAccent = COLOR_VISUAL_BLUR,
-            ))
-            addView(effectOptionRow(
-                icon = "✨",
-                title = "Intestazione StreamCenter",
-                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_TITLE,
-                optionAccent = COLOR_VISUAL_HEADER,
-            ))
-            addView(effectOptionRow(
-                icon = "🌌",
-                title = "Universo animato",
-                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PARTICLES,
-                optionAccent = COLOR_PARTICLES,
-            ))
-            addView(effectOptionRow(
-                icon = "\uD83C\uDF10",
-                title = "Mostra IP pubblico",
-                preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PUBLIC_IP,
-                optionAccent = COLOR_PUBLIC_IP,
-                defaultValue = true,
-            ))
-        }
-
-        val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Effetti visivi"))
-            .setView(content)
-            .setPositiveButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
-    }
-
     private enum class ApiCheckState {
         WAITING,
         RUNNING,
@@ -1352,9 +1343,23 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
 
     protected fun checkApis() {
         val ctx = context ?: return
-        val apiNames = listOf("AniList", "MyAnimeList (Jikan)", "Kitsu", "AniZip", "TMDB")
-        val sourceNames = listOf("StreamingCommunity", "VidxGo", "AnimeUnity", "AnimeWorld", "AnimeSaturn")
-        val checkNames = apiNames + sourceNames
+        val siteCheckNames = listOf(
+            "AnimeUnity",
+            "AnimeWorld",
+            "AnimeSaturn",
+            "StreamingCommunity",
+            "VixCloud",
+            "VixSrc",
+            "VidxGo",
+        )
+        val metadataCheckNames = listOf(
+            "AniZip",
+            "MyAnimeList",
+            "AniList",
+            "Kitsu",
+            "TMDB",
+        )
+        val checkNames = siteCheckNames + metadataCheckNames
         val rows = mutableMapOf<String, ApiCheckRowViews>()
         val states = checkNames.associateWith { ApiCheckState.WAITING }.toMutableMap()
         var dialogVisible = true
@@ -1406,8 +1411,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             }
         }
 
-        addSection("API", apiNames, COLOR_API_CHECK)
-        addSection("Fonti", sourceNames, COLOR_SOURCES)
+        addSection("Sito", siteCheckNames, COLOR_SOURCES)
+        addSection("Metadati", metadataCheckNames, COLOR_API_CHECK)
         addSection("Servizi CloudStream", emptyList(), COLOR_CLOUDSTREAM_SERVICES)
         cloudstreamConnectionResults().forEach { (name, connected) ->
             createApiCheckRow(ctx, name).also { row ->

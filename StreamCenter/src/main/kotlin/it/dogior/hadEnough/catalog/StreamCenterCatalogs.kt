@@ -319,10 +319,6 @@ internal object StreamCenterCatalogs {
         ),
     )
 
-    fun catalog(key: String?): StreamCenterCatalogDefinition? {
-        return catalogs.firstOrNull { it.key == key }
-    }
-
     fun allCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> =
         catalogs + stremioCatalogs(sharedPref)
 

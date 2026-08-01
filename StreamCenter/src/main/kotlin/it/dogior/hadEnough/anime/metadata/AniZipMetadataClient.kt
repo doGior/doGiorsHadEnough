@@ -15,17 +15,47 @@ internal class AniZipMetadataClient(
     suspend fun fetch(anilistId: Int?, malId: Int?): AniZipEpisodeCatalog {
         val lookup = anilistId?.let { "anilist_id=$it" }
             ?: malId?.let { "mal_id=$it" }
-            ?: return AniZipEpisodeCatalog()
+            ?: run {
+                MetadataLog.info(
+                    SOURCE,
+                    "Catalogo episodi ignorato",
+                    mapOf("motivo" to "identificativo_anilist_e_mal_assenti"),
+                )
+                return AniZipEpisodeCatalog()
+            }
+        val requestDetails = buildMap<String, Any?> {
+            anilistId?.let { put("id_anilist", it) }
+            malId?.let { put("id_myanimelist", it) }
+            put("chiave_lookup", if (anilistId != null) "AniList" else "MyAnimeList")
+        }
+        MetadataLog.info(SOURCE, "Recupero catalogo episodi avviato", requestDetails)
         val text = httpClient.getText(
             url = "$API_URL?$lookup",
             accept = "application/json",
-        ) ?: return AniZipEpisodeCatalog()
-        val root = runCatching { JSONObject(text) }.getOrNull() ?: return AniZipEpisodeCatalog()
+            source = SOURCE,
+            operation = "Catalogo episodi AniZip",
+            details = requestDetails,
+        ) ?: run {
+            MetadataLog.warning(SOURCE, "Catalogo episodi non disponibile", requestDetails)
+            return AniZipEpisodeCatalog()
+        }
+        val rootResult = runCatching { JSONObject(text) }
+        val root = rootResult.getOrNull() ?: run {
+            MetadataLog.failure(
+                source = SOURCE,
+                action = "Risposta catalogo episodi non valida",
+                error = rootResult.exceptionOrNull(),
+                details = requestDetails + mapOf("motivo" to "json_non_interpretabile"),
+            )
+            return AniZipEpisodeCatalog()
+        }
         val titles = readLocalizedValues(root.optJSONObject("titles"))
         val description = listOf("description", "overview", "synopsis", "summary")
             .firstNotNullOfOrNull { fieldName -> italianText(root, fieldName) }
             ?.let(::cleanDescription)
         val mappings = root.optJSONObject("mappings")
+        val mappedAnilistId = mappings?.optNullableInt("anilist_id")
+        val mappedMalId = mappings?.optNullableInt("mal_id")
         val mappedKitsuId = mappings?.optNullableInt("kitsu_id")
         val mappedTmdbId = mappings?.optNullableString("themoviedb_id")
             ?.toIntOrNull()
@@ -52,17 +82,35 @@ internal class AniZipMetadataClient(
                     fallbackAirDate = fallbackAirDate,
                     rating = entry.optDouble("rating", 0.0)
                         .takeIf { it.isFinite() && it > 0.0 && it <= 10.0 },
+                    episodeNumber = entry.optNullableInt("episodeNumber"),
+                    absoluteEpisodeNumber = entry.optNullableInt("absoluteEpisodeNumber"),
                 )
             }
         }
 
-        return AniZipEpisodeCatalog(
+        val catalog = AniZipEpisodeCatalog(
             titles = titles,
             description = description,
             episodes = episodes,
+            anilistId = mappedAnilistId,
+            malId = mappedMalId,
             kitsuId = mappedKitsuId,
             tmdbId = mappedTmdbId,
         )
+        MetadataLog.info(
+            SOURCE,
+            "Catalogo episodi elaborato",
+            requestDetails + buildMap<String, Any?> {
+                put("titoli_localizzati", titles.size)
+                put("descrizione_disponibile", description != null)
+                put("episodi_disponibili", episodes.size)
+                mappedAnilistId?.let { put("id_anilist_mappato", it) }
+                mappedMalId?.let { put("id_myanimelist_mappato", it) }
+                mappedKitsuId?.let { put("id_kitsu_mappato", it) }
+                mappedTmdbId?.let { put("id_tmdb_mappato", it) }
+            },
+        )
+        return catalog
     }
 
     fun localizedText(
@@ -180,6 +228,7 @@ internal class AniZipMetadataClient(
     }
 
     private companion object {
+        const val SOURCE = "AniZip"
         const val API_URL = "https://api.ani.zip/mappings"
     }
 }
