@@ -4,9 +4,9 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.settings.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.*
-import it.dogior.hadEnough.torrent.StreamCenterTorrentFilterPreferences
-import it.dogior.hadEnough.torrent.StreamCenterTorrentSources
+import it.dogior.hadEnough.torrent.StreamCenterTorrentPreferences
 import it.dogior.hadEnough.util.StreamCenterLogger
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -58,13 +58,17 @@ data class StreamCenterTrackingListConfig(
 
 data class StreamCenterAnimeArchiveFilters(
     val genreId: Int? = null,
+    val genreIds: List<Int> = emptyList(),
     val year: Int? = null,
     val order: String? = null,
     val status: String? = null,
     val type: String? = null,
     val season: String? = null,
     val dubbed: Boolean = false,
-)
+) {
+    val selectedGenreIds: List<Int>
+        get() = (genreIds + listOfNotNull(genreId)).filter { it > 0 }.distinct()
+}
 
 data class StreamCenterTvArchiveFilters(
     val genreId: Int? = null,
@@ -114,6 +118,7 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_VISUAL_EFFECTS_TITLE = "visualEffectsTitle"
         const val PREF_VISUAL_EFFECTS_PARTICLES = "visualEffectsParticles"
         const val PREF_VISUAL_EFFECTS_PUBLIC_IP = "visualEffectsPublicIp"
+        const val PREF_REQUIRE_VPN = "requireVpn"
         const val PREF_GROUP_ANIME_DUB_SUB = "groupAnimeDubSub"
         const val PREF_HOME_ORDER = "homeOrder"
         const val PREF_HOME_CATEGORY_ORDER = "homeCategoryOrder"
@@ -156,7 +161,7 @@ class StreamCenterPlugin : Plugin() {
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.support"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.miami"
         const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
@@ -239,9 +244,15 @@ class StreamCenterPlugin : Plugin() {
                 defaultCount = DEFAULT_HOME_COUNT,
             ),
             StreamCenterHomeSectionDefinition(
+                key = "anime_random",
+                data = "au:random",
+                defaultCount = DEFAULT_HOME_COUNT,
+            ),
+            StreamCenterHomeSectionDefinition(
                 key = "anime_popular",
                 data = "au:popular",
                 defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
             ),
             StreamCenterHomeSectionDefinition(
                 key = "tv_trending",
@@ -414,6 +425,14 @@ class StreamCenterPlugin : Plugin() {
                 (sharedPref?.getBoolean(PREF_VISUAL_EFFECTS_PUBLIC_IP, true) ?: true)
         }
 
+        fun isVpnRequired(sharedPref: SharedPreferences?): Boolean {
+            return sharedPref?.getBoolean(PREF_REQUIRE_VPN, false) ?: false
+        }
+
+        internal fun isDefaultVpnRequirementPreference(key: String, value: Any?): Boolean {
+            return key == PREF_REQUIRE_VPN && value == false
+        }
+
         fun shouldGroupAnimeVariants(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_GROUP_ANIME_DUB_SUB, true) ?: true
         }
@@ -434,23 +453,15 @@ class StreamCenterPlugin : Plugin() {
             }?.apply()
         }
 
-        fun isTorrentSourceEnabled(sharedPref: SharedPreferences?, prefKey: String): Boolean {
-            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
-                ?: return false
-            return sharedPref?.getBoolean(prefKey, source.defaultEnabled) ?: source.defaultEnabled
-        }
-
-        fun setTorrentSourceEnabled(
-            sharedPref: SharedPreferences?,
-            prefKey: String,
-            enabled: Boolean,
-        ) {
-            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
-                ?: return
-            sharedPref?.edit()?.apply {
-                if (enabled == source.defaultEnabled) remove(prefKey)
-                else putBoolean(prefKey, enabled)
-            }?.apply()
+        fun resetTorrentConfiguration(sharedPref: SharedPreferences?) {
+            val preferences = sharedPref ?: return
+            val obsoleteTorrentKeys = preferences.all.keys.filter(
+                StreamCenterTorrentPreferences::isObsoletePreference,
+            )
+            preferences.edit().apply {
+                obsoleteTorrentKeys.forEach(::remove)
+                StreamCenterTorrentPreferences.reset(this)
+            }.apply()
         }
 
         internal fun getStremioAddons(sharedPref: SharedPreferences?): List<StreamCenterStremioAddon> {
@@ -529,6 +540,7 @@ class StreamCenterPlugin : Plugin() {
         internal suspend fun refreshStremioAddonManifests(
             sharedPref: SharedPreferences?,
         ): StreamCenterStremioManifestRefreshResult {
+            StreamCenterVpnGuard.requireInternetAccess(sharedPref)
             val prefs = sharedPref
                 ?: return StreamCenterStremioManifestRefreshResult(total = 0, updated = 0)
             val originals = getStremioAddons(prefs)
@@ -655,42 +667,13 @@ class StreamCenterPlugin : Plugin() {
             }?.apply()
         }
 
-        fun getTorrentSourceUrl(sharedPref: SharedPreferences?, prefKey: String): String {
-            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
-                ?: return ""
-            val defaultUrl = normalizeSourceUrl(source.displayUrl)
-            return sharedPref
-                ?.getString(source.urlPrefKey, null)
-                ?.let(::normalizeSourceUrl)
-                ?.takeIf { it.isNotBlank() }
-                ?: defaultUrl
-        }
-
-        fun setTorrentSourceUrl(
-            sharedPref: SharedPreferences?,
-            prefKey: String,
-            url: String,
-        ) {
-            val source = StreamCenterTorrentSources.definitions.firstOrNull { it.key == prefKey }
-                ?: return
-            val cleaned = normalizeSourceUrl(url)
-            val defaultUrl = normalizeSourceUrl(source.displayUrl)
-            sharedPref?.edit()?.apply {
-                if (cleaned.isBlank() || cleaned == defaultUrl) {
-                    remove(source.urlPrefKey)
-                } else {
-                    putString(source.urlPrefKey, cleaned)
-                }
-            }?.apply()
-        }
-
         internal fun resetSourcesConfiguration(sharedPref: SharedPreferences?) {
             val preferences = sharedPref ?: return
             val stremioEnabledKeys = preferences.all.keys.filter {
                 it.startsWith(PREF_STREMIO_ADDON_ENABLED_PREFIX)
             }
-            val torrentSourceKeys = preferences.all.keys.filter(
-                StreamCenterTorrentSources::isSourcePreferenceKey,
+            val obsoleteTorrentKeys = preferences.all.keys.filter(
+                StreamCenterTorrentPreferences::isObsoletePreference,
             )
             preferences.edit().apply {
                 streamingSources.forEach { source ->
@@ -698,8 +681,8 @@ class StreamCenterPlugin : Plugin() {
                     remove(source.urlPrefKey)
                 }
                 remove(PREF_TORRENT_ENABLED)
-                torrentSourceKeys.forEach(::remove)
-                StreamCenterTorrentFilterPreferences.reset(this)
+                obsoleteTorrentKeys.forEach(::remove)
+                StreamCenterTorrentPreferences.reset(this)
                 remove(PREF_SOURCE_PRIORITY)
                 remove(PREF_STREMIO_ADDONS)
                 remove(PREF_AUTO_UPDATE_SOURCE_URLS)
@@ -707,20 +690,12 @@ class StreamCenterPlugin : Plugin() {
             }.apply()
         }
 
-        internal fun isObsoleteTorrentSourcePreference(key: String): Boolean {
-            return StreamCenterTorrentSources.isSourcePreferenceKey(key) &&
-                key !in StreamCenterTorrentSources.preferenceKeys
-        }
+        internal fun isObsoleteTorrentPreference(key: String): Boolean =
+            StreamCenterTorrentPreferences.isObsoletePreference(key)
 
         internal fun isDefaultTorrentPreference(key: String, value: Any?): Boolean {
             if (key == PREF_TORRENT_ENABLED) return value == false
-            StreamCenterTorrentSources.definitions.forEach { source ->
-                if (key == source.key) return value == source.defaultEnabled
-                if (key == source.urlPrefKey && value is String) {
-                    return normalizeSourceUrl(value) == normalizeSourceUrl(source.displayUrl)
-                }
-            }
-            return StreamCenterTorrentFilterPreferences.isDefaultPreference(key, value)
+            return StreamCenterTorrentPreferences.isDefaultPreference(key, value)
         }
 
         fun getSourcePriorityOrder(sharedPref: SharedPreferences?): List<String> {
@@ -870,6 +845,10 @@ class StreamCenterPlugin : Plugin() {
         private val fullMonthNamePlaceholderPattern = Regex(FULL_MONTH_NAME_PLACEHOLDER, RegexOption.IGNORE_CASE)
         private val shortYearPlaceholderPattern = Regex(SHORT_YEAR_PLACEHOLDER, RegexOption.IGNORE_CASE)
         private val fullYearPlaceholderPattern = Regex(FULL_YEAR_PLACEHOLDER, RegexOption.IGNORE_CASE)
+        private val legacyRenderedAnimeCalendarTitle = Regex(
+            """Anime:\s*calendario\s*\((?:Lunedi|Martedi|Mercoledi|Giovedi|Venerdi|Sabato|Domenica)\)""",
+            RegexOption.IGNORE_CASE,
+        )
 
         fun getHomeSectionTitleTemplate(
             sharedPref: SharedPreferences?,
@@ -880,17 +859,19 @@ class StreamCenterPlugin : Plugin() {
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
                 ?: getDefaultHomeSectionTitle(section.key)
-            return if (
-                section.key == "anime_calendar" &&
-                (
-                    (title.startsWith("Anime: calendario (") && title.endsWith(")")) ||
-                        title.equals("Anime - %Giorno% Calendario", ignoreCase = true)
-                    )
-            ) {
+            return if (section.key == "anime_calendar" && isDefaultAnimeCalendarTitle(title)) {
                 getDefaultHomeSectionTitle(section.key)
             } else {
                 title
             }
+        }
+
+        private fun isDefaultAnimeCalendarTitle(title: String): Boolean {
+            val normalized = title.trim()
+            return normalized.equals(getDefaultHomeSectionTitle("anime_calendar"), ignoreCase = true) ||
+                normalized.equals("Anime - Calendario (%Giorno%)", ignoreCase = true) ||
+                normalized.equals("Anime - %Giorno% Calendario", ignoreCase = true) ||
+                legacyRenderedAnimeCalendarTitle.matches(normalized)
         }
 
         fun getHomeSectionTitle(
@@ -971,16 +952,7 @@ class StreamCenterPlugin : Plugin() {
         fun getConfiguredHomeSections(sharedPref: SharedPreferences?): List<StreamCenterConfiguredHomeSection> {
             val allSections = getAllHomeSections(sharedPref)
             val byKey = allSections.associateBy { it.key }
-            val orderedKeys = sharedPref
-                ?.getString(PREF_HOME_ORDER, null)
-                ?.split(",")
-                ?.map { it.trim() }
-                ?.filter { it in byKey }
-                ?.distinct()
-                .orEmpty()
-            val normalizedOrder = orderedKeys + allSections.map { it.key }.filterNot { it in orderedKeys }
-
-            return normalizedOrder
+            return getHomeSectionOrder(sharedPref)
                 .mapNotNull { byKey[it] }
                 .filter { isHomeSectionEnabled(sharedPref, it) }
                 .filter { isHomeCategoryEnabled(sharedPref, homeSectionCategoryKey(it)) }
@@ -1012,6 +984,73 @@ class StreamCenterPlugin : Plugin() {
         fun homeCategoryEnabledKey(categoryKey: String): String = "home_category_${categoryKey}_enabled"
 
         fun defaultHomeOrder(): String = homeSections.joinToString(",") { it.key }
+
+        fun getHomeSectionOrder(sharedPref: SharedPreferences?): List<String> {
+            val sections = getAllHomeSections(sharedPref)
+            val availableKeys = sections.map { it.key }
+            val order = sharedPref
+                ?.getString(PREF_HOME_ORDER, null)
+                ?.split(",")
+                ?.map(String::trim)
+                ?.filter { it in availableKeys }
+                ?.distinct()
+                .orEmpty()
+                .toMutableList()
+
+            sections.forEachIndexed { index, section ->
+                if (section.key in order) return@forEachIndexed
+                val nextKey = sections.asSequence()
+                    .drop(index + 1)
+                    .map { it.key }
+                    .firstOrNull { it in order }
+                val previousKey = sections.asSequence()
+                    .take(index)
+                    .map { it.key }
+                    .lastOrNull { it in order }
+                val insertionIndex = when {
+                    nextKey != null -> order.indexOf(nextKey)
+                    previousKey != null -> order.indexOf(previousKey) + 1
+                    else -> order.size
+                }
+                order.add(insertionIndex, section.key)
+            }
+            return order
+        }
+
+        internal fun isDefaultHomePreference(key: String, value: Any?): Boolean {
+            if (key == PREF_HOME_ORDER) {
+                return (value as? String)
+                    ?.split(",")
+                    ?.map(String::trim) == homeSections.map { it.key }
+            }
+            if (key == PREF_HOME_CATEGORY_ORDER) {
+                return (value as? String)
+                    ?.split(",")
+                    ?.map(String::trim) == homeCategories
+            }
+            if (key.startsWith("home_category_") && key.endsWith("_enabled")) {
+                val categoryKey = key.removePrefix("home_category_").removeSuffix("_enabled")
+                return categoryKey in homeCategories && value == true
+            }
+            val section = homeSections.firstOrNull { definition ->
+                key == sectionEnabledKey(definition.key) ||
+                    key == sectionTitleKey(definition.key) ||
+                    key == sectionCountKey(definition.key)
+            } ?: return false
+            return when (key) {
+                sectionEnabledKey(section.key) -> value == section.defaultEnabled
+                sectionCountKey(section.key) -> value == section.defaultCount
+                sectionTitleKey(section.key) -> {
+                    val title = (value as? String)?.trim() ?: return false
+                    if (section.key == "anime_calendar") {
+                        isDefaultAnimeCalendarTitle(title)
+                    } else {
+                        title == getDefaultHomeSectionTitle(section.key)
+                    }
+                }
+                else -> false
+            }
+        }
 
         fun homeSectionCategoryKey(section: StreamCenterHomeSectionDefinition): String {
             return when {
@@ -1061,8 +1100,9 @@ class StreamCenterPlugin : Plugin() {
 
         fun getDefaultHomeSectionTitle(sectionKey: String): String {
             return when (sectionKey) {
-                "anime_calendar" -> "Anime - Calendario (%Giorno%)"
+                "anime_calendar" -> "Anime: calendario (%Giorno%)"
                 "anime_latest" -> "Anime: ultimi episodi"
+                "anime_random" -> "Anime: random"
                 "anime_popular" -> "Anime: popolari"
                 "tv_trending" -> "Serie TV: titoli del momento"
                 "tv_latest" -> "Serie TV: aggiunte di recente"
@@ -1129,13 +1169,9 @@ class StreamCenterPlugin : Plugin() {
                 sectionKey != null && sectionKey !in knownSectionKeys
             }
             val storedOrder = prefs.getString(PREF_HOME_ORDER, null)
-            val normalizedOrder = storedOrder
-                ?.split(",")
-                ?.map { it.trim() }
-                ?.filter { it in knownSectionKeys }
-                ?.distinct()
-                .orEmpty()
-            val shouldUpdateOrder = storedOrder != null && storedOrder.split(",") != normalizedOrder
+            val normalizedOrder = getHomeSectionOrder(prefs)
+            val currentOrder = storedOrder?.split(",")?.map(String::trim).orEmpty()
+            val shouldUpdateOrder = storedOrder != null && currentOrder != normalizedOrder
             if (obsoletePreferenceKeys.isEmpty() && !shouldUpdateOrder) return
 
             prefs.edit().apply {
@@ -1144,8 +1180,8 @@ class StreamCenterPlugin : Plugin() {
             }.apply()
         }
 
-        private fun removeObsoleteTorrentSourcePreferences(prefs: SharedPreferences) {
-            val obsoleteKeys = prefs.all.keys.filter(::isObsoleteTorrentSourcePreference)
+        private fun removeObsoleteTorrentPreferences(prefs: SharedPreferences) {
+            val obsoleteKeys = prefs.all.keys.filter(::isObsoleteTorrentPreference)
             if (obsoleteKeys.isEmpty()) return
             prefs.edit().apply {
                 obsoleteKeys.forEach(::remove)
@@ -1400,8 +1436,19 @@ class StreamCenterPlugin : Plugin() {
             val raw = sharedPref?.getString(animeCustomFiltersKey(sectionKey), null) ?: return null
             return runCatching {
                 val json = JSONObject(raw)
+                val legacyGenreId = json.optInt("genreId").takeIf { it > 0 }
+                val genreIds = json.optJSONArray("genreIds")
+                    ?.let { values ->
+                        buildList {
+                            for (index in 0 until values.length()) {
+                                values.optInt(index).takeIf { it > 0 }?.let(::add)
+                            }
+                        }
+                    }
+                    .orEmpty()
                 StreamCenterAnimeArchiveFilters(
-                    genreId = json.optInt("genreId").takeIf { it > 0 },
+                    genreId = legacyGenreId,
+                    genreIds = genreIds.ifEmpty { listOfNotNull(legacyGenreId) },
                     year = json.optInt("year").takeIf { it > 0 },
                     order = json.optString("order").takeIf { it.isNotBlank() },
                     status = json.optString("status").takeIf { it.isNotBlank() },
@@ -1433,7 +1480,9 @@ class StreamCenterPlugin : Plugin() {
         }
 
         private fun animeFiltersToJson(filters: StreamCenterAnimeArchiveFilters): String = JSONObject().apply {
-            filters.genreId?.let { put("genreId", it) }
+            val genreIds = filters.selectedGenreIds
+            genreIds.firstOrNull()?.let { put("genreId", it) }
+            if (genreIds.isNotEmpty()) put("genreIds", JSONArray(genreIds))
             filters.year?.let { put("year", it) }
             filters.order?.let { put("order", it) }
             filters.status?.let { put("status", it) }
@@ -1675,6 +1724,96 @@ class StreamCenterPlugin : Plugin() {
                 getIptvCustomSectionKeys(sharedPref).map(::iptvCustomSectionDefinition)
         }
 
+        internal fun resetHomeCategoryConfiguration(
+            sharedPref: SharedPreferences?,
+            categoryKey: String,
+        ) {
+            val preferences = sharedPref ?: return
+            if (categoryKey !in homeCategories) return
+
+            val customSectionKeys = when (categoryKey) {
+                "anime" -> getAnimeCustomSectionKeys(preferences)
+                "tv" -> getTvCustomSectionKeys(preferences)
+                "movie" -> getMovieCustomSectionKeys(preferences)
+                "live" -> getIptvCustomSectionKeys(preferences)
+                "tracking" -> getTrackingCustomSectionKeys(preferences)
+                else -> emptyList()
+            }
+            val defaultSectionKeys = homeSections
+                .filter { homeSectionCategoryKey(it) == categoryKey }
+                .map(StreamCenterHomeSectionDefinition::key)
+            val categorySectionKeys = (defaultSectionKeys + customSectionKeys).toSet()
+            val updatedOrder = preferences.getString(PREF_HOME_ORDER, null)
+                ?.split(",")
+                ?.map(String::trim)
+                ?.filter(String::isNotBlank)
+                ?.let { order ->
+                    val insertionIndex = order.indexOfFirst { it in categorySectionKeys }
+                        .takeIf { it >= 0 }
+                        ?: order.size
+                    val retained = order.filterNot { it in categorySectionKeys }
+                    val targetIndex = insertionIndex.coerceAtMost(retained.size)
+                    (retained.take(targetIndex) + defaultSectionKeys + retained.drop(targetIndex))
+                        .distinct()
+                        .joinToString(",")
+                }
+
+            preferences.edit().apply {
+                homeSections
+                    .filter { homeSectionCategoryKey(it) == categoryKey }
+                    .forEach { section ->
+                        remove(sectionEnabledKey(section.key))
+                        remove(sectionTitleKey(section.key))
+                        remove(sectionCountKey(section.key))
+                    }
+                customSectionKeys.forEach { sectionKey ->
+                    remove(sectionEnabledKey(sectionKey))
+                    remove(sectionTitleKey(sectionKey))
+                    remove(sectionCountKey(sectionKey))
+                    when (categoryKey) {
+                        "anime" -> remove(animeCustomFiltersKey(sectionKey))
+                        "tv" -> remove(tvCustomFiltersKey(sectionKey))
+                        "movie" -> remove(movieCustomFiltersKey(sectionKey))
+                        "live" -> {
+                            remove(iptvSectionChannelsKey(sectionKey))
+                            remove(iptvSectionOrderKey(sectionKey))
+                        }
+                        "tracking" -> remove(trackingSelectionKey(sectionKey))
+                    }
+                }
+                updatedOrder?.let { putString(PREF_HOME_ORDER, it) }
+                remove(homeCategoryEnabledKey(categoryKey))
+                when (categoryKey) {
+                    "anime" -> {
+                        remove(PREF_ANIME_CUSTOM_SECTIONS)
+                        remove(PREF_ANIME_CUSTOM_SECTION_COUNTER)
+                    }
+                    "tv" -> {
+                        remove(PREF_TV_CUSTOM_SECTIONS)
+                        remove(PREF_TV_CUSTOM_SECTION_COUNTER)
+                    }
+                    "movie" -> {
+                        remove(PREF_MOVIE_CUSTOM_SECTIONS)
+                        remove(PREF_MOVIE_CUSTOM_SECTION_COUNTER)
+                    }
+                    "live" -> {
+                        remove(PREF_IPTV_FAVORITE_CHANNELS)
+                        remove(PREF_IPTV_REGION)
+                        remove(PREF_IPTV_CUSTOM_SECTIONS)
+                        remove(PREF_IPTV_CUSTOM_SECTION_COUNTER)
+                    }
+                    "tracking" -> {
+                        remove(PREF_TRACKING_CUSTOM_SECTIONS)
+                        remove(PREF_TRACKING_CUSTOM_SECTION_COUNTER)
+                    }
+                }
+            }.apply()
+
+            if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
+                StreamCenterCatalogs.reset(preferences)
+            }
+        }
+
         internal fun resetHomeConfiguration(sharedPref: SharedPreferences?) {
             val preferences = sharedPref ?: return
             val sectionPreferencePrefixes = listOf(
@@ -1782,9 +1921,11 @@ class StreamCenterPlugin : Plugin() {
             }
             migrateLegacyIptvFavorites(prefs)
             removeObsoleteHomeSectionPreferences(prefs)
-            removeObsoleteTorrentSourcePreferences(prefs)
+            removeObsoleteTorrentPreferences(prefs)
             migrateTrackingHomeCategory(prefs)
         }
+
+        it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoRunner.attach(context.applicationContext)
 
         registerMainAPI(StreamCenter(sharedPref))
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_MOVIES))

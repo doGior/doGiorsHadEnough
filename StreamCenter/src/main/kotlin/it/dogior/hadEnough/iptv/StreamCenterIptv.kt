@@ -3,10 +3,12 @@ package it.dogior.hadEnough.iptv
 import com.lagradost.cloudstream3.app
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
 
 object StreamCenterIptv {
     private const val PLAYLIST_ROOT =
@@ -16,6 +18,22 @@ object StreamCenterIptv {
     suspend fun fetchChannels(regionKey: String): List<Channel> {
         val region = regions.firstOrNull { it.key == regionKey } ?: regions.first { it.key == "italy" }
         return parsePlaylist(app.get("$PLAYLIST_ROOT/playlist_${region.key}.m3u8").text, region)
+    }
+
+    suspend fun fetchRegionChannelCatalog(
+        onRegionLoaded: suspend (Region, List<Channel>?, Int, Int) -> Unit = { _, _, _, _ -> },
+    ): Map<String, List<Channel>?> = supervisorScope {
+        val completed = AtomicInteger()
+        val semaphore = Semaphore(6)
+        regions.map { region ->
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
+                    val channels = runCatching { fetchChannels(region.key) }.getOrNull()
+                    onRegionLoaded(region, channels, completed.incrementAndGet(), regions.size)
+                    region.key to channels
+                }
+            }
+        }.awaitAll().toMap()
     }
 
     suspend fun testChannels(
@@ -249,16 +267,22 @@ object StreamCenterIptv {
         return value.lowercase().replace(CHANNEL_ID_SEPARATOR, " ").trim()
     }
 
-    data class Region(val key: String, val name: String)
+    data class Region(
+        val key: String,
+        val name: String,
+        val isCategory: Boolean = false,
+    )
 
     fun languageCodeFor(regionKey: String): String = when (regionKey) {
-        "italy", "san_marino" -> "it"
+        "italy", "san_marino", "zz_vod_it" -> "it"
         "spain", "argentina", "chile", "costa_rica", "dominican_republic", "mexico",
-        "paraguay", "peru", "venezuela" -> "es"
+        "paraguay", "peru", "venezuela", "zz_news_es" -> "es"
         "france", "monaco", "chad" -> "fr"
         "germany", "austria", "switzerland" -> "de"
         "portugal", "brazil" -> "pt"
-        "uk", "ireland", "usa", "canada", "australia", "kenya" -> "en"
+        "uk", "ireland", "usa", "canada", "australia", "kenya",
+        "zz_documentaries_en", "zz_movies", "zz_news_en" -> "en"
+        "zz_documentaries_ar", "zz_news_ar" -> "ar"
         "albania" -> "sq"
         "andorra" -> "ca"
         "armenia" -> "hy"
@@ -357,6 +381,13 @@ object StreamCenterIptv {
         Region("turkey", "Turchia"), Region("uk", "Regno Unito"), Region("ukraine", "Ucraina"),
         Region("united_arab_emirates", "Emirati Arabi Uniti"), Region("usa", "Stati Uniti"),
         Region("venezuela", "Venezuela"),
+        Region("zz_documentaries_ar", "Documentari · Arabo", isCategory = true),
+        Region("zz_documentaries_en", "Documentari · Inglese", isCategory = true),
+        Region("zz_movies", "Film · Inglese", isCategory = true),
+        Region("zz_news_ar", "Notizie · Arabo", isCategory = true),
+        Region("zz_news_en", "Notizie · Inglese", isCategory = true),
+        Region("zz_news_es", "Notizie · Spagnolo", isCategory = true),
+        Region("zz_vod_it", "VOD · Italia", isCategory = true),
     )
 
     private val ATTRIBUTE = Regex("""([\w-]+)="([^"]*)"""")

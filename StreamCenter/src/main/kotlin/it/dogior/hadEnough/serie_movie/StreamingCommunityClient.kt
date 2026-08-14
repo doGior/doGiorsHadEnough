@@ -12,6 +12,7 @@ import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
 import it.dogior.hadEnough.util.StreamCenterLogger
+import kotlinx.coroutines.CompletableDeferred
 import org.jsoup.Jsoup
 import org.jsoup.parser.Parser
 import org.json.JSONArray
@@ -30,6 +31,8 @@ internal class StreamingCommunityClient(
     private var inertiaVersion = ""
     private var xsrfToken = ""
     private var lastForcedRefreshMs = 0L
+    private val pagePropsLock = Any()
+    private val pagePropsInFlight = HashMap<String, CompletableDeferred<JSONObject?>>()
     private val sessionHeaders = mutableMapOf(
         "Cookie" to "",
         "X-Inertia" to true.toString(),
@@ -68,6 +71,32 @@ internal class StreamingCommunityClient(
     }
 
     suspend fun fetchPageProps(pageUrl: String): JSONObject? {
+        var owned: CompletableDeferred<JSONObject?>? = null
+        val pending: CompletableDeferred<JSONObject?>? = synchronized(pagePropsLock) {
+            val existing = pagePropsInFlight[pageUrl]
+            if (existing != null) {
+                existing
+            } else {
+                CompletableDeferred<JSONObject?>().also {
+                    pagePropsInFlight[pageUrl] = it
+                    owned = it
+                }
+                null
+            }
+        }
+        val ownedDeferred = owned ?: return pending!!.await()
+
+        var props: JSONObject? = null
+        try {
+            props = requestPageProps(pageUrl)
+        } finally {
+            synchronized(pagePropsLock) { pagePropsInFlight.remove(pageUrl) }
+            ownedDeferred.complete(props)
+        }
+        return props
+    }
+
+    private suspend fun requestPageProps(pageUrl: String): JSONObject? {
         val text = app.get(pageUrl, headers = defaultHeaders).body.string()
         val json = extractPageJson(text)
             ?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -276,7 +305,64 @@ internal class StreamingCommunityClient(
         }
     }
 
+    suspend fun fetchRelatedTitles(
+        title: StreamingCommunityTitle,
+        limit: Int,
+    ): List<StreamingCommunityTitle> {
+        log(
+            "Recupero correlati avviato",
+            mapOf("identificativo_titolo" to title.id),
+        )
+        fetchRelatedTitlesAttempt(title, limit)?.let { relatedTitles ->
+            log("Recupero correlati completato", mapOf("correlati_estratti" to relatedTitles.size))
+            return relatedTitles
+        }
+        if (!shouldForceRefresh()) {
+            warning("Retry correlati non eseguito: aggiornamento recente")
+            return emptyList()
+        }
+        log("Retry correlati avviato: aggiornamento sessione")
+        if (runCatching { ensureHeaders(forceRefresh = true) }.onFailure {
+                warning("Aggiornamento sessione per retry correlati non riuscito", error = it)
+            }.isFailure
+        ) {
+            return emptyList()
+        }
+        return fetchRelatedTitlesAttempt(title, limit).orEmpty().also { relatedTitles ->
+            log("Retry correlati completato", mapOf("correlati_estratti" to relatedTitles.size))
+        }
+    }
+
     private suspend fun fetchTitleDetailAttempt(title: StreamingCommunityTitle): StreamingCommunityTitle? {
+        val props = fetchTitlePropsAttempt(title) ?: return null
+        return props.optJSONObject("title")?.toTitle()?.let { resolvedTitle ->
+            val loadedSeason = props.optJSONObject("loadedSeason")?.toSeason()
+            if (loadedSeason == null) {
+                resolvedTitle
+            } else {
+                resolvedTitle.copy(seasons = resolvedTitle.seasons.mergeSeason(loadedSeason))
+            }
+        }
+    }
+
+    private suspend fun fetchRelatedTitlesAttempt(
+        title: StreamingCommunityTitle,
+        limit: Int,
+    ): List<StreamingCommunityTitle>? {
+        val props = fetchTitlePropsAttempt(title) ?: return null
+        val relatedTitles = props.optJSONArray("sliders")
+            ?.firstObject { it.optNullableString("name") == "related" }
+            ?.optJSONArray("titles")
+            ?: return emptyList()
+        return buildList {
+            for (index in 0 until relatedTitles.length()) {
+                relatedTitles.optJSONObject(index)?.toTitle()?.let(::add)
+                if (size >= limit) break
+            }
+        }.filterNot { it.id == title.id }
+    }
+
+    private suspend fun fetchTitlePropsAttempt(title: StreamingCommunityTitle): JSONObject? {
         runCatching { ensureHeaders() }.getOrElse {
             warning("Sessione per dettaglio titolo non disponibile", error = it)
             return null
@@ -292,14 +378,7 @@ internal class StreamingCommunityClient(
 
         return runCatching {
             val json = JSONObject(extractPageJson(text) ?: text)
-            val props = json.optJSONObject("props") ?: json
-            val resolvedTitle = props.optJSONObject("title")?.toTitle() ?: return null
-            val loadedSeason = props.optJSONObject("loadedSeason")?.toSeason()
-            if (loadedSeason == null) {
-                resolvedTitle
-            } else {
-                resolvedTitle.copy(seasons = resolvedTitle.seasons.mergeSeason(loadedSeason))
-            }
+            json.optJSONObject("props") ?: json
         }.onFailure {
             warning("Parsing dettaglio titolo non riuscito", error = it)
         }.getOrNull()
@@ -538,6 +617,14 @@ internal class StreamingCommunityClient(
         for (index in 0 until length()) {
             val image = optJSONObject(index) ?: continue
             if (image.optNullableString("type") == imageType) return image.optNullableString("filename")
+        }
+        return null
+    }
+
+    private fun JSONArray.firstObject(predicate: (JSONObject) -> Boolean): JSONObject? {
+        for (index in 0 until length()) {
+            val item = optJSONObject(index) ?: continue
+            if (predicate(item)) return item
         }
         return null
     }

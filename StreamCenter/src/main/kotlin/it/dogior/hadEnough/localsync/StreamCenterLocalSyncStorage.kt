@@ -68,35 +68,24 @@ internal object StreamCenterLocalSyncStorage {
         "auto_download_plugins_key2",
     )
 
-    fun createPayload(context: Context, type: StreamCenterLocalSyncPayloadType): StreamCenterLocalSyncPayload {
+    fun createSelectivePayload(
+        context: Context,
+        categories: Set<StreamCenterLocalSyncCategory>,
+    ): StreamCenterLocalSyncPayload {
         val datastore = datastore(context)
         val settings = settings(context)
         val streamCenterPreferences = StreamCenterConfigurationStore.preferences(context)
         val account = currentAccount(datastore)
-        val datastoreValues = when (type) {
-            StreamCenterLocalSyncPayloadType.ALL,
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM -> cloudStreamConfigurationValues(datastore.all)
-            StreamCenterLocalSyncPayloadType.LIBRARY,
-            StreamCenterLocalSyncPayloadType.STREAMCENTER -> emptyMap()
-        }
-        val settingsValues = when (type) {
-            StreamCenterLocalSyncPayloadType.ALL,
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM -> settings.all.filterKeys(::isTransferable)
-            StreamCenterLocalSyncPayloadType.LIBRARY,
-            StreamCenterLocalSyncPayloadType.STREAMCENTER -> emptyMap()
-        }
-        val libraryValues = when (type) {
-            StreamCenterLocalSyncPayloadType.ALL,
-            StreamCenterLocalSyncPayloadType.LIBRARY -> libraryValues(datastore.all, account)
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM,
-            StreamCenterLocalSyncPayloadType.STREAMCENTER -> emptyMap()
-        }
-        val streamCenterValues = when (type) {
-            StreamCenterLocalSyncPayloadType.ALL,
-            StreamCenterLocalSyncPayloadType.STREAMCENTER ->
-                StreamCenterConfigurationStore.snapshot(streamCenterPreferences)
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM,
-            StreamCenterLocalSyncPayloadType.LIBRARY -> emptyMap()
+        val includeCloudStream = StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories
+        val includeLibrary = StreamCenterLocalSyncCategory.LIBRARY in categories
+        val includeStreamCenter = StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories
+        val datastoreValues = if (includeCloudStream) cloudStreamConfigurationValues(datastore.all) else emptyMap()
+        val settingsValues = if (includeCloudStream) settings.all.filterKeys(::isTransferable) else emptyMap()
+        val libraryValues = if (includeLibrary) libraryValues(datastore.all, account) else emptyMap()
+        val streamCenterValues = if (includeStreamCenter) {
+            StreamCenterConfigurationStore.snapshot(streamCenterPreferences)
+        } else {
+            emptyMap()
         }
         val libraryItemCount = libraryItemCount(libraryValues.keys)
         val progressCount = progressCount(libraryValues.keys)
@@ -104,15 +93,11 @@ internal object StreamCenterLocalSyncStorage {
         val root = JSONObject()
             .put("format", FORMAT)
             .put("version", FORMAT_VERSION)
-            .put("type", type.wireValue)
+            .put("type", StreamCenterLocalSyncPayloadType.SELECTIVE.wireValue)
+            .put("categories", JSONArray(categories.map { it.wireValue }))
             .put("createdAt", System.currentTimeMillis())
             .put("sourceDevice", deviceName())
-            .put(
-                "sourceAccount",
-                account.takeIf {
-                    type == StreamCenterLocalSyncPayloadType.ALL || type == StreamCenterLocalSyncPayloadType.LIBRARY
-                },
-            )
+            .put("sourceAccount", account.takeIf { includeLibrary })
             .put("datastore", encodePreferences(datastoreValues))
             .put("settings", encodePreferences(settingsValues))
             .put("library", encodePreferences(libraryValues))
@@ -127,15 +112,13 @@ internal object StreamCenterLocalSyncStorage {
         val uncompressed = root.toString().toByteArray(StandardCharsets.UTF_8)
         require(uncompressed.size <= MAX_UNCOMPRESSED_BYTES) { "La configurazione supera il limite di sicurezza." }
         return StreamCenterLocalSyncPayload(
-            type = type,
+            type = StreamCenterLocalSyncPayloadType.SELECTIVE,
             compressedBytes = compress(uncompressed),
             uncompressedSize = uncompressed.size,
             entryCount = entryCount,
             libraryItemCount = libraryItemCount,
             progressCount = progressCount,
-            sourceAccount = account.takeIf {
-                type == StreamCenterLocalSyncPayloadType.ALL || type == StreamCenterLocalSyncPayloadType.LIBRARY
-            },
+            sourceAccount = account.takeIf { includeLibrary },
         )
     }
 
@@ -170,6 +153,16 @@ internal object StreamCenterLocalSyncStorage {
                 require(libraryValues.isEmpty()) { "La configurazione StreamCenter contiene una libreria inattesa." }
                 applyStreamCenter(context, datastoreValues, settingsValues, streamCenterValues)
             }
+            StreamCenterLocalSyncPayloadType.SELECTIVE -> {
+                val categories = root.optJSONArray("categories")?.let { array ->
+                    buildSet {
+                        for (index in 0 until array.length()) {
+                            StreamCenterLocalSyncCategory.fromWireValue(array.optString(index))?.let(::add)
+                        }
+                    }
+                }.orEmpty()
+                applySelective(context, categories, datastoreValues, settingsValues, libraryValues, streamCenterValues)
+            }
         }
         val stats = root.optJSONObject("stats")
         return StreamCenterLocalSyncResult(
@@ -192,6 +185,253 @@ internal object StreamCenterLocalSyncStorage {
             .joinToString(" ")
             .ifBlank { "Dispositivo Android" }
             .take(80)
+    }
+
+
+    fun mergeSource(
+        context: Context,
+        categories: Set<StreamCenterLocalSyncCategory>,
+    ): StreamCenterLocalSyncMergeSource {
+        val appContext = context.applicationContext
+        val live = collectSyncEntries(appContext, categories)
+        val hashes = live.mapValues { (_, value) -> stableHash(value) }
+        val log = StreamCenterLocalSyncVersionLog.reconcile(appContext, hashes) { key ->
+            categoryOfKey(key)?.let { category -> category in categories } == true
+        }
+        return object : StreamCenterLocalSyncMergeSource {
+            override fun manifest(): JSONObject {
+                val root = JSONObject()
+                log.forEach { (key, version) ->
+                    if (categoryOfKey(key)?.let { it in categories } != true) return@forEach
+                    root.put(key, JSONObject().put("t", version.timestampMs).put("d", if (version.deleted) 1 else 0))
+                }
+                return root
+            }
+
+            override fun collectValues(keys: List<String>): JSONObject {
+                val root = JSONObject()
+                keys.forEach { key ->
+                    val version = log[key] ?: return@forEach
+                    if (categoryOfKey(key)?.let { it in categories } != true) return@forEach
+                    val entry = JSONObject().put("t", version.timestampMs)
+                    val value = live[key]
+                    if (version.deleted || value == null) {
+                        entry.put("d", 1)
+                    } else {
+                        val encoded = encodeValue(value)
+                        val fields = encoded.keys()
+                        while (fields.hasNext()) {
+                            val field = fields.next()
+                            entry.put(field, encoded.get(field))
+                        }
+                    }
+                    root.put(key, entry)
+                }
+                return root
+            }
+
+            override fun applyRemote(values: JSONObject): List<String> {
+                val appliedKeys = mutableListOf<String>()
+                val keys = values.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val entry = values.optJSONObject(key) ?: continue
+                    val category = categoryOfKey(key) ?: continue
+                    if (category !in categories || !isAcceptableMergeKey(key)) continue
+                    val remoteTs = entry.optLong("t", 0L)
+                    val localTs = log[key]?.timestampMs ?: 0L
+                    if (remoteTs <= localTs) continue
+                    if (entry.optInt("d", 0) == 1) {
+                        writeMergeEntry(appContext, key, null)
+                        log[key] = StreamCenterLocalSyncVersion(remoteTs, true, "")
+                    } else {
+                        val value = decodeValue(entry) ?: continue
+                        writeMergeEntry(appContext, key, value)
+                        log[key] = StreamCenterLocalSyncVersion(remoteTs, false, stableHash(value))
+                    }
+                    appliedKeys += key
+                }
+                if (appliedKeys.isNotEmpty()) StreamCenterLocalSyncVersionLog.save(appContext, log)
+                return appliedKeys
+            }
+        }
+    }
+
+    fun transferredMediaSummaries(context: Context, mergeKeys: List<String>): List<String> {
+        val preferences = datastore(context.applicationContext)
+        val account = currentAccount(preferences)
+        return mergeKeys.asSequence()
+            .mapNotNull { mergeKey ->
+                if (!mergeKey.startsWith("lib|")) return@mapNotNull null
+                val relative = mergeKey.removePrefix("lib|")
+                val folder = relative.substringBefore('/')
+                if (folder !in TRANSFERRED_MEDIA_FOLDERS) return@mapNotNull null
+                val id = relative.substringAfter('/', "")
+                if (id.isBlank()) return@mapNotNull null
+                val value = preferences.all["$account/$relative"] as? String
+                val json = value?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+                val parentId = json?.optInt("parentId", -1)?.takeIf { it >= 0 }?.toString() ?: id
+                val title = json?.optString("name")?.trim().orEmpty()
+                    .ifBlank { libraryTitle(preferences, account, parentId) }
+                    .ifBlank { "Contenuto $parentId" }
+                val details = buildList {
+                    json?.optInt("season", -1)?.takeIf { it >= 0 }?.let { season ->
+                        val episode = json.optInt("episode", -1).takeIf { it >= 0 }
+                        add(if (episode == null) "Stagione $season" else "S$season E$episode")
+                    }
+                    val position = json?.optLong("position", -1L) ?: -1L
+                    val duration = json?.optLong("duration", -1L) ?: -1L
+                    if (position >= 0L && duration > 0L) {
+                        add("${formatDuration(position)} / ${formatDuration(duration)}")
+                    }
+                    if (isEmpty() && folder == "result_watch_state_data") add("Libreria")
+                }
+                "$title${details.takeIf { it.isNotEmpty() }?.joinToString(" · ", " · ").orEmpty()}"
+            }
+            .distinct()
+            .take(MAX_TRANSFERRED_MEDIA_SUMMARIES)
+            .toList()
+    }
+
+    private fun libraryTitle(preferences: SharedPreferences, account: String, id: String): String {
+        val raw = preferences.getString("$account/result_watch_state_data/$id", null) ?: return ""
+        return runCatching { JSONObject(raw).optString("name").trim() }.getOrDefault("")
+    }
+
+    private fun formatDuration(milliseconds: Long): String {
+        val totalSeconds = (milliseconds / 1_000L).coerceAtLeast(0L)
+        val minutes = totalSeconds / 60L
+        val seconds = totalSeconds % 60L
+        return "%d:%02d".format(Locale.ITALY, minutes, seconds)
+    }
+
+    private fun collectSyncEntries(
+        context: Context,
+        categories: Set<StreamCenterLocalSyncCategory>,
+    ): Map<String, Any> {
+        val result = linkedMapOf<String, Any>()
+        val datastore = datastore(context)
+        if (StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories) {
+            cloudStreamConfigurationValues(datastore.all).forEach { (key, value) -> result["ds|$key"] = value }
+            settings(context).all.forEach { (key, value) ->
+                if (value != null && isTransferable(key)) result["st|$key"] = value
+            }
+        }
+        if (StreamCenterLocalSyncCategory.LIBRARY in categories) {
+            val account = currentAccount(datastore)
+            libraryValues(datastore.all, account).forEach { (key, value) -> result["lib|$key"] = value }
+        }
+        if (StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories) {
+            StreamCenterConfigurationStore.snapshot(StreamCenterConfigurationStore.preferences(context))
+                .forEach { (key, value) -> result["sc|$key"] = value }
+        }
+        return result
+    }
+
+    private fun categoryOfKey(key: String): StreamCenterLocalSyncCategory? =
+        when (key.substringBefore('|', "")) {
+            "ds", "st" -> StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG
+            "lib" -> StreamCenterLocalSyncCategory.LIBRARY
+            "sc" -> StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG
+            else -> null
+        }
+
+    private fun isAcceptableMergeKey(key: String): Boolean {
+        val relative = key.substringAfter('|', "")
+        if (relative.isBlank() || relative.length > 512) return false
+        return when (key.substringBefore('|', "")) {
+            "ds" -> isCloudStreamConfigurationKey(relative)
+            "st" -> isTransferable(relative)
+            "sc" -> true
+            "lib" -> isValidLibraryPayloadKey(relative)
+            else -> false
+        }
+    }
+
+    private fun writeMergeEntry(context: Context, key: String, value: Any?) {
+        val namespace = key.substringBefore('|', "")
+        val relative = key.substringAfter('|', "")
+        val preferences = when (namespace) {
+            "ds", "lib" -> datastore(context)
+            "st" -> settings(context)
+            "sc" -> StreamCenterConfigurationStore.preferences(context)
+            else -> return
+        }
+        val targetKey = if (namespace == "lib") {
+            if (relative.startsWith("@global/")) {
+                relative.removePrefix("@global/")
+            } else {
+                "${currentAccount(datastore(context))}/$relative"
+            }
+        } else {
+            relative
+        }
+        val editor = preferences.edit()
+        if (value == null) editor.remove(targetKey) else put(editor, targetKey, value)
+        editor.apply()
+    }
+
+    private fun encodeValue(value: Any): JSONObject = JSONObject().apply {
+        when (value) {
+            is Boolean -> put("b", value)
+            is Int -> put("i", value)
+            is String -> put("s", value)
+            is Float -> put("f", value.toDouble())
+            is Long -> put("l", value)
+            is Set<*> -> put("ss", JSONArray(value.filterIsInstance<String>().sorted()))
+            else -> throw IllegalArgumentException("Tipo di preferenza non supportato per la sincronizzazione.")
+        }
+    }
+
+    private fun decodeValue(entry: JSONObject): Any? = when {
+        entry.has("b") -> entry.getBoolean("b")
+        entry.has("i") -> entry.getInt("i")
+        entry.has("s") -> entry.getString("s")
+        entry.has("f") -> entry.getDouble("f").toFloat()
+        entry.has("l") -> entry.getLong("l")
+        entry.has("ss") -> {
+            val array = entry.getJSONArray("ss")
+            buildSet { repeat(array.length()) { index -> add(array.getString(index)) } }
+        }
+        else -> null
+    }
+
+    private fun stableHash(value: Any): String {
+        val encoded = when (value) {
+            is Set<*> -> "ss:" + value.filterIsInstance<String>().sorted().joinToString("\u0000")
+            is Float -> "f:" + value.toRawBits().toString()
+            is Boolean -> "b:$value"
+            is Int -> "i:$value"
+            is Long -> "l:$value"
+            is String -> "s:$value"
+            else -> "x:$value"
+        }
+        return encoded.hashCode().toString()
+    }
+
+    private fun applySelective(
+        context: Context,
+        categories: Set<StreamCenterLocalSyncCategory>,
+        datastoreValues: Map<String, Any>,
+        settingsValues: Map<String, Any>,
+        libraryValues: Map<String, Any>,
+        streamCenterValues: Map<String, Any>,
+    ) {
+        val datastore = datastore(context)
+        val settings = settings(context)
+        val streamCenter = StreamCenterConfigurationStore.preferences(context)
+        if (StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories) {
+            validateCloudStreamConfiguration(datastoreValues, settingsValues)
+            replaceTransferable(settings, settingsValues)
+            replaceCloudStreamConfiguration(datastore, datastoreValues)
+        }
+        if (StreamCenterLocalSyncCategory.LIBRARY in categories) {
+            require(libraryValues.keys.all(::isValidLibraryPayloadKey)) { "La libreria contiene chiavi non valide." }
+            replaceLibrary(datastore, libraryValues)
+        }
+        if (StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories) {
+            StreamCenterConfigurationStore.replace(streamCenter, streamCenterValues)
+        }
     }
 
     private fun applyAll(
@@ -512,4 +752,12 @@ internal object StreamCenterLocalSyncStorage {
         }
         return output.toByteArray()
     }
+
+    private val TRANSFERRED_MEDIA_FOLDERS = setOf(
+        "result_resume_watching_2",
+        "result_resume_watching",
+        "result_watch_state_data",
+        "video_pos_dur",
+    )
+    private const val MAX_TRANSFERRED_MEDIA_SUMMARIES = 12
 }

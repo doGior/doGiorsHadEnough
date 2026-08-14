@@ -264,7 +264,9 @@ internal class StreamCenterTmdbCatalog(
         private const val REMOTE_SCORE_REQUEST_CHUNK_SIZE = 5
         private const val TMDB_BASE_URL = "https://www.themoviedb.org"
         private const val CARD_SELECTOR =
-            "div[data-object-id][class*=poster-card], div[data-object-id][class*=media-card], " +
+            "div.media-list-results > div[data-object-id], " +
+                "div.media-card-list > div[data-object-id], " +
+                "div[data-object-id][class*=poster-card], div[data-object-id][class*=media-card], " +
                 "div.card.style_1, div.card.v4.tight"
         private val MEDIA_PATH_REGEX = Regex("/(movie|tv)/(\\d+)", RegexOption.IGNORE_CASE)
         private val YEAR_REGEX = Regex("\\b(?:18|19|20|21)\\d{2}\\b")

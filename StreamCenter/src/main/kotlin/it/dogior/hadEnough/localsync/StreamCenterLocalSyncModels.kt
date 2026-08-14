@@ -8,6 +8,8 @@ internal enum class StreamCenterLocalSyncPayloadType(
     CLOUDSTREAM("cloudstream", "Configurazione CloudStream"),
     LIBRARY("library", "Libreria locale"),
     STREAMCENTER("streamcenter", "Configurazione StreamCenter"),
+
+    SELECTIVE("selective", "Selezione"),
     ;
 
     companion object {
@@ -32,6 +34,7 @@ internal data class StreamCenterLocalSyncOffer(
     val senderName: String,
     val senderAddress: String,
     val senderPublicKey: String,
+    val senderIdentityKey: String,
     val tcpPort: Int,
     val compressedSize: Int,
     val uncompressedSize: Int,

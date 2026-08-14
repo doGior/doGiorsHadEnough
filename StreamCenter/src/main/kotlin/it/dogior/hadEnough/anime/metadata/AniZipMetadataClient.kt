@@ -60,6 +60,10 @@ internal class AniZipMetadataClient(
         val mappedTmdbId = mappings?.optNullableString("themoviedb_id")
             ?.toIntOrNull()
             ?.takeIf { it > 0 }
+        val mappedImdbId = mappings?.optNullableString("imdb_id")
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { id -> id.startsWith("tt") && id.length >= 7 && id.drop(2).all(Char::isDigit) }
         val episodes = linkedMapOf<Int, AniZipEpisodeMetadata>()
 
         root.optJSONObject("episodes")?.let { entries ->
@@ -82,6 +86,7 @@ internal class AniZipMetadataClient(
                     fallbackAirDate = fallbackAirDate,
                     rating = entry.optDouble("rating", 0.0)
                         .takeIf { it.isFinite() && it > 0.0 && it <= 10.0 },
+                    seasonNumber = entry.optNullableInt("seasonNumber"),
                     episodeNumber = entry.optNullableInt("episodeNumber"),
                     absoluteEpisodeNumber = entry.optNullableInt("absoluteEpisodeNumber"),
                 )
@@ -96,6 +101,7 @@ internal class AniZipMetadataClient(
             malId = mappedMalId,
             kitsuId = mappedKitsuId,
             tmdbId = mappedTmdbId,
+            imdbId = mappedImdbId,
         )
         MetadataLog.info(
             SOURCE,

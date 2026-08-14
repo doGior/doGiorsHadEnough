@@ -4,19 +4,12 @@ import it.dogior.hadEnough.*
 import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
-import it.dogior.hadEnough.torrent.StreamCenterTorrentSources
 import it.dogior.hadEnough.util.StreamCenterLogger
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
-import android.animation.ArgbEvaluator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
-import android.content.Intent
 import android.content.SharedPreferences
-import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -25,56 +18,32 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PointF
 import android.graphics.RadialGradient
-import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
-import android.graphics.drawable.StateListDrawable
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.text.InputFilter
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.DecelerateInterpolator
-import android.widget.ArrayAdapter
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ListView
-import android.widget.ProgressBar
-import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.edit
-import androidx.core.widget.doAfterTextChanged
 import androidx.core.graphics.ColorUtils
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.syncproviders.AccountManager
-import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.ImageLoader
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -82,20 +51,17 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import org.jsoup.Connection
-import org.jsoup.Jsoup
-import java.util.Calendar
 import java.util.Locale
 import kotlin.math.sin
 import kotlin.random.Random
 
 private const val MAIN_MENU_SUBMENU_REVEAL_DP = 116
-private const val PUBLIC_IP_ENDPOINT = "https://api.ipify.org"
 private const val VPN_COUNTRY_ENDPOINT = "https://speed.cloudflare.com/meta"
 private const val VPN_COUNTRY_FALLBACK_ENDPOINT = "https://www.cloudflare.com/cdn-cgi/trace"
 private val publicIpPattern = Regex("[0-9A-Fa-f:.]{3,45}")
 private val countryCodePattern = Regex("[A-Za-z]{2}")
 private val cloudflareCountryPattern = Regex("""(?m)^loc=([A-Za-z]{2})$""")
+private val cloudflareIpPattern = Regex("""(?m)^ip=([0-9A-Fa-f:.]{3,45})$""")
 
 private class SettingsAuroraDecoration(context: Context) : View(context) {
     private data class Star(
@@ -409,7 +375,7 @@ internal object StreamCenterStremioManifestRefreshNotice {
 class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var sourcesStatus: TextView? = null
     private var vpnStatus: TextView? = null
-    private var vpnCountryFlag: ImageView? = null
+    private var vpnCountryFlag: TextView? = null
     private var vpnCountryFlagPlaceholder: TextView? = null
     private var vpnCountryCodeText: TextView? = null
     private var vpnDnsText: TextView? = null
@@ -419,7 +385,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var iconPreloadContainer: FrameLayout? = null
     private var iconPreloadGeneration = 0
     private val preloadedIconUrls = mutableSetOf<String>()
-    private val menuSparkleTargets = mutableListOf<BorderSparkleTarget>()
     private var supportAurora: SettingsAuroraDecoration? = null
     private var publicIpValue: String? = null
     private var publicIpRequestRunning = false
@@ -429,6 +394,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var vpnCountryRefreshGeneration = 0
     private var vpnCountryNetwork: Network? = null
     private var vpnCountryVpnActive: Boolean? = null
+    private val cloudflareMetaLock = Any()
+    private var cloudflareMetaInFlight: CompletableDeferred<CloudflareMeta>? = null
     private var networkRefreshGeneration = 0
     private var connectivityManager: ConnectivityManager? = null
     private var vpnNetworkCallback: ConnectivityManager.NetworkCallback? = null
@@ -444,7 +411,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     ): View {
         resetRestartNeeded()
         refreshStremioManifestsOnSettingsOpen()
-        menuSparkleTargets.clear()
         val content = rootContainer().apply {
             clipToPadding = false
             minimumHeight = minOf(
@@ -496,10 +462,12 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         vpnInfo.addView(vpnSeparator())
         FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(dp(19), dp(13))
-            vpnCountryFlag = ImageView(requireContext()).apply {
+            vpnCountryFlag = TextView(requireContext()).apply {
                 contentDescription = "Paese della connessione"
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                alpha = 0.72f
+                textSize = 11f
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                alpha = 0.95f
                 visibility = View.INVISIBLE
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -558,7 +526,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             saveToast(if (enabled) "Modalità Prestazioni ON" else "Modalità Prestazioni OFF")
         }
         (performanceCard.layoutParams as? LinearLayout.LayoutParams)?.topMargin = 0
-        menuSparkleTargets += BorderSparkleTarget(performanceCard, COLOR_PERFORMANCE)
         content.addView(performanceCard)
         content.addView(
             settingsMenuCard(
@@ -592,7 +559,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         content.addView(
             settingsMenuCard(
                 title = "Supporto",
-                icon = "🛟",
+                icon = "❓",
                 accent = COLOR_SUPPORT,
             ) {
                 showSubmenu(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
@@ -617,7 +584,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }.also(content::addView)
         preloadSettingsIcons()
 
-        startBorderSparkleCycle(menuSparkleTargets)
         return scroll(content)
     }
 
@@ -675,10 +641,10 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         vpnDnsText = null
         preloadedIconUrls.clear()
         super.onDestroyView()
-        menuSparkleTargets.clear()
     }
 
     private fun preloadSettingsIcons() {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
         val container = iconPreloadContainer ?: return
         val generation = ++iconPreloadGeneration
         val directIconUrls = (
@@ -715,6 +681,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     }
 
     private fun preloadIcon(container: FrameLayout, iconUrl: String) {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
         if (!preloadedIconUrls.add(iconUrl)) return
         val imageView = ImageView(requireContext()).apply {
             layoutParams = FrameLayout.LayoutParams(dp(42), dp(42))
@@ -738,15 +705,12 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         } + StreamCenterPlugin.getStremioAddons(sharedPref).count { addon ->
             StreamCenterPlugin.isStremioAddonEnabled(sharedPref, addon.key)
         }
-        val activeTorrentSourceCount = if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
-            StreamCenterTorrentSources.definitions.count { source ->
-                StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
-            }
+        val torrentSummary = if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
+            " · Torrent On"
         } else {
-            0
+            " · Torrent Off"
         }
-        val activeSourceCount = activeStreamingSourceCount + activeTorrentSourceCount
-        sourcesStatus?.text = "$activeSourceCount ${if (activeSourceCount == 1) "attiva" else "attive"}"
+        sourcesStatus?.text = "$activeStreamingSourceCount fonti$torrentSummary"
     }
 
     private fun registerVpnStatusUpdates() {
@@ -810,19 +774,16 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     }
 
     private fun requestVpnCountry() {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) {
+            vpnCountryCode = null
+            updateVpnCountryFlag(null)
+            return
+        }
         if (vpnCountryRequestRunning) return
         vpnCountryRequestRunning = true
         val requestGeneration = vpnCountryRefreshGeneration
         CoroutineScope(Dispatchers.IO).launch {
-            val countryCode = runCatching {
-                JSONObject(app.get(VPN_COUNTRY_ENDPOINT, timeout = 5L).text)
-                    .optString("country")
-            }.getOrNull().let(::normalizedCountryCode)
-                ?: runCatching {
-                    cloudflareCountryPattern.find(
-                        app.get(VPN_COUNTRY_FALLBACK_ENDPOINT, timeout = 5L).text,
-                    )?.groupValues?.getOrNull(1)
-                }.getOrNull().let(::normalizedCountryCode)
+            val countryCode = fetchCloudflareMeta().country
                 ?: Locale.getDefault().country.let(::normalizedCountryCode)
             withContext(Dispatchers.Main) {
                 vpnCountryRequestRunning = false
@@ -841,6 +802,60 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         ?.trim()
         ?.uppercase(Locale.ROOT)
         ?.takeIf { countryCodePattern.matches(it) }
+
+    private data class CloudflareMeta(val country: String?, val ip: String?)
+
+    private suspend fun fetchCloudflareMeta(): CloudflareMeta {
+        var owned: CompletableDeferred<CloudflareMeta>? = null
+        val pending = synchronized(cloudflareMetaLock) {
+            cloudflareMetaInFlight ?: CompletableDeferred<CloudflareMeta>().also {
+                cloudflareMetaInFlight = it
+                owned = it
+            }
+        }
+        val ownedDeferred = owned ?: return pending.await()
+        var result = CloudflareMeta(null, null)
+        try {
+            result = requestCloudflareMeta()
+        } finally {
+            synchronized(cloudflareMetaLock) {
+                if (cloudflareMetaInFlight === ownedDeferred) cloudflareMetaInFlight = null
+            }
+            ownedDeferred.complete(result)
+        }
+        return result
+    }
+
+    private suspend fun requestCloudflareMeta(): CloudflareMeta {
+        val meta = runCatching {
+            val json = JSONObject(app.get(VPN_COUNTRY_ENDPOINT, timeout = 5L).text)
+            CloudflareMeta(
+                country = normalizedCountryCode(json.optString("country")),
+                ip = json.optString("clientIp").trim().takeIf { publicIpPattern.matches(it) },
+            )
+        }.getOrNull()
+        if (meta?.country != null && meta.ip != null) return meta
+        val trace = runCatching {
+            app.get(VPN_COUNTRY_FALLBACK_ENDPOINT, timeout = 5L).text
+        }.getOrNull()
+        return CloudflareMeta(
+            country = meta?.country ?: normalizedCountryCode(
+                trace?.let { cloudflareCountryPattern.find(it)?.groupValues?.getOrNull(1) },
+            ),
+            ip = meta?.ip ?: trace
+                ?.let { cloudflareIpPattern.find(it)?.groupValues?.getOrNull(1) }
+                ?.trim()?.takeIf { publicIpPattern.matches(it) },
+        )
+    }
+
+    private fun countryCodeToFlagEmoji(code: String): String {
+        val base = 0x1F1E6 - 'A'.code
+        return buildString {
+            for (letter in code.uppercase(Locale.ROOT)) {
+                appendCodePoint(base + letter.code)
+            }
+        }
+    }
 
     private fun updateVpnStatusText(isVpnActive: Boolean) {
         vpnStatus?.post {
@@ -875,6 +890,12 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
 
     private fun updateVpnCountryFlag(countryCode: String?) {
         val flag = vpnCountryFlag ?: return
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) {
+            flag.visibility = View.INVISIBLE
+            vpnCountryFlagPlaceholder?.visibility = View.VISIBLE
+            vpnCountryCodeText?.text = "??"
+            return
+        }
         val code = countryCode?.takeIf { countryCodePattern.matches(it) }
         if (code == null) {
             flag.visibility = View.INVISIBLE
@@ -882,10 +903,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             vpnCountryCodeText?.text = "??"
             return
         }
-        if (flag.tag != code) {
-            flag.tag = code
-            ImageLoader.run { flag.loadImage("https://flagcdn.com/w40/${code.lowercase(Locale.ROOT)}.png") }
-        }
+        flag.text = countryCodeToFlagEmoji(code)
         flag.visibility = View.VISIBLE
         vpnCountryFlagPlaceholder?.visibility = View.INVISIBLE
         vpnCountryCodeText?.apply {
@@ -919,6 +937,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
 
     private fun refreshNetworkStatus() {
         val content = mainContent ?: return
+        synchronized(cloudflareMetaLock) { cloudflareMetaInFlight = null }
         val refreshGeneration = ++networkRefreshGeneration
         content.post {
             if (!isAdded || refreshGeneration != networkRefreshGeneration) return@post
@@ -1013,7 +1032,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             onClick = onClick,
         ).view
         statusView?.let { onStatusReady?.invoke(it) }
-        menuSparkleTargets += BorderSparkleTarget(card, accent)
         return card
     }
 
@@ -1063,7 +1081,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         val aurora = supportAurora ?: return
         val shouldShowIp = visualPublicIpEnabled
         aurora.setEffects(visualParticlesEnabled, shouldShowIp)
-        if (!shouldShowIp) {
+        if (!shouldShowIp || !StreamCenterVpnGuard.canUseInternet(sharedPref)) {
             aurora.setPublicIp(null)
             return
         }
@@ -1081,10 +1099,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         publicIpRequestRunning = true
         val requestGeneration = publicIpRefreshGeneration
         CoroutineScope(Dispatchers.IO).launch {
-            val publicIp = runCatching {
-                app.get(PUBLIC_IP_ENDPOINT, timeout = 8L).text.trim()
-                    .takeIf { publicIpPattern.matches(it) }
-            }.getOrNull()
+            val publicIp = fetchCloudflareMeta().ip
             withContext(Dispatchers.Main) {
                 publicIpRequestRunning = false
                 if (!isAdded) return@withContext

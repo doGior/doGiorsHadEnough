@@ -1,322 +1,302 @@
 package it.dogior.hadEnough.torrent
 
-import android.util.Log
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import it.dogior.hadEnough.util.StreamCenterLogger
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 
 internal object StreamCenterTorrentResolver {
-    private const val LOG_TAG = "StreamCenterTorrent"
-    private const val MAX_RESULTS_PER_SOURCE = 8
-
-    private val clients: Map<String, StreamCenterTorrentSourceClient> = mapOf(
-        StreamCenterTorrentSources.SUKEBEI_NYAA_KEY to StreamCenterNyaaTorrentClient,
-        StreamCenterTorrentSources.NYAA_KEY to StreamCenterNyaaTorrentClient,
-        StreamCenterTorrentSources.TORRENT_GALAXY_KEY to StreamCenterTorrentGalaxyClient,
-        StreamCenterTorrentSources.APIBAY_KEY to StreamCenterApiBayTorrentClient,
-        StreamCenterTorrentSources.EXT_KEY to StreamCenterExtTorrentClient,
-    )
-
-    suspend fun loadSource(
-        definition: StreamCenterTorrentSourceDefinition,
-        sourceUrl: String,
+    suspend fun load(
+        domains: List<StreamCenterExtDomain>,
         context: StreamCenterTorrentPlaybackContext,
         filters: StreamCenterTorrentFilterSettings,
         callback: (ExtractorLink) -> Unit,
-        stopAfterFirstResult: Boolean = false,
+        performanceMode: Boolean,
         logTabName: String,
     ): Boolean {
-        if (!definition.supports(context)) return false
-        val client = clients[definition.key] ?: return false
-        val sourceContext = if (definition.key == StreamCenterTorrentSources.SUKEBEI_NYAA_KEY) {
-            context
-        } else {
-            context.copy(japaneseTitle = null)
-        }
+        if (domains.isEmpty()) return false
         val startedAt = System.currentTimeMillis()
-        val plannedQueries = if (client === StreamCenterNyaaTorrentClient) {
-            StreamCenterTorrentQueryBuilder.buildForNyaa(
-                definition,
-                sourceContext,
-                filters.copy(language = StreamCenterTorrentLanguageFilter.ANY),
-            )
-        } else {
-            emptyList()
-        }
-        StreamCenterLogger.logMetadata(
-            tabName = logTabName,
-            source = definition.title,
-            action = "Ricerca Torrent avviata",
-            metadata = mapOf(
-                "fonte_torrent" to definition.title,
-                "tipo_contenuto" to when {
-                    sourceContext.isAnime -> "anime"
-                    sourceContext.isMovie -> "film"
-                    else -> "serie_tv"
-                },
-                "stagione" to sourceContext.season,
-                "episodio" to sourceContext.episode,
-                "numeri_episodio_ricerca" to sourceContext.episodeNumbersForSearch(),
-                "titoli_latini_disponibili" to sourceContext.titles.size,
-                "titolo_inglese_tmdb_disponibile" to !sourceContext.englishTitle.isNullOrBlank(),
-                "titolo_giapponese_disponibile" to !sourceContext.japaneseTitle.isNullOrBlank(),
-                "query_previste" to plannedQueries.size,
-                "query_giapponesi_previste" to plannedQueries.count(::containsJapaneseScript),
-                "cloudflare_verificato" to if (
-                    definition.key == StreamCenterTorrentSources.EXT_KEY
-                ) {
-                    StreamCenterExtCloudflareSession.isReady(sourceUrl)
-                } else {
-                    null
-                },
-                "filtro_lingua" to filters.language.preferenceValue,
-                "risoluzione_minima" to filters.minimumResolution,
-                "seed_minimi" to filters.minimumSeeders,
-                "dimensione_massima_byte" to filters.maximumSizeBytes,
-                "escludi_copie_cinema" to filters.excludeCinemaCopies,
-                "primo_risultato_sufficiente" to stopAfterFirstResult,
-            ),
-        )
-
         var timedOut = false
-        var failure: Throwable? = null
-        var nyaaDiagnostics: StreamCenterNyaaSearchDiagnostics? = null
-        var executedLanguagePasses = 0
-        var italianPriorityCandidateCount = 0
-        var languageFallbackAttempted = false
-        var languageFallbackUsed = false
-        var appliedFilters = filters.languageSearchPasses().first()
-        var cachedNyaaCandidates: List<StreamCenterTorrentCandidate>? = null
-        var candidates = try {
-            withTimeoutOrNull(TORRENT_SOURCE_TIMEOUT_MS) {
-                var selectedCandidates = emptyList<StreamCenterTorrentCandidate>()
-                for ((index, passFilters) in filters.languageSearchPasses().withIndex()) {
-                    executedLanguagePasses++
-                    languageFallbackAttempted = index > 0
-                    appliedFilters = passFilters
-                    val passCandidates = if (client === StreamCenterNyaaTorrentClient) {
-                        val discoveredCandidates = cachedNyaaCandidates ?: StreamCenterNyaaTorrentClient
-                            .searchWithDiagnostics(
-                                definition,
-                                sourceUrl,
-                                sourceContext,
-                                passFilters.copy(language = StreamCenterTorrentLanguageFilter.ANY),
-                            )
-                            .also { result ->
-                                nyaaDiagnostics = result.diagnostics
-                            }
-                            .candidates
-                            .also { result -> cachedNyaaCandidates = result }
-                        discoveredCandidates.filter { candidate ->
-                            candidate.isEligibleFor(sourceContext, passFilters)
+        var finalOutcome: StreamCenterExtSearchOutcome? = null
+        var resultOutcome: StreamCenterExtSearchOutcome? = null
+        val attemptedDomains = mutableListOf<Map<String, Any?>>()
+        val resultLimit = filters.resultLimit.coerceAtLeast(1)
+        val resolvedByHash = LinkedHashMap<String, ResolvedCandidate>()
+        val sourceTimeoutMs = if (performanceMode) {
+            TORRENT_PERFORMANCE_TOTAL_TIMEOUT_MS
+        } else {
+            TORRENT_SOURCE_TIMEOUT_MS
+        }
+
+        fun resolvedCandidate(candidate: StreamCenterTorrentCandidate): ResolvedCandidate? {
+            if (!candidate.isEligibleFor(context, filters)) return null
+            val magnet = StreamCenterTorrentMagnet.build(candidate) ?: return null
+            val infoHash = StreamCenterTorrentMagnet.infoHash(magnet) ?: return null
+            return ResolvedCandidate(candidate, magnet, infoHash)
+        }
+
+        try {
+            withTimeoutOrNull(sourceTimeoutMs) {
+                for ((domainIndex, domain) in domains.withIndex()) {
+                    if (resolvedByHash.size >= resultLimit) break
+                    val remainingResults = (resultLimit - resolvedByHash.size).coerceAtLeast(1)
+                    StreamCenterLogger.logMetadata(
+                        tabName = logTabName,
+                        source = "Torrent · EXT",
+                        action = "Ricerca EXT avviata",
+                        metadata = searchStartMetadata(domain, context, filters),
+                    )
+                    val attemptBudgetMs = domainAttemptBudgetMs(
+                        startedAt = startedAt,
+                        domainIndex = domainIndex,
+                        domainCount = domains.size,
+                        sourceTimeoutMs = sourceTimeoutMs,
+                    )
+                    val clientBudgetMs = (attemptBudgetMs - DOMAIN_RESULT_RESERVE_MS)
+                        .takeIf { budget -> budget > 0L }
+                        ?: attemptBudgetMs
+                    val outcome = withTimeoutOrNull(attemptBudgetMs) {
+                        StreamCenterExtTorrentClient.search(
+                            domain = domain,
+                            context = context,
+                            filters = filters,
+                            desiredResults = remainingResults,
+                            timeBudgetMs = clientBudgetMs,
+                        )
+                    } ?: StreamCenterExtSearchOutcome(
+                        domain = domain,
+                        status = StreamCenterExtDomainStatus(
+                            domain = domain,
+                            availability = StreamCenterExtAvailability.UNAVAILABLE,
+                            detail = "timeout_dominio_${attemptBudgetMs}ms",
+                        ),
+                    )
+                    val domainResolved = outcome.candidates.mapNotNull { candidate ->
+                        resolvedCandidate(candidate)
+                    }
+                    domainResolved.forEach { resolved ->
+                        if (!resolvedByHash.containsKey(resolved.infoHash)) {
+                            resolvedByHash[resolved.infoHash] = resolved
                         }
-                    } else {
-                        client.search(definition, sourceUrl, sourceContext, passFilters)
                     }
-                    if (
-                        index == 0 &&
-                        filters.language == StreamCenterTorrentLanguageFilter.PRIORITIZE_ITALIAN
-                    ) {
-                        italianPriorityCandidateCount = passCandidates.size
+                    if (domainResolved.isNotEmpty()) {
+                        resultOutcome = outcome
                     }
-                    if (passCandidates.isNotEmpty()) {
-                        selectedCandidates = passCandidates
-                        languageFallbackUsed = index > 0
-                        break
-                    }
+                    val shouldTryNextDomain =
+                        outcome.shouldTryNextDomain || domainResolved.isEmpty()
+                    attemptedDomains += mapOf(
+                        "dominio" to domain.baseUrl,
+                        "ruolo" to domain.title,
+                        "stato" to outcome.status.availability.name.lowercase(Locale.ROOT),
+                        "http" to outcome.status.httpCode,
+                        "query" to outcome.executedPlans.size,
+                        "budget_dominio_ms" to attemptBudgetMs,
+                        "budget_client_ms" to clientBudgetMs,
+                        "richieste_ricerca" to outcome.requestedSearchPageCount,
+                        "candidati_grezzi" to outcome.rawCandidateCount,
+                        "righe_idonee" to outcome.eligibleRowCount,
+                        "richieste_magnet" to outcome.requestedMagnetCount,
+                        "candidati_con_magnet" to outcome.candidates.size,
+                        "cache" to outcome.fromCache,
+                        "parziale" to outcome.partial,
+                        "magnet_pronti" to domainResolved.size,
+                    )
+                    StreamCenterLogger.logMetadata(
+                        tabName = logTabName,
+                        source = "Torrent · EXT",
+                        action = "Tentativo dominio EXT completato",
+                        metadata = mapOf(
+                            "dominio" to domain.baseUrl,
+                            "stato" to outcome.status.availability.name.lowercase(Locale.ROOT),
+                            "http" to outcome.status.httpCode,
+                            "dettaglio" to outcome.status.detail,
+                            "budget_dominio_ms" to attemptBudgetMs,
+                            "budget_client_ms" to clientBudgetMs,
+                            "piani_ricerca" to outcome.executedPlans.map { plan ->
+                                mapOf(
+                                    "caratteri_query" to plan.query.length,
+                                    "strategia" to plan.reason,
+                                    "batch" to plan.batchSearch,
+                                )
+                            },
+                            "campi_ricercati" to outcome.appliedLocations.map { it.preferenceValue },
+                            "richieste_ricerca" to outcome.requestedSearchPageCount,
+                            "candidati_grezzi" to outcome.rawCandidateCount,
+                            "righe_idonee" to outcome.eligibleRowCount,
+                            "richieste_magnet" to outcome.requestedMagnetCount,
+                            "candidati_con_magnet" to outcome.candidates.size,
+                            "cache" to outcome.fromCache,
+                            "risultati_parziali" to outcome.partial,
+                            "magnet_pronti" to domainResolved.size,
+                            "fallback_successivo" to shouldTryNextDomain,
+                        ),
+                        level = outcome.status.availability.logLevel(),
+                    )
+                    finalOutcome = outcome
+                    if (resolvedByHash.size >= resultLimit) break
+                    if (shouldTryNextDomain) continue
+                    break
                 }
-                selectedCandidates
-            } ?: emptyList<StreamCenterTorrentCandidate>().also { timedOut = true }
+            } ?: run { timedOut = true }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
-            failure = error
-            Log.w(
-                LOG_TAG,
-                "${definition.title}: ricerca fallita (${error.javaClass.simpleName})",
+            StreamCenterLogger.logTabError(
+                tabName = logTabName,
+                action = "Ricerca Torrent EXT non riuscita",
+                throwable = error,
+                metadata = mapOf("tentativi_dominio" to attemptedDomains),
             )
-            emptyList()
         }
 
-        val limit = if (stopAfterFirstResult) 1 else MAX_RESULTS_PER_SOURCE
-        val inspectionLimit = if (stopAfterFirstResult) 3 else MAX_BATCH_INSPECTIONS
-        var candidateResolution = resolveCandidates(
-            candidates = candidates,
-            context = sourceContext,
-            filters = appliedFilters,
-            inspectionLimit = inspectionLimit,
-        )
-        if (
-            candidateResolution.resolvedCandidates.isEmpty() &&
-            filters.language == StreamCenterTorrentLanguageFilter.PRIORITIZE_ITALIAN &&
-            !languageFallbackUsed &&
-            !timedOut
-        ) {
-            languageFallbackAttempted = true
-            executedLanguagePasses++
-            val fallbackFilters = filters.copy(language = StreamCenterTorrentLanguageFilter.ANY)
-            val fallbackCandidates = try {
-                withTimeoutOrNull(TORRENT_SOURCE_TIMEOUT_MS) {
-                    if (client === StreamCenterNyaaTorrentClient) {
-                        val discoveredCandidates = cachedNyaaCandidates
-                            ?: StreamCenterNyaaTorrentClient.searchWithDiagnostics(
-                                definition,
-                                sourceUrl,
-                                sourceContext,
-                                fallbackFilters,
-                            ).also { result ->
-                                nyaaDiagnostics = result.diagnostics
-                            }.candidates.also { result ->
-                                cachedNyaaCandidates = result
-                            }
-                        discoveredCandidates.filter { candidate ->
-                            candidate.isEligibleFor(sourceContext, fallbackFilters)
-                        }
-                    } else {
-                        client.search(definition, sourceUrl, sourceContext, fallbackFilters)
-                    }
-                } ?: emptyList<StreamCenterTorrentCandidate>().also { timedOut = true }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                failure = error
-                emptyList()
+        val emitDomain = resultOutcome?.domain ?: finalOutcome?.domain
+        val ranked = resolvedByHash.values
+            .asSequence()
+            .map { resolved ->
+                RankedResolvedCandidate(
+                    resolved = resolved,
+                    ranking = StreamCenterTorrentFilterEngine.rank(resolved.candidate, context, filters),
+                )
             }
-            val attemptedCandidateKeys = candidates.mapTo(hashSetOf()) { candidate ->
-                candidate.batchKey()
-            }
-            val newFallbackCandidates = fallbackCandidates.filterNot { candidate ->
-                candidate.batchKey() in attemptedCandidateKeys
-            }
-            val fallbackResolution = resolveCandidates(
-                candidates = newFallbackCandidates,
-                context = sourceContext,
-                filters = fallbackFilters,
-                inspectionLimit = inspectionLimit,
-            )
-            candidates = newFallbackCandidates
-            appliedFilters = fallbackFilters
-            languageFallbackUsed = fallbackResolution.resolvedCandidates.isNotEmpty()
-            candidateResolution = fallbackResolution.copy(
-                batchPreparation = fallbackResolution.batchPreparation.withDiagnosticsFrom(
-                    candidateResolution.batchPreparation,
-                ),
-            )
-        }
-        val eligibleCandidates = candidateResolution.eligibleCandidates
-        val batchPreparation = candidateResolution.batchPreparation
-        val resolvedCandidates = candidateResolution.resolvedCandidates
-        val uniqueCandidates = resolvedCandidates.distinctBy(ResolvedCandidate::infoHash)
-        val links = uniqueCandidates.asSequence()
-            .sortedWith(
-                compareByDescending<ResolvedCandidate> { it.candidate.seeders ?: -1 }
-                    .thenBy { it.candidate.title.lowercase() },
-            )
-            .take(limit)
+            .sortedWith(resultComparator)
+            .take(resultLimit)
+            .map(RankedResolvedCandidate::resolved)
             .toList()
-
-        links.forEach { result ->
+        ranked.forEach { resolved ->
             callback(
                 newExtractorLink(
-                    source = definition.title,
-                    name = result.candidate.displayName(definition),
-                    url = result.magnet,
+                    source = "EXT",
+                    name = resolved.candidate.displayName(emitDomain),
+                    url = resolved.magnet,
                     type = ExtractorLinkType.MAGNET,
                 ) {
                     quality = qualityFromTorrentTitle(
-                        listOfNotNull(
-                            result.candidate.title,
-                            result.candidate.selectedFileName,
-                        ).joinToString(" "),
+                        listOfNotNull(resolved.candidate.title, resolved.candidate.selectedFileName)
+                            .joinToString(" "),
                     )
                 },
             )
         }
-        val allNyaaQueriesFailed = nyaaDiagnostics?.let { diagnostics ->
-            diagnostics.executedQueries.isNotEmpty() &&
-                diagnostics.failedQueries.size == diagnostics.executedQueries.size
-        } == true
+        val effectiveOutcome = resultOutcome ?: finalOutcome
         StreamCenterLogger.logMetadata(
             tabName = logTabName,
-            source = definition.title,
+            source = "Torrent · EXT",
             action = when {
-                failure != null -> "Ricerca Torrent non riuscita"
-                timedOut -> "Ricerca Torrent scaduta"
-                else -> "Ricerca Torrent completata"
+                timedOut -> "Ricerca Torrent EXT scaduta"
+                ranked.isEmpty() && effectiveOutcome?.status?.availability != StreamCenterExtAvailability.AVAILABLE ->
+                    "Ricerca Torrent EXT non riuscita"
+                else -> "Ricerca Torrent EXT completata"
             },
             metadata = mapOf(
-                "fonte_torrent" to definition.title,
-                "query_previste" to (nyaaDiagnostics?.plannedQueries?.size ?: plannedQueries.size),
-                "query_eseguite" to nyaaDiagnostics?.executedQueries?.size,
-                "query_fallite" to nyaaDiagnostics?.failedQueries?.size,
-                "query_giapponese_usata" to (
-                    definition.key == StreamCenterTorrentSources.SUKEBEI_NYAA_KEY &&
-                        nyaaDiagnostics?.executedQueries.orEmpty().any(::containsJapaneseScript)
-                    ),
-                "candidati_rss" to nyaaDiagnostics?.rawCandidateCount,
-                "candidati_rss_idonei" to nyaaDiagnostics?.eligibleCandidateCount,
-                "candidati_ricevuti" to candidates.size,
-                "candidati_idonei" to eligibleCandidates.size,
-                "batch_rilevati" to batchPreparation.detectedCount,
-                "batch_ispezionati" to batchPreparation.inspectedCount,
-                "batch_risolti" to batchPreparation.resolvedCount,
-                "batch_scartati" to batchPreparation.rejectedCount,
-                "motivi_scarto_batch" to batchPreparation.failures,
-                "file_batch_selezionati" to batchPreparation.selectedFiles,
-                "passaggi_lingua_eseguiti" to executedLanguagePasses,
-                "candidati_priorita_italiano" to italianPriorityCandidateCount,
-                "fallback_lingua_tentato" to languageFallbackAttempted,
-                "fallback_lingua_usato" to languageFallbackUsed,
-                "filtro_lingua_effettivo" to appliedFilters.language.preferenceValue,
-                "magnet_validi" to resolvedCandidates.size,
-                "duplicati_rimossi" to (resolvedCandidates.size - uniqueCandidates.size),
-                "risultati_emessi" to links.size,
+                "categoria_ext" to context.extCategory().displayName,
+                "domini_tentati" to attemptedDomains,
+                "dominio_usato" to resultOutcome?.domain?.baseUrl,
+                "stato_finale" to effectiveOutcome?.status?.availability?.name?.lowercase(Locale.ROOT),
+                "candidati_idonei" to resolvedByHash.size,
+                "magnet_validi" to resolvedByHash.size,
+                "risultati_emessi" to ranked.size,
+                "limite_risultati" to resultLimit,
                 "timeout" to timedOut,
-                "tutte_le_query_fallite" to allNyaaQueriesFailed,
                 "durata_ms" to (System.currentTimeMillis() - startedAt),
-                "tipo_errore" to failure?.javaClass?.simpleName,
             ),
             level = when {
-                failure != null -> StreamCenterLogger.Level.ERROR
-                timedOut || allNyaaQueriesFailed -> StreamCenterLogger.Level.WARNING
+                timedOut || (ranked.isEmpty() && effectiveOutcome?.status?.availability != StreamCenterExtAvailability.AVAILABLE) ->
+                    StreamCenterLogger.Level.WARNING
                 else -> StreamCenterLogger.Level.INFO
             },
-            throwable = failure,
         )
-        return links.isNotEmpty()
+        return ranked.isNotEmpty()
     }
 
-    private fun StreamCenterTorrentCandidate.displayName(
-        definition: StreamCenterTorrentSourceDefinition,
-    ): String {
-        val details = buildList {
-            this@displayName.size?.takeIf(String::isNotBlank)?.let(::add)
-            seeders?.let { add("$it seed") }
-            leechers?.let { add("$it peer") }
-            selectedFileName
-                ?.substringAfterLast('/')
-                ?.substringAfterLast('\\')
-                ?.take(100)
-                ?.let { fileName -> add("File: $fileName") }
-        }
-        return buildString {
-            append("[Torrent · ")
-            append(definition.title)
-            append("] ")
-            append(title.take(180))
-            if (details.isNotEmpty()) {
-                append(" · ")
-                append(details.joinToString(" · "))
+    private fun domainAttemptBudgetMs(
+        startedAt: Long,
+        domainIndex: Int,
+        domainCount: Int,
+        sourceTimeoutMs: Long,
+    ): Long {
+        val elapsedMs = System.currentTimeMillis() - startedAt
+        val remainingMs = (sourceTimeoutMs - elapsedMs).coerceAtLeast(1L)
+        if (domainIndex >= domainCount - 1) return remainingMs
+        val fallbackReserveMs = minOf(DOMAIN_FALLBACK_RESERVE_MS, remainingMs / 3)
+        return (remainingMs - fallbackReserveMs).coerceAtLeast(1L)
+    }
+
+    private fun searchStartMetadata(
+        domain: StreamCenterExtDomain,
+        context: StreamCenterTorrentPlaybackContext,
+        filters: StreamCenterTorrentFilterSettings,
+    ): Map<String, Any?> = mapOf(
+        "dominio" to domain.baseUrl,
+        "ruolo_dominio" to domain.title,
+        "categoria_ext" to context.extCategory().displayName,
+        "stagione" to context.season,
+        "episodio" to context.episode,
+        "numeri_episodio_ricerca" to context.episodeNumbersForSearch(),
+        "titoli_disponibili" to context.titles.size,
+        "titolo_inglese_disponibile" to !context.englishTitle.isNullOrBlank(),
+        "titolo_giapponese_disponibile" to !context.japaneseTitle.isNullOrBlank(),
+        "campo_ricerca" to filters.containLocation.preferenceValue,
+        "filtro_lingua" to filters.language.preferenceValue,
+        "limite_risultati" to filters.resultLimit,
+        "dimensione_minima_byte" to filters.minimumSizeBytes,
+        "dimensione_massima_byte" to filters.maximumSizeBytes,
+        "seed_minimi" to filters.minimumSeeders,
+        "seed_massimi" to filters.maximumSeeders,
+        "risoluzione_minima" to filters.minimumResolution,
+        "escludi_copie_cinema" to filters.excludeCinemaCopies,
+        "codec_video_esclusi" to filters.blockedVideoCodecs.map { codec -> codec.displayName },
+        "numero_termini_esclusi" to filters.excludedTerms
+            .split(',', ';', '\n')
+            .count { term -> term.isNotBlank() },
+        "sorgenti_ext" to StreamCenterExtReleaseSources.forCategory(context.extCategory()).map { source -> source.title },
+        "cookie_cloudflare_presente" to StreamCenterExtCloudflareSession.hasVerifiedClearance(domain.baseUrl),
+    )
+
+    private fun StreamCenterTorrentCandidate.displayName(domain: StreamCenterExtDomain?): String {
+        val releaseName = StreamCenterExtReleaseSources.byId(extReleaseSourceId)?.title
+            ?: domain?.let { endpoint ->
+                when (endpoint) {
+                    StreamCenterExtDomain.PRIMARY -> "EXT"
+                    StreamCenterExtDomain.SECONDARY -> "EXT"
+                    StreamCenterExtDomain.PROXY -> "Proxy"
+                }
             }
+            ?: "EXT"
+        val resolution = StreamCenterTorrentMetadata.resolution(
+            listOfNotNull(title, selectedFileName).joinToString(" "),
+        )
+        val codecDetection = StreamCenterTorrentVideoCodecDetector.detect(this)
+        val summary = buildList {
+            add(releaseName)
+            resolution?.let { value -> add("${value}p") }
+            this@displayName.size
+                ?.takeIf { value -> value.isNotBlank() }
+                ?.let(::add)
+            seeders?.let { value -> add("🌱 $value") }
+            leechers?.let { value -> add("🪱 $value") }
+        }.joinToString(" · ")
+        val details = buildList {
+            add("Titolo: $title")
+            selectedFileName?.takeIf { value -> value.isNotBlank() }?.let { fileName ->
+                add("File: $fileName")
+            }
+            codecDetection.codecs
+                .takeIf { codecs -> codecs.isNotEmpty() }
+                ?.joinToString(" + ") { codec -> codec.displayName }
+                ?.let { codecs -> add("Codec: $codecs") }
         }
+        return (listOf(summary) + details).joinToString("\n")
+    }
+
+    private fun StreamCenterExtAvailability.logLevel(): StreamCenterLogger.Level = when (this) {
+        StreamCenterExtAvailability.AVAILABLE -> StreamCenterLogger.Level.INFO
+        StreamCenterExtAvailability.VERIFICATION_REQUIRED,
+        StreamCenterExtAvailability.RATE_LIMITED -> StreamCenterLogger.Level.WARNING
+        StreamCenterExtAvailability.UNAVAILABLE,
+        StreamCenterExtAvailability.INVALID_RESPONSE -> StreamCenterLogger.Level.WARNING
     }
 
     private data class ResolvedCandidate(
@@ -325,129 +305,18 @@ internal object StreamCenterTorrentResolver {
         val infoHash: String,
     )
 
-    private suspend fun resolveCandidates(
-        candidates: List<StreamCenterTorrentCandidate>,
-        context: StreamCenterTorrentPlaybackContext,
-        filters: StreamCenterTorrentFilterSettings,
-        inspectionLimit: Int,
-    ): CandidateResolution {
-        val eligibleCandidates = candidates.filter { candidate ->
-            candidate.isEligibleFor(context, filters)
-        }
-        val batchPreparation = prepareBatchCandidates(
-            candidates = eligibleCandidates,
-            context = context,
-            inspectionLimit = inspectionLimit,
-        )
-        val resolvedCandidates = batchPreparation.candidates
-            .filter { candidate -> candidate.isEligibleFor(context, filters) }
-            .mapNotNull { candidate ->
-                val magnet = StreamCenterTorrentMagnet.build(candidate) ?: return@mapNotNull null
-                val hash = StreamCenterTorrentMagnet.infoHash(magnet) ?: return@mapNotNull null
-                ResolvedCandidate(candidate, magnet, hash)
-            }
-        return CandidateResolution(
-            eligibleCandidates = eligibleCandidates,
-            batchPreparation = batchPreparation,
-            resolvedCandidates = resolvedCandidates,
-        )
-    }
-
-    private suspend fun prepareBatchCandidates(
-        candidates: List<StreamCenterTorrentCandidate>,
-        context: StreamCenterTorrentPlaybackContext,
-        inspectionLimit: Int,
-    ): BatchPreparation = coroutineScope {
-        val ranked = candidates.sortedWith(
-            compareByDescending<StreamCenterTorrentCandidate> { it.seeders ?: -1 }
-                .thenBy { it.title.lowercase() },
-        )
-        val batchCandidates = ranked.filter { candidate ->
-            StreamCenterTorrentMatchPolicy.isBatchCandidate(candidate.title, context)
-        }
-        val inspected = batchCandidates.take(inspectionLimit.coerceAtLeast(1))
-        val semaphore = Semaphore(BATCH_RESOLUTION_CONCURRENCY)
-        val resolutions = inspected.map { candidate ->
-            async {
-                semaphore.withPermit {
-                    candidate.batchKey() to StreamCenterTorrentBatchResolver.resolve(candidate, context)
-                }
-            }
-        }.awaitAll().toMap()
-        val failures = linkedMapOf<String, Int>()
-        val selectedFiles = mutableListOf<String>()
-        val prepared = ranked.mapNotNull { candidate ->
-            if (!StreamCenterTorrentMatchPolicy.isBatchCandidate(candidate.title, context)) {
-                return@mapNotNull candidate
-            }
-            val resolution = resolutions[candidate.batchKey()]
-            if (resolution == null) {
-                failures.increment("limite_ispezione_raggiunto")
-                return@mapNotNull null
-            }
-            resolution.failure?.let { reason ->
-                failures.increment(reason)
-                return@mapNotNull null
-            }
-            resolution.candidate?.also { resolved ->
-                resolved.selectedFileName?.let(selectedFiles::add)
-            }
-        }
-        BatchPreparation(
-            candidates = prepared,
-            detectedCount = batchCandidates.size,
-            inspectedCount = inspected.size,
-            resolvedCount = resolutions.values.count { it.candidate != null },
-            rejectedCount = batchCandidates.size - resolutions.values.count { it.candidate != null },
-            failures = failures,
-            selectedFiles = selectedFiles.take(MAX_LOGGED_BATCH_FILES),
-        )
-    }
-
-    private fun StreamCenterTorrentCandidate.batchKey(): String =
-        StreamCenterTorrentMagnet.infoHash(infoHash ?: magnetUrl)
-            ?: "$title|${fileMetadataRequest?.url.orEmpty()}"
-
-    private fun MutableMap<String, Int>.increment(key: String) {
-        this[key] = (this[key] ?: 0) + 1
-    }
-
-    private data class BatchPreparation(
-        val candidates: List<StreamCenterTorrentCandidate>,
-        val detectedCount: Int,
-        val inspectedCount: Int,
-        val resolvedCount: Int,
-        val rejectedCount: Int,
-        val failures: Map<String, Int>,
-        val selectedFiles: List<String>,
+    private data class RankedResolvedCandidate(
+        val resolved: ResolvedCandidate,
+        val ranking: StreamCenterTorrentCandidateRanking,
     )
 
-    private fun BatchPreparation.withDiagnosticsFrom(
-        previous: BatchPreparation,
-    ): BatchPreparation {
-        val mergedFailures = previous.failures.toMutableMap()
-        failures.forEach { (reason, count) ->
-            mergedFailures[reason] = (mergedFailures[reason] ?: 0) + count
-        }
-        return copy(
-            detectedCount = previous.detectedCount + detectedCount,
-            inspectedCount = previous.inspectedCount + inspectedCount,
-            resolvedCount = previous.resolvedCount + resolvedCount,
-            rejectedCount = previous.rejectedCount + rejectedCount,
-            failures = mergedFailures,
-            selectedFiles = (previous.selectedFiles + selectedFiles)
-                .take(MAX_LOGGED_BATCH_FILES),
-        )
-    }
+    private val resultComparator = compareByDescending<RankedResolvedCandidate> { ranked ->
+        ranked.ranking.languagePriority
+    }.thenByDescending { ranked ->
+        ranked.ranking.score
+    }.thenByDescending { ranked -> ranked.resolved.candidate.seeders ?: -1 }
+        .thenBy { ranked -> ranked.resolved.candidate.title.lowercase(Locale.ROOT) }
 
-    private data class CandidateResolution(
-        val eligibleCandidates: List<StreamCenterTorrentCandidate>,
-        val batchPreparation: BatchPreparation,
-        val resolvedCandidates: List<ResolvedCandidate>,
-    )
-
-    private const val MAX_BATCH_INSPECTIONS = 6
-    private const val BATCH_RESOLUTION_CONCURRENCY = 3
-    private const val MAX_LOGGED_BATCH_FILES = 6
-
+    private const val DOMAIN_FALLBACK_RESERVE_MS = 4_500L
+    private const val DOMAIN_RESULT_RESERVE_MS = 5_000L
 }

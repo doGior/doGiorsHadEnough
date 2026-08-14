@@ -23,14 +23,17 @@ internal class StreamCenterLocalSyncManager(
     val isRunning: Boolean
         get() = activeJob?.isActive == true
 
-    fun startSending(type: StreamCenterLocalSyncPayloadType) {
+    fun startSending(categories: Set<StreamCenterLocalSyncCategory>) {
         val sessionCancellation = beginSession()
         val sessionListener = loggingListener()
-        sessionListener.onStateChanged(StreamCenterLocalSyncState.PREPARING, "Preparazione di ${type.title.lowercase()}")
+        sessionListener.onStateChanged(
+            StreamCenterLocalSyncState.PREPARING,
+            "Preparazione di ${categories.joinToString(", ") { it.title.lowercase() }}",
+        )
         launchSession(
             sessionCancellation = sessionCancellation,
             operation = {
-                val payload = StreamCenterLocalSyncStorage.createPayload(applicationContext, type)
+                val payload = StreamCenterLocalSyncStorage.createSelectivePayload(applicationContext, categories)
                 sessionListener.onEvent(
                     StreamCenterLocalSyncEvent(
                         message = "Snapshot creato",
@@ -45,8 +48,12 @@ internal class StreamCenterLocalSyncManager(
                 )
                 StreamCenterLocalSyncNetwork.send(
                     payload = payload,
+                    localIdentityKey = StreamCenterLocalSyncTrust.localPublicKey(applicationContext),
                     cancellation = sessionCancellation,
                     listener = sessionListener,
+                    rememberPeer = { name, key ->
+                        StreamCenterLocalSyncTrust.rememberPeer(applicationContext, name, key)
+                    },
                 )
             },
             onSuccess = { result ->
@@ -79,8 +86,12 @@ internal class StreamCenterLocalSyncManager(
                 StreamCenterLocalSyncNetwork.receive(
                     offer = offer,
                     pairingCode = pairingCode,
+                    localIdentityKey = StreamCenterLocalSyncTrust.localPublicKey(applicationContext),
                     cancellation = sessionCancellation,
                     listener = sessionListener,
+                    rememberPeer = { name, key ->
+                        StreamCenterLocalSyncTrust.rememberPeer(applicationContext, name, key)
+                    },
                 ) { bytes, type ->
                     StreamCenterLocalSyncStorage.applyPayload(applicationContext, bytes, type)
                 }
@@ -162,7 +173,7 @@ internal class StreamCenterLocalSyncManager(
         listener.onStateChanged(StreamCenterLocalSyncState.ERROR, message)
         listener.onError(message, error)
         StreamCenterLogger.logMenuError(
-            action = "Errore Sync locale",
+            action = "Errore Sync Locale",
             throwable = error,
             metadata = mapOf("messaggio" to message),
         )
@@ -225,7 +236,7 @@ internal class StreamCenterLocalSyncManager(
 
     private fun log(action: String, metadata: Map<String, Any?> = emptyMap()) {
         StreamCenterLogger.logMenu(
-            action = "Sync locale · $action",
+            action = "Sync Locale · $action",
             metadata = metadata,
         )
     }

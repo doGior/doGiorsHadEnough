@@ -267,7 +267,7 @@ internal object StreamCenterCatalogs {
             sections = listOf(
                 StreamCenterCatalogSection(
                     "simkl_movies_trending",
-                    "Film di tendenza · Simkl",
+                    "Film di tendenza",
                     "movies/trending",
                     TvType.Movie,
                 ),

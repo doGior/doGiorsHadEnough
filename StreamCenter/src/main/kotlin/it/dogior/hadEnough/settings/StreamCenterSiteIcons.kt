@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.settings
 
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import org.jsoup.Jsoup
 import java.net.URI
 import java.util.Locale
@@ -14,6 +15,7 @@ internal object StreamCenterSiteIcons {
     }
 
     fun resolve(siteUrl: String): String? {
+        StreamCenterVpnGuard.requireInternetAccess()
         val origin = origin(siteUrl) ?: return null
         resolvedUrls[origin]?.let { return it }
         val lock = resolutionLocks.computeIfAbsent(origin) { Any() }

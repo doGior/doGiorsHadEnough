@@ -3,6 +3,7 @@ package it.dogior.hadEnough.availability
 import android.content.SharedPreferences
 import com.lagradost.cloudstream3.app
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -45,6 +46,7 @@ internal object StreamCenterAvailabilityChecker {
             detail: String?,
         ) -> Unit,
     ): List<Pair<String, Boolean>> = coroutineScope {
+        StreamCenterVpnGuard.requireInternetAccess(sharedPref)
         fun sourceUrl(key: String) = StreamCenterPlugin.getSourceBaseUrl(sharedPref, key)
 
         val checks: List<Pair<String, suspend () -> CheckResult>> = buildList {

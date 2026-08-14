@@ -74,7 +74,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
 
         val enabledRow = switchRow(
             title = "Log",
-            summary = "Registra tutti i valori delle schede, gli episodi e la fonte di ogni campo.",
+            summary = "",
             checked = StreamCenterLogger.isEnabled(sharedPref),
             accent = COLOR_LOG,
             icon = "\uD83D\uDD0E",
@@ -96,9 +96,23 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         content.addView(enabledRow)
 
+        val retentionLabel = bodyText(logRetentionLabel(), 12)
+        val retentionRow = settingsRow(
+            title = "Conservazione Log",
+            icon = "\uD83E\uDDF9",
+            accent = COLOR_LOG,
+            fillColor = COLOR_CARD_ALT,
+            summaryView = retentionLabel,
+            trailingViews = listOf(chevron(COLOR_LOG)),
+            fixedHeight = true,
+        ) {
+            showLogRetentionDialog(retentionLabel)
+        }.view
+        content.addView(retentionRow)
+
         val archiveLogRow = settingsRow(
             title = "Archivio Log",
-            summary = "Leggi o esporta integralmente la sessione corrente e quelle precedenti.",
+            summary = "",
             icon = "\uD83D\uDDC2",
             accent = COLOR_LOG,
             fillColor = COLOR_CARD_ALT,
@@ -109,13 +123,200 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         }.view
         content.addView(archiveLogRow)
 
-        startBorderSparkleCycle(
-            listOf(
-                BorderSparkleTarget(enabledRow, COLOR_LOG),
-                BorderSparkleTarget(archiveLogRow, COLOR_LOG),
-            ),
-        )
         return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    private fun logRetentionLabel(): String {
+        val policy = StreamCenterLogger.retentionPolicy(sharedPref)
+        return listOfNotNull(
+            policy.days?.let { days ->
+                "Elimina dopo " + days + if (days == 1) " giorno" else " giorni"
+            },
+            policy.maximumLogCount?.let { maximumLogCount ->
+                "Conserva gli ultimi $maximumLogCount log"
+            },
+        ).joinToString(" · ").ifBlank { "Non configurata" }
+    }
+
+    private fun showLogRetentionDialog(retentionLabel: TextView) {
+        val ctx = context ?: return
+        val currentPolicy = StreamCenterLogger.retentionPolicy(sharedPref)
+        val daysInput = input(
+            (currentPolicy.days ?: 30).toString(),
+            widthDp = 86,
+        ).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+        val logCountInput = input(
+            (currentPolicy.maximumLogCount ?: 50).toString(),
+            widthDp = 86,
+        ).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(16))
+        }
+
+        var daysEnabled = currentPolicy.days != null
+        var logCountEnabled = currentPolicy.maximumLogCount != null
+        lateinit var daysCard: LinearLayout
+        lateinit var logCountCard: LinearLayout
+
+        fun valueRow(input: View, suffix: String): LinearLayout {
+            return LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(dp(50), dp(8), 0, 0)
+                addView(input)
+                addView(bodyText(suffix, 12).apply {
+                    setTextColor(Color.parseColor(COLOR_MUTED))
+                    setPadding(dp(10), 0, 0, 0)
+                })
+            }
+        }
+
+        val daysValueRow = valueRow(daysInput, "giorni")
+        val logCountValueRow = valueRow(logCountInput, "log")
+
+        fun refreshSelection() {
+            fun refreshOption(card: LinearLayout, enabled: Boolean, valueRow: View) {
+                card.background = interactiveBackground(
+                    fill = if (enabled) tint(COLOR_LOG, "1A") else COLOR_CARD_ALT,
+                    accent = COLOR_LOG,
+                    radius = 16,
+                    strokeColor = if (enabled) COLOR_LOG else tint(COLOR_LOG, "55"),
+                )
+                valueRow.visibility = if (enabled) View.VISIBLE else View.GONE
+            }
+            refreshOption(daysCard, daysEnabled, daysValueRow)
+            refreshOption(logCountCard, logCountEnabled, logCountValueRow)
+        }
+
+        fun optionCard(
+            icon: String,
+            title: String,
+            valueRow: View,
+            checked: Boolean,
+            onCheckedChanged: (Boolean) -> Unit,
+        ): LinearLayout {
+            val toggle = styledSwitch(checked, COLOR_LOG, onCheckedChanged)
+            return LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                isClickable = true
+                isFocusable = true
+                contentDescription = title
+                setOnClickListener { toggle.toggle() }
+                addView(LinearLayout(ctx).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                    addView(iconBadge(icon, COLOR_LOG, size = 38, marginEnd = 12))
+                    addView(titleText(title, 16, true).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            1f,
+                        )
+                    })
+                    addView(toggle)
+                })
+                addView(valueRow)
+                addCardTouchFeedback(this, COLOR_LOG)
+            }
+        }
+
+        daysInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && !daysEnabled) {
+                daysEnabled = true
+                refreshSelection()
+            }
+        }
+        logCountInput.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus && !logCountEnabled) {
+                logCountEnabled = true
+                refreshSelection()
+            }
+        }
+        daysCard = optionCard(
+            icon = "\uD83D\uDCC5",
+            title = "In base ai giorni",
+            valueRow = daysValueRow,
+            checked = daysEnabled,
+        ) { enabled ->
+            daysEnabled = enabled
+            refreshSelection()
+        }
+        logCountCard = optionCard(
+            icon = "\uD83D\uDCCB",
+            title = "In base alla quantità",
+            valueRow = logCountValueRow,
+            checked = logCountEnabled,
+        ) { enabled ->
+            logCountEnabled = enabled
+            refreshSelection()
+        }
+        content.addView(daysCard, verticalParams(top = 8))
+        content.addView(logCountCard, verticalParams(top = 8))
+        refreshSelection()
+
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Conservazione Log"))
+            .setView(ScrollView(ctx).apply {
+                isVerticalScrollBarEnabled = true
+                addView(content)
+            })
+            .setPositiveButton("Applica", null)
+            .setNegativeButton("Annulla", null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            fun valueOrError(input: TextView): Int? {
+                val value = input.text.toString().trim().toIntOrNull()
+                if (value == null || value <= 0) {
+                    input.error = "Inserisci un numero maggiore di zero"
+                    return null
+                }
+                return value
+            }
+
+            val days = if (daysEnabled) valueOrError(daysInput) ?: return@setOnClickListener else null
+            val maximumLogCount = if (logCountEnabled) {
+                valueOrError(logCountInput) ?: return@setOnClickListener
+            } else {
+                null
+            }
+            updateLogRetention(
+                retentionLabel,
+                StreamCenterLogger.RetentionPolicy(days, maximumLogCount),
+            )
+            dialog.dismiss()
+        }
+    }
+
+    private fun updateLogRetention(
+        retentionLabel: TextView,
+        policy: StreamCenterLogger.RetentionPolicy,
+    ) {
+        val preferences = sharedPref ?: return
+        StreamCenterLogger.setRetentionPolicy(preferences, policy)
+        retentionLabel.text = logRetentionLabel()
+        pruneLogs()
+    }
+
+    private fun pruneLogs() {
+        val ctx = context ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            val removedLogs = StreamCenterLogger.pruneLogs(ctx.applicationContext, sharedPref)
+            withContext(Dispatchers.Main) {
+                if (!isAdded || removedLogs == 0) return@withContext
+                saveToast(
+                    "$removedLogs ${if (removedLogs == 1) "log eliminato" else "log eliminati"}",
+                )
+            }
+        }
     }
 
     private fun showLogArchive() {

@@ -14,15 +14,22 @@ import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.normalizeAnimeEpisodeNumber
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 internal class AnimeUnitySourceClient(
     private val sharedPref: SharedPreferences?,
@@ -84,6 +91,10 @@ internal class AnimeUnitySourceClient(
                 title = pageAnime?.displayTitle()?.let(::cleanAnimeUnityTitle),
                 plot = pageAnime?.plot?.takeIf(String::isNotBlank),
                 posterUrl = posterResolver(pageAnime?.imageUrl),
+                related = (subPage?.related.orEmpty() + dubPage?.related.orEmpty())
+                    .distinctBy(AnimeUnityAnime::id),
+                recommendations = (subPage?.recommendations.orEmpty() + dubPage?.recommendations.orEmpty())
+                    .distinctBy(AnimeUnityAnime::id),
             ).takeIf { it.subSources.isNotEmpty() || it.dubSources.isNotEmpty() }
                 ?.also {
                     AnimeSourceLog.info(
@@ -109,7 +120,61 @@ internal class AnimeUnitySourceClient(
         filters: StreamCenterAnimeArchiveFilters = StreamCenterAnimeArchiveFilters(),
         offset: Int = 0,
         title: String = "",
-    ): List<AnimeUnityAnime> {
+    ): List<AnimeUnityAnime> = fetchArchivePage(filters, offset, title).records
+
+    suspend fun fetchRandomArchive(targetRecordCount: Int): List<AnimeUnityAnime> {
+        val requestedRecords = targetRecordCount.coerceAtLeast(1)
+        ensureHeaders()
+        val extent = resolveArchiveExtent()
+        if (extent.totalRecords <= 0) return emptyList()
+        val offsets = randomArchiveOffsets(extent.totalRecords, requestedRecords)
+        val requestSemaphore = Semaphore(RANDOM_PAGE_CONCURRENCY)
+        val pages = supervisorScope {
+            offsets.map { offset ->
+                async(Dispatchers.IO) {
+                    requestSemaphore.withPermit {
+                        try {
+                            if (offset == 0 && extent.firstPage != null) {
+                                extent.firstPage
+                            } else {
+                                fetchArchivePage(offset = offset).records
+                            }
+                        } catch (error: Throwable) {
+                            if (error is CancellationException) throw error
+                            AnimeSourceLog.warning(
+                                SOURCE_NAME,
+                                "Campione casuale archivio non disponibile",
+                                mapOf("offset" to offset),
+                                error,
+                            )
+                            null
+                        }
+                    }
+                }
+            }.awaitAll().filterNotNull()
+        }
+        val records = pages.flatten()
+            .distinctBy(AnimeUnityAnime::id)
+            .toMutableList()
+        Collections.shuffle(records, random)
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Campionamento casuale archivio completato",
+            mapOf(
+                "elementi_catalogo" to extent.totalRecords,
+                "pagine_casuali" to offsets.size,
+                "pagine_riuscite" to pages.size,
+                "candidati_casuali" to records.size,
+            ),
+        )
+        return records
+    }
+
+    private suspend fun fetchArchivePage(
+        filters: StreamCenterAnimeArchiveFilters = StreamCenterAnimeArchiveFilters(),
+        offset: Int = 0,
+        title: String = "",
+    ): AnimeUnityArchivePage {
         AnimeSourceLog.info(
             SOURCE_NAME,
             "Richiesta archivio avviata",
@@ -132,13 +197,89 @@ internal class AnimeUnitySourceClient(
             AnimeSourceLog.warning(SOURCE_NAME, "Richiesta archivio non riuscita", error = error)
             throw error
         }
-        return parseArchive(text).also { results ->
+        return parseArchivePage(text, offset).also { page ->
             AnimeSourceLog.info(
                 SOURCE_NAME,
                 "Richiesta archivio completata",
-                mapOf("risultati_archivio" to results.size),
+                mapOf(
+                    "risultati_archivio" to page.records.size,
+                    "elementi_catalogo" to page.totalRecords,
+                ),
             )
         }
+    }
+
+    private suspend fun resolveArchiveExtent(): AnimeUnityArchiveExtent {
+        val cacheKey = baseUrl().trimEnd('/').lowercase()
+        archiveSizeCache[cacheKey]
+            ?.takeIf { cached -> cached.expiresAt > System.currentTimeMillis() }
+            ?.let { cached -> return AnimeUnityArchiveExtent(cached.totalRecords) }
+
+        val firstPage = fetchArchivePage(offset = 0)
+        val firstPageSize = firstPage.rawRecordCount
+            ?: throw IllegalStateException("Risposta archivio AnimeUnity non valida.")
+        val totalRecords = firstPage.totalRecords ?: discoverArchiveSize(firstPageSize)
+        archiveSizeCache[cacheKey] = AnimeUnityArchiveSizeCache(
+            totalRecords = totalRecords,
+            expiresAt = System.currentTimeMillis() + ARCHIVE_SIZE_CACHE_MS,
+        )
+        return AnimeUnityArchiveExtent(totalRecords, firstPage.records)
+    }
+
+    private suspend fun discoverArchiveSize(firstPageSize: Int): Int {
+        if (firstPageSize < ARCHIVE_PAGE_SIZE) return firstPageSize
+        var lastFullPage = 0
+        var firstEmptyPage = 1
+        while (firstEmptyPage <= MAX_ARCHIVE_PAGE_INDEX) {
+            val offset = firstEmptyPage * ARCHIVE_PAGE_SIZE
+            val page = fetchArchivePage(offset = offset)
+            page.totalRecords?.let { return it }
+            val rawRecordCount = page.rawRecordCount
+                ?: throw IllegalStateException("Risposta archivio AnimeUnity non valida.")
+            if (rawRecordCount < ARCHIVE_PAGE_SIZE) {
+                if (rawRecordCount > 0) return offset + rawRecordCount
+                break
+            }
+            lastFullPage = firstEmptyPage
+            firstEmptyPage *= 2
+        }
+        if (firstEmptyPage > MAX_ARCHIVE_PAGE_INDEX) {
+            return (lastFullPage + 1) * ARCHIVE_PAGE_SIZE
+        }
+        while (lastFullPage + 1 < firstEmptyPage) {
+            val pageIndex = lastFullPage + (firstEmptyPage - lastFullPage) / 2
+            val offset = pageIndex * ARCHIVE_PAGE_SIZE
+            val page = fetchArchivePage(offset = offset)
+            page.totalRecords?.let { return it }
+            val rawRecordCount = page.rawRecordCount
+                ?: throw IllegalStateException("Risposta archivio AnimeUnity non valida.")
+            when {
+                rawRecordCount == 0 -> firstEmptyPage = pageIndex
+                rawRecordCount < ARCHIVE_PAGE_SIZE -> return offset + rawRecordCount
+                else -> lastFullPage = pageIndex
+            }
+        }
+        return (lastFullPage + 1) * ARCHIVE_PAGE_SIZE
+    }
+
+    private fun randomArchiveOffsets(totalRecords: Int, targetRecordCount: Int): List<Int> {
+        val pageCount = ((totalRecords.toLong() + ARCHIVE_PAGE_SIZE - 1L) / ARCHIVE_PAGE_SIZE)
+            .toInt()
+        val requestedPages = ((targetRecordCount.toLong() + ARCHIVE_PAGE_SIZE - 1L) / ARCHIVE_PAGE_SIZE)
+            .coerceAtLeast(MIN_RANDOM_PAGE_SAMPLES.toLong())
+            .coerceAtMost(pageCount.toLong())
+            .toInt()
+        if (requestedPages * 2 >= pageCount) {
+            val pageIndexes = (0 until pageCount).toMutableList()
+            Collections.shuffle(pageIndexes, random)
+            return pageIndexes.take(requestedPages)
+                .map { pageIndex -> pageIndex * ARCHIVE_PAGE_SIZE }
+        }
+        val pageIndexes = linkedSetOf<Int>()
+        while (pageIndexes.size < requestedPages) {
+            pageIndexes += random.nextInt(pageCount)
+        }
+        return pageIndexes.map { pageIndex -> pageIndex * ARCHIVE_PAGE_SIZE }
     }
 
     fun resetSession() {
@@ -249,7 +390,13 @@ internal class AnimeUnitySourceClient(
             put("year", filters.year ?: false)
             put("order", filters.order ?: false)
             put("status", filters.status ?: false)
-            put("genres", filters.genreId?.let { id -> JSONArray().put(JSONObject().put("id", id)) } ?: false)
+            val genreIds = filters.selectedGenreIds
+            put(
+                "genres",
+                if (genreIds.isEmpty()) false else JSONArray().apply {
+                    genreIds.forEach { id -> put(JSONObject().put("id", id)) }
+                },
+            )
             put("season", filters.season ?: false)
             put("dubbed", if (filters.dubbed) 1 else 0)
             put("offset", offset)
@@ -269,19 +416,25 @@ internal class AnimeUnitySourceClient(
             AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio variante non riuscito", error = error)
             throw error
         }
-        val videoPlayer = Jsoup.parse(html, url).selectFirst("video-player") ?: run {
+        val document = Jsoup.parse(html, url)
+        val videoPlayer = document.selectFirst("video-player") ?: run {
             AnimeSourceLog.warning(SOURCE_NAME, "Dettaglio variante senza player")
             return null
         }
-        val pageAnime = videoPlayer.attr("anime")
+        val pageAnimeJson = videoPlayer.attr("anime")
             .takeIf(String::isNotBlank)
-            ?.let { runCatching { JSONObject(it).toAnimeUnityAnime() }.getOrNull() }
-            ?: anime
+            ?.let { json -> runCatching { JSONObject(json) }.getOrNull() }
+        val pageAnime = pageAnimeJson?.toAnimeUnityAnime() ?: anime
         val initialEpisodes = parseEpisodes(videoPlayer.attr("episodes"))
         val totalEpisodes = videoPlayer.attr("episodes_count").toIntOrNull() ?: initialEpisodes.size
         return AnimeUnityPageData(
             anime = pageAnime,
             episodes = fetchAllEpisodes(pageAnime, initialEpisodes, totalEpisodes),
+            related = parseRelated(
+                pageAnimeJson?.optJSONArray("related")?.toString()
+                    ?: videoPlayer.attr("related"),
+            ),
+            recommendations = parseRecommendations(document),
         ).also { pageData ->
             AnimeSourceLog.info(
                 SOURCE_NAME,
@@ -289,6 +442,8 @@ internal class AnimeUnitySourceClient(
                 mapOf(
                     "episodi_rilevati" to pageData.episodes.size,
                     "episodi_dichiarati" to totalEpisodes,
+                    "anime_correlati" to pageData.related.size,
+                    "raccomandazioni" to pageData.recommendations.size,
                 ),
             )
         }
@@ -341,6 +496,33 @@ internal class AnimeUnitySourceClient(
         }.getOrDefault(emptyList())
     }
 
+    private fun parseRecommendations(document: org.jsoup.nodes.Document): List<AnimeUnityAnime> {
+        val json = document.selectFirst("div.recommended layout-items[items-json]")
+            ?.attr("items-json")
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return emptyList()
+        return parseAnimeList(json, "raccomandazioni")
+    }
+
+    private fun parseRelated(json: String): List<AnimeUnityAnime> {
+        return parseAnimeList(json.trim(), "anime correlati")
+    }
+
+    private fun parseAnimeList(json: String, section: String): List<AnimeUnityAnime> {
+        if (json.isBlank()) return emptyList()
+        return runCatching {
+            val items = JSONArray(json)
+            buildList {
+                for (index in 0 until items.length()) {
+                    items.optJSONObject(index)?.toAnimeUnityAnime()?.let(::add)
+                }
+            }.distinctBy(AnimeUnityAnime::id)
+        }.onFailure { error ->
+            AnimeSourceLog.warning(SOURCE_NAME, "Parsing $section non riuscito", error = error)
+        }.getOrDefault(emptyList())
+    }
+
     private fun buildEpisodeSources(pageData: AnimeUnityPageData?): Map<String, String> {
         pageData ?: return emptyMap()
         val pageBaseUrl = "${baseUrl()}/anime/${pageData.anime.id}-${pageData.anime.slug}"
@@ -350,17 +532,46 @@ internal class AnimeUnitySourceClient(
         }.toMap()
     }
 
-    private fun parseArchive(text: String): List<AnimeUnityAnime> {
+    private fun parseArchivePage(text: String, offset: Int): AnimeUnityArchivePage {
         return runCatching {
-            val records = JSONObject(text).optJSONArray("records") ?: JSONArray()
-            buildList {
-                for (index in 0 until records.length()) {
-                    records.optJSONObject(index)?.toAnimeUnityAnime()?.let(::add)
+            val root = JSONObject(text)
+            val recordsJson = root.optJSONArray("records")
+                ?: throw IllegalArgumentException("Archivio AnimeUnity privo di record.")
+            val records = buildList {
+                for (index in 0 until recordsJson.length()) {
+                    recordsJson.optJSONObject(index)?.toAnimeUnityAnime()?.let(::add)
                 }
             }
+            val rawRecordCount = recordsJson.length()
+            val reportedTotal = archiveTotalContainers(root)
+                .firstNotNullOfOrNull { container ->
+                    container.archiveTotal()?.takeIf { total -> total >= offset + rawRecordCount }
+                }
+            AnimeUnityArchivePage(
+                records = records,
+                totalRecords = reportedTotal
+                    ?: (offset + rawRecordCount).takeIf { rawRecordCount < ARCHIVE_PAGE_SIZE },
+                rawRecordCount = rawRecordCount,
+            )
         }.onFailure {
             AnimeSourceLog.warning(SOURCE_NAME, "Parsing archivio non riuscito", error = it)
-        }.getOrDefault(emptyList())
+        }.getOrDefault(AnimeUnityArchivePage(emptyList(), null, null))
+    }
+
+    private fun archiveTotalContainers(root: JSONObject): List<JSONObject> = listOfNotNull(
+        root,
+        root.optJSONObject("pagination"),
+        root.optJSONObject("meta"),
+    )
+
+    private fun JSONObject.archiveTotal(): Int? {
+        return ARCHIVE_TOTAL_KEYS.firstNotNullOfOrNull { key ->
+            when (val value = opt(key)) {
+                is Number -> value.toInt()
+                is String -> value.trim().toIntOrNull()
+                else -> null
+            }?.takeIf { it >= 0 }
+        }
     }
 
     private fun JSONObject.toAnimeUnityAnime(): AnimeUnityAnime? {
@@ -459,7 +670,38 @@ internal class AnimeUnitySourceClient(
         const val SOURCE_NAME = "AnimeUnity"
         const val PREF_SESSION = "streamcenter_au_session"
         const val SESSION_TTL_MS = 12L * 60L * 60L * 1000L
+        const val ARCHIVE_SIZE_CACHE_MS = 6L * 60L * 60L * 1000L
+        const val ARCHIVE_PAGE_SIZE = 30
+        const val MIN_RANDOM_PAGE_SAMPLES = 6
+        const val RANDOM_PAGE_CONCURRENCY = 3
+        const val MAX_ARCHIVE_PAGE_INDEX = 16_384
         const val SEARCH_PARALLELISM = 4
         const val EPISODES_PER_PAGE = 120
+        val ARCHIVE_TOTAL_KEYS = listOf(
+            "tot",
+            "total",
+            "recordsTotal",
+            "records_total",
+            "totalRecords",
+            "total_records",
+        )
+        val archiveSizeCache = ConcurrentHashMap<String, AnimeUnityArchiveSizeCache>()
+        val random = SecureRandom()
     }
 }
+
+private data class AnimeUnityArchivePage(
+    val records: List<AnimeUnityAnime>,
+    val totalRecords: Int?,
+    val rawRecordCount: Int?,
+)
+
+private data class AnimeUnityArchiveExtent(
+    val totalRecords: Int,
+    val firstPage: List<AnimeUnityAnime>? = null,
+)
+
+private data class AnimeUnityArchiveSizeCache(
+    val totalRecords: Int,
+    val expiresAt: Long,
+)

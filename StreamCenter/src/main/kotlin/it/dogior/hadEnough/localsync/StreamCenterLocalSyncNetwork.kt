@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.DataInputStream
@@ -33,6 +34,13 @@ internal data class StreamCenterLocalNetworkEndpoint(
     val address: Inet4Address,
     val broadcastAddress: Inet4Address,
     val prefixLength: Short,
+)
+
+internal data class StreamCenterLocalSyncPresence(
+    val identityKey: String,
+    val name: String,
+    val address: Inet4Address,
+    val tcpPort: Int,
 )
 
 internal object StreamCenterLocalNetworkPolicy {
@@ -173,8 +181,10 @@ internal class StreamCenterLocalSyncCancellation : Closeable {
 
 internal object StreamCenterLocalSyncNetwork {
     private const val MAGIC = "SCLS"
-    private const val PROTOCOL_VERSION = 2
+    private const val PROTOCOL_VERSION = 3
     private const val DISCOVERY_PORT = 39_482
+    private const val AUTO_PRESENCE_PORT = 39_483
+    private const val AUTO_PRESENCE_INTERVAL_MS = 3_000L
     private const val DISCOVERY_INTERVAL_MS = 1_000L
     private const val SESSION_TIMEOUT_MS = 10 * 60 * 1_000L
     private const val SOCKET_TIMEOUT_MS = 30_000
@@ -186,8 +196,10 @@ internal object StreamCenterLocalSyncNetwork {
 
     suspend fun send(
         payload: StreamCenterLocalSyncPayload,
+        localIdentityKey: String,
         cancellation: StreamCenterLocalSyncCancellation,
         listener: StreamCenterLocalSyncListener,
+        rememberPeer: (name: String, identityPublicKey: String) -> Unit = { _, _ -> },
     ): StreamCenterLocalSyncResult = coroutineScope {
         val endpoint = StreamCenterLocalNetworkPolicy.endpoints().firstOrNull()
             ?: throw IllegalStateException("Nessuna interfaccia Wi-Fi o Ethernet privata disponibile.")
@@ -197,7 +209,7 @@ internal object StreamCenterLocalSyncNetwork {
         val sessionId = StreamCenterLocalSyncCrypto.sessionId()
         val serverSocket = cancellation.track(ServerSocket())
         serverSocket.reuseAddress = true
-        serverSocket.bind(InetSocketAddress(endpoint.address, 0), 2)
+        serverSocket.bind(InetSocketAddress(0), 2)
         serverSocket.soTimeout = 1_000
         val offer = StreamCenterLocalSyncOffer(
             sessionId = sessionId,
@@ -205,6 +217,7 @@ internal object StreamCenterLocalSyncNetwork {
             senderName = StreamCenterLocalSyncStorage.deviceName(),
             senderAddress = endpoint.address.hostAddress.orEmpty(),
             senderPublicKey = serverPublicKey,
+            senderIdentityKey = localIdentityKey,
             tcpPort = serverSocket.localPort,
             compressedSize = payload.compressedBytes.size,
             uncompressedSize = payload.uncompressedSize,
@@ -261,8 +274,10 @@ internal object StreamCenterLocalSyncNetwork {
                         payload = payload,
                         serverKeyPair = serverKeyPair,
                         serverPublicKey = serverPublicKey,
+                        serverIdentityKey = localIdentityKey,
                         pairingCode = pairingCode,
                         listener = listener,
+                        rememberPeer = rememberPeer,
                     )
                     if (result != null) return@coroutineScope result
                     rejected = true
@@ -354,8 +369,10 @@ internal object StreamCenterLocalSyncNetwork {
     suspend fun receive(
         offer: StreamCenterLocalSyncOffer,
         pairingCode: String,
+        localIdentityKey: String,
         cancellation: StreamCenterLocalSyncCancellation,
         listener: StreamCenterLocalSyncListener,
+        rememberPeer: (name: String, identityPublicKey: String) -> Unit = { _, _ -> },
         applyPayload: (ByteArray, StreamCenterLocalSyncPayloadType) -> StreamCenterLocalSyncResult,
     ): StreamCenterLocalSyncResult = withContext(Dispatchers.IO) {
         require(pairingCode.matches(Regex("\\d{6}"))) { "Inserisci il codice di sei cifre mostrato dal mittente." }
@@ -391,6 +408,8 @@ internal object StreamCenterLocalSyncNetwork {
                 offer.sessionId,
                 clientPublicKey,
                 offer.senderPublicKey,
+                localIdentityKey,
+                offer.senderIdentityKey,
             )
             val clientProof = StreamCenterLocalSyncCrypto.authenticationProof(
                 keys.clientAuthenticationKey,
@@ -400,6 +419,7 @@ internal object StreamCenterLocalSyncNetwork {
                 .put("sessionId", offer.sessionId)
                 .put("receiverName", StreamCenterLocalSyncStorage.deviceName())
                 .put("publicKey", clientPublicKey)
+                .put("identityKey", localIdentityKey)
                 .put("proof", StreamCenterLocalSyncCrypto.encodeBase64(clientProof))
             writeFrame(output, hello.toString().toByteArray(StandardCharsets.UTF_8))
             output.flush()
@@ -412,6 +432,10 @@ internal object StreamCenterLocalSyncNetwork {
             check(
                 StreamCenterLocalSyncCrypto.proofsMatch(expectedServerProof, serverProof),
             ) { "L'identità crittografica del mittente non è valida." }
+
+            offer.senderIdentityKey.takeIf(String::isNotBlank)?.let { identity ->
+                rememberPeer(offer.senderName, identity)
+            }
             listener.onEvent(
                 StreamCenterLocalSyncEvent(
                     message = "Associazione verificata",
@@ -466,6 +490,394 @@ internal object StreamCenterLocalSyncNetwork {
         }
     }
 
+    suspend fun serveAuto(
+        localIdentity: KeyPair,
+        localIdentityKey: String,
+        localName: String,
+        isTrusted: (identityKey: String) -> Boolean,
+        cancellation: StreamCenterLocalSyncCancellation,
+        listener: StreamCenterLocalSyncListener,
+        onSession: suspend (
+            peerName: String,
+            peerIdentityKey: String,
+            isInitiator: Boolean,
+            keys: StreamCenterLocalSyncSessionKeys,
+            input: DataInputStream,
+            output: DataOutputStream,
+        ) -> Unit,
+    ): Unit = coroutineScope {
+        val endpoints = StreamCenterLocalNetworkPolicy.endpoints()
+        require(endpoints.isNotEmpty()) {
+            "Nessuna interfaccia Wi-Fi o Ethernet privata disponibile."
+        }
+        val serverSocket = cancellation.track(ServerSocket())
+        serverSocket.reuseAddress = true
+        serverSocket.bind(InetSocketAddress(0), 4)
+        serverSocket.soTimeout = 1_000
+        val presence = endpoints.map { networkEndpoint ->
+            launch(Dispatchers.IO) {
+                broadcastPresence(networkEndpoint, localIdentityKey, localName, serverSocket.localPort, cancellation)
+            }
+        }
+        try {
+            while (!cancellation.isCancelled) {
+                ensureActive()
+                val socket = try {
+                    serverSocket.accept()
+                } catch (_: SocketTimeoutException) {
+                    continue
+                } catch (error: SocketException) {
+                    if (cancellation.isCancelled) break
+                    throw error
+                }
+                cancellation.track(socket)
+                launch(Dispatchers.IO) {
+                    try {
+                        require(StreamCenterLocalNetworkPolicy.routeTo(socket.inetAddress) != null) {
+                            "Dispositivo fuori dalla rete locale privata."
+                        }
+                        handleAutoServer(socket, localIdentity, localIdentityKey, isTrusted, listener, onSession)
+                    } catch (error: Exception) {
+                        if (!cancellation.isCancelled) {
+                            listener.onEvent(
+                                StreamCenterLocalSyncEvent(
+                                    message = "Sessione automatica rifiutata",
+                                    detail = error.message?.take(160) ?: error.javaClass.simpleName,
+                                ),
+                            )
+                        }
+                    } finally {
+                        cancellation.close(socket)
+                    }
+                }
+            }
+        } finally {
+            presence.forEach { job -> job.cancelAndJoin() }
+            cancellation.close(serverSocket)
+        }
+    }
+
+    suspend fun scanTrustedPeers(
+        isTrusted: (identityKey: String) -> Boolean,
+        localIdentityKey: String,
+        timeoutMs: Long,
+        cancellation: StreamCenterLocalSyncCancellation,
+    ): List<StreamCenterLocalSyncPresence> = withContext(Dispatchers.IO) {
+        val socket = cancellation.track(DatagramSocket(null))
+        socket.reuseAddress = true
+        socket.bind(InetSocketAddress(AUTO_PRESENCE_PORT))
+        socket.soTimeout = 500
+        val found = linkedMapOf<String, StreamCenterLocalSyncPresence>()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        try {
+            while (!cancellation.isCancelled && System.currentTimeMillis() < deadline) {
+                ensureActive()
+                val buffer = ByteArray(MAX_DISCOVERY_BYTES)
+                val packet = DatagramPacket(buffer, buffer.size)
+                try {
+                    socket.receive(packet)
+                } catch (_: SocketTimeoutException) {
+                    continue
+                } catch (error: SocketException) {
+                    if (cancellation.isCancelled) break
+                    throw error
+                }
+                val remote = packet.address as? Inet4Address ?: continue
+                if (!StreamCenterLocalNetworkPolicy.isPrivate(remote)) continue
+                val presence = parsePresence(
+                    String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8),
+                    remote,
+                ) ?: continue
+                if (presence.identityKey == localIdentityKey) continue
+                if (!isTrusted(presence.identityKey)) continue
+                found[presence.identityKey] = presence
+            }
+        } finally {
+            cancellation.close(socket)
+        }
+        found.values.toList()
+    }
+
+    suspend fun connectAuto(
+        peer: StreamCenterLocalSyncPresence,
+        localIdentity: KeyPair,
+        localIdentityKey: String,
+        localName: String,
+        cancellation: StreamCenterLocalSyncCancellation,
+        listener: StreamCenterLocalSyncListener,
+        onSession: suspend (
+            peerName: String,
+            peerIdentityKey: String,
+            isInitiator: Boolean,
+            keys: StreamCenterLocalSyncSessionKeys,
+            input: DataInputStream,
+            output: DataOutputStream,
+        ) -> Unit,
+    ): Unit = withContext(Dispatchers.IO) {
+        val endpoint = StreamCenterLocalNetworkPolicy.routeTo(peer.address)
+            ?: throw SecurityException("Il dispositivo non appartiene alla rete locale privata.")
+        val socket = cancellation.track(Socket())
+        try {
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(endpoint.address, 0))
+            socket.connect(InetSocketAddress(peer.address, peer.tcpPort), SOCKET_TIMEOUT_MS)
+            socket.soTimeout = SOCKET_TIMEOUT_MS
+            val input = DataInputStream(socket.getInputStream().buffered())
+            val output = DataOutputStream(socket.getOutputStream().buffered())
+            val sessionId = StreamCenterLocalSyncCrypto.sessionId()
+            val keys = StreamCenterLocalSyncCrypto.deriveKeysFromIdentities(localIdentity, peer.identityKey, sessionId)
+            val transcript = autoTranscript(sessionId, localIdentityKey, peer.identityKey)
+            val clientProof = StreamCenterLocalSyncCrypto.authenticationProof(
+                keys.clientAuthenticationKey,
+                "client|$transcript",
+            )
+            val hello = JSONObject()
+                .put("sessionId", sessionId)
+                .put("identityKey", localIdentityKey)
+                .put("name", localName)
+                .put("proof", StreamCenterLocalSyncCrypto.encodeBase64(clientProof))
+            writeFrame(output, hello.toString().toByteArray(StandardCharsets.UTF_8))
+            output.flush()
+            check(input.readBoolean()) { "Il dispositivo remoto non ha riconosciuto l'identità." }
+            val serverProof = readFrame(input, MAX_CONTROL_BYTES)
+            val expectedServerProof = StreamCenterLocalSyncCrypto.authenticationProof(
+                keys.serverAuthenticationKey,
+                "server|$transcript",
+            )
+            check(StreamCenterLocalSyncCrypto.proofsMatch(expectedServerProof, serverProof)) {
+                "Identità del dispositivo remoto non valida."
+            }
+            listener.onEvent(StreamCenterLocalSyncEvent("Sessione automatica avviata", peer.name))
+            onSession(peer.name, peer.identityKey, true, keys, input, output)
+        } finally {
+            cancellation.close(socket)
+        }
+    }
+
+    private suspend fun handleAutoServer(
+        socket: Socket,
+        localIdentity: KeyPair,
+        localIdentityKey: String,
+        isTrusted: (identityKey: String) -> Boolean,
+        listener: StreamCenterLocalSyncListener,
+        onSession: suspend (
+            peerName: String,
+            peerIdentityKey: String,
+            isInitiator: Boolean,
+            keys: StreamCenterLocalSyncSessionKeys,
+            input: DataInputStream,
+            output: DataOutputStream,
+        ) -> Unit,
+    ) {
+        socket.soTimeout = SOCKET_TIMEOUT_MS
+        val input = DataInputStream(socket.getInputStream().buffered())
+        val output = DataOutputStream(socket.getOutputStream().buffered())
+        val hello = JSONObject(String(readFrame(input, MAX_CONTROL_BYTES), StandardCharsets.UTF_8))
+        val sessionId = hello.optString("sessionId")
+        require(sessionId.matches(Regex("[a-f0-9]{32}"))) { "Sessione automatica non valida." }
+        val peerIdentityKey = hello.getString("identityKey")
+        require(isTrusted(peerIdentityKey)) { "Dispositivo non fidato." }
+        val peerName = hello.optString("name", "Dispositivo").take(80)
+        val keys = StreamCenterLocalSyncCrypto.deriveKeysFromIdentities(localIdentity, peerIdentityKey, sessionId)
+        val transcript = autoTranscript(sessionId, peerIdentityKey, localIdentityKey)
+        val expectedClientProof = StreamCenterLocalSyncCrypto.authenticationProof(
+            keys.clientAuthenticationKey,
+            "client|$transcript",
+        )
+        val actualClientProof = StreamCenterLocalSyncCrypto.decodeBase64(hello.getString("proof"))
+        val authenticated = StreamCenterLocalSyncCrypto.proofsMatch(expectedClientProof, actualClientProof)
+        output.writeBoolean(authenticated)
+        if (!authenticated) {
+            output.flush()
+            return
+        }
+        val serverProof = StreamCenterLocalSyncCrypto.authenticationProof(
+            keys.serverAuthenticationKey,
+            "server|$transcript",
+        )
+        writeFrame(output, serverProof)
+        output.flush()
+        listener.onEvent(StreamCenterLocalSyncEvent("Sessione automatica accettata", peerName))
+        onSession(peerName, peerIdentityKey, false, keys, input, output)
+    }
+
+    suspend fun runMergeExchange(
+        isInitiator: Boolean,
+        source: StreamCenterLocalSyncMergeSource,
+        allowSend: Boolean,
+        allowReceive: Boolean,
+        keys: StreamCenterLocalSyncSessionKeys,
+        input: DataInputStream,
+        output: DataOutputStream,
+        listener: StreamCenterLocalSyncListener,
+    ): StreamCenterLocalSyncMergeResult {
+        val localManifest = source.manifest()
+        val peerManifest: JSONObject
+        if (isInitiator) {
+            writeSecureJson(output, keys, localManifest, "manifest")
+            peerManifest = readSecureJson(input, keys, "manifest")
+        } else {
+            peerManifest = readSecureJson(input, keys, "manifest")
+            writeSecureJson(output, keys, localManifest, "manifest")
+        }
+        val wantedKeys = if (allowReceive) keysWherePeerNewer(localManifest, peerManifest) else emptyList()
+        val wanted = JSONObject().put("keys", JSONArray(wantedKeys))
+        val peerWanted: JSONObject
+        if (isInitiator) {
+            writeSecureJson(output, keys, wanted, "wanted")
+            peerWanted = readSecureJson(input, keys, "wanted")
+        } else {
+            peerWanted = readSecureJson(input, keys, "wanted")
+            writeSecureJson(output, keys, wanted, "wanted")
+        }
+        val valuesForPeer = if (allowSend) {
+            source.collectValues(stringList(peerWanted.optJSONArray("keys")))
+        } else {
+            JSONObject()
+        }
+        var receivedKeys = emptyList<String>()
+        if (isInitiator) {
+            writeSecureJson(output, keys, valuesForPeer, "values")
+            val received = readSecureJson(input, keys, "values")
+            if (allowReceive) receivedKeys = source.applyRemote(received)
+        } else {
+            val received = readSecureJson(input, keys, "values")
+            if (allowReceive) receivedKeys = source.applyRemote(received)
+            writeSecureJson(output, keys, valuesForPeer, "values")
+        }
+        listener.onEvent(
+            StreamCenterLocalSyncEvent(
+                message = "Merge automatico completato",
+                detail = "${valuesForPeer.length()} voci inviate · ${receivedKeys.size} ricevute",
+                progress = 100,
+            ),
+        )
+        return StreamCenterLocalSyncMergeResult(
+            sent = valuesForPeer.length(),
+            received = receivedKeys.size,
+            sentKeys = objectKeys(valuesForPeer),
+            receivedKeys = receivedKeys,
+        )
+    }
+
+    private fun objectKeys(value: JSONObject): List<String> {
+        val keys = value.keys()
+        return buildList {
+            while (keys.hasNext()) add(keys.next())
+        }
+    }
+
+    private fun keysWherePeerNewer(local: JSONObject, peer: JSONObject): List<String> {
+        val result = mutableListOf<String>()
+        val keys = peer.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val peerTs = peer.optJSONObject(key)?.optLong("t", 0L) ?: 0L
+            val localTs = local.optJSONObject(key)?.optLong("t", 0L) ?: 0L
+            if (peerTs > localTs) result.add(key)
+        }
+        return result
+    }
+
+    private fun stringList(array: JSONArray?): List<String> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                array.optString(index).takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
+    }
+
+    private fun writeSecureJson(
+        output: DataOutputStream,
+        keys: StreamCenterLocalSyncSessionKeys,
+        json: JSONObject,
+        step: String,
+    ) {
+        val encrypted = StreamCenterLocalSyncCrypto.encrypt(
+            key = keys.payloadEncryptionKey,
+            plaintext = json.toString().toByteArray(StandardCharsets.UTF_8),
+            associatedData = "$MAGIC|$PROTOCOL_VERSION|merge|$step",
+        )
+        writeEncrypted(output, encrypted, null, step)
+        output.flush()
+    }
+
+    private fun readSecureJson(
+        input: DataInputStream,
+        keys: StreamCenterLocalSyncSessionKeys,
+        step: String,
+    ): JSONObject {
+        val encrypted = readEncrypted(input, MAX_TRANSFER_BYTES + 32, null, NoopListener, step)
+        val plaintext = StreamCenterLocalSyncCrypto.decrypt(
+            key = keys.payloadEncryptionKey,
+            encrypted = encrypted,
+            associatedData = "$MAGIC|$PROTOCOL_VERSION|merge|$step",
+        )
+        return JSONObject(String(plaintext, StandardCharsets.UTF_8))
+    }
+
+    private val NoopListener = object : StreamCenterLocalSyncListener {
+        override fun onStateChanged(state: StreamCenterLocalSyncState, message: String) = Unit
+        override fun onEvent(event: StreamCenterLocalSyncEvent) = Unit
+        override fun onOfferFound(offer: StreamCenterLocalSyncOffer) = Unit
+        override fun onPairingCodeReady(code: String) = Unit
+        override fun onCompleted(result: StreamCenterLocalSyncResult) = Unit
+        override fun onError(message: String, error: Throwable?) = Unit
+    }
+
+    private suspend fun broadcastPresence(
+        endpoint: StreamCenterLocalNetworkEndpoint,
+        localIdentityKey: String,
+        localName: String,
+        tcpPort: Int,
+        cancellation: StreamCenterLocalSyncCancellation,
+    ) {
+        val socket = cancellation.track(DatagramSocket(InetSocketAddress(endpoint.address, 0)))
+        socket.broadcast = true
+        val bytes = encodePresence(localIdentityKey, localName, tcpPort).toByteArray(StandardCharsets.UTF_8)
+        try {
+            while (!cancellation.isCancelled) {
+                socket.send(DatagramPacket(bytes, bytes.size, endpoint.broadcastAddress, AUTO_PRESENCE_PORT))
+                delay(AUTO_PRESENCE_INTERVAL_MS)
+            }
+        } finally {
+            cancellation.close(socket)
+        }
+    }
+
+    private fun encodePresence(identityKey: String, name: String, tcpPort: Int): String =
+        JSONObject()
+            .put("magic", MAGIC)
+            .put("version", PROTOCOL_VERSION)
+            .put("kind", "presence")
+            .put("identityKey", identityKey)
+            .put("name", name)
+            .put("tcpPort", tcpPort)
+            .toString()
+
+    private fun parsePresence(raw: String, address: Inet4Address): StreamCenterLocalSyncPresence? = runCatching {
+        val root = JSONObject(raw)
+        if (root.optString("magic") != MAGIC || root.optInt("version", -1) != PROTOCOL_VERSION) return@runCatching null
+        if (root.optString("kind") != "presence") return@runCatching null
+        val identityKey = root.getString("identityKey")
+        require(StreamCenterLocalSyncCrypto.decodeBase64(identityKey).size in 64..512)
+        val port = root.getInt("tcpPort")
+        require(port in 1..65_535)
+        StreamCenterLocalSyncPresence(
+            identityKey = identityKey,
+            name = root.optString("name", "Dispositivo").take(80),
+            address = address,
+            tcpPort = port,
+        )
+    }.getOrNull()
+
+    private fun autoTranscript(
+        sessionId: String,
+        clientIdentityKey: String,
+        serverIdentityKey: String,
+    ): String = "$MAGIC|$PROTOCOL_VERSION|auto|$sessionId|$clientIdentityKey|$serverIdentityKey"
+
     private suspend fun broadcastOffer(
         endpoint: StreamCenterLocalNetworkEndpoint,
         offer: StreamCenterLocalSyncOffer,
@@ -506,8 +918,10 @@ internal object StreamCenterLocalSyncNetwork {
         payload: StreamCenterLocalSyncPayload,
         serverKeyPair: KeyPair,
         serverPublicKey: String,
+        serverIdentityKey: String,
         pairingCode: String,
         listener: StreamCenterLocalSyncListener,
+        rememberPeer: (name: String, identityPublicKey: String) -> Unit,
     ): StreamCenterLocalSyncResult? {
         socket.soTimeout = SOCKET_TIMEOUT_MS
         val input = DataInputStream(socket.getInputStream().buffered())
@@ -516,6 +930,7 @@ internal object StreamCenterLocalSyncNetwork {
         require(hello.optString("sessionId") == offer.sessionId) { "Sessione ricevente non valida." }
         val receiverName = hello.optString("receiverName", "Dispositivo ricevente").take(80)
         val clientPublicKey = hello.getString("publicKey")
+        val clientIdentityKey = hello.optString("identityKey").takeIf(String::isNotBlank)
         val actualClientProof = StreamCenterLocalSyncCrypto.decodeBase64(hello.getString("proof"))
         val keys = StreamCenterLocalSyncCrypto.deriveKeys(
             keyPair = serverKeyPair,
@@ -523,7 +938,13 @@ internal object StreamCenterLocalSyncNetwork {
             pairingCode = pairingCode,
             sessionId = offer.sessionId,
         )
-        val transcript = authenticationTranscript(offer.sessionId, clientPublicKey, serverPublicKey)
+        val transcript = authenticationTranscript(
+            offer.sessionId,
+            clientPublicKey,
+            serverPublicKey,
+            clientIdentityKey.orEmpty(),
+            serverIdentityKey,
+        )
         val expectedClientProof = StreamCenterLocalSyncCrypto.authenticationProof(
             keys.clientAuthenticationKey,
             "client|$transcript",
@@ -540,6 +961,8 @@ internal object StreamCenterLocalSyncNetwork {
         )
         writeFrame(output, serverProof)
         output.flush()
+
+        clientIdentityKey?.let { identity -> rememberPeer(receiverName, identity) }
         listener.onEvent(
             StreamCenterLocalSyncEvent(
                 message = "Ricevitore autenticato",
@@ -607,6 +1030,7 @@ internal object StreamCenterLocalSyncNetwork {
             .put("type", offer.type.wireValue)
             .put("senderName", offer.senderName)
             .put("publicKey", offer.senderPublicKey)
+            .put("identityKey", offer.senderIdentityKey)
             .put("tcpPort", offer.tcpPort)
             .put("compressedSize", offer.compressedSize)
             .put("uncompressedSize", offer.uncompressedSize)
@@ -631,12 +1055,15 @@ internal object StreamCenterLocalSyncNetwork {
             require(port in 1..65_535)
             val publicKey = root.getString("publicKey")
             require(StreamCenterLocalSyncCrypto.decodeBase64(publicKey).size in 64..512)
+            val identityKey = root.getString("identityKey")
+            require(StreamCenterLocalSyncCrypto.decodeBase64(identityKey).size in 64..512)
             StreamCenterLocalSyncOffer(
                 sessionId = sessionId,
                 type = type,
                 senderName = root.optString("senderName", "Dispositivo mittente").take(80),
                 senderAddress = senderAddress.hostAddress.orEmpty(),
                 senderPublicKey = publicKey,
+                senderIdentityKey = identityKey,
                 tcpPort = port,
                 compressedSize = compressedSize,
                 uncompressedSize = uncompressedSize,
@@ -740,7 +1167,10 @@ internal object StreamCenterLocalSyncNetwork {
         sessionId: String,
         clientPublicKey: String,
         serverPublicKey: String,
-    ): String = "$MAGIC|$PROTOCOL_VERSION|$sessionId|$clientPublicKey|$serverPublicKey"
+        clientIdentityKey: String,
+        serverIdentityKey: String,
+    ): String = "$MAGIC|$PROTOCOL_VERSION|$sessionId|$clientPublicKey|$serverPublicKey|" +
+        "$clientIdentityKey|$serverIdentityKey"
 
     private fun payloadAssociatedData(offer: StreamCenterLocalSyncOffer): String =
         "$MAGIC|$PROTOCOL_VERSION|${offer.sessionId}|${offer.type.wireValue}|payload"

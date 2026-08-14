@@ -73,6 +73,7 @@ private fun LoadResponse.addStreamCenterTrackingIdTags(ids: StreamCenterTracking
         ids.anilist?.let { "AniList: $it" },
         ids.kitsu?.let { "Kitsu: $it" },
         ids.simkl?.let { "Simkl: $it" },
+        ids.imdb?.takeIf(String::isNotBlank)?.let { "IMDb: $it" },
     )
     if (idTags.isNotEmpty()) {
         tags = (idTags + tags.orEmpty()).distinct()

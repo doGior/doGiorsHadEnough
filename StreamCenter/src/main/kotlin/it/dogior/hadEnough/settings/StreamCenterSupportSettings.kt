@@ -1,33 +1,14 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
-import android.animation.ArgbEvaluator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
-import android.content.Intent
-import android.content.SharedPreferences
 import android.content.res.ColorStateList
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PathMeasure
-import android.graphics.RectF
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.RippleDrawable
-import android.graphics.drawable.StateListDrawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -40,28 +21,17 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
-import android.widget.ArrayAdapter
-import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.ListView
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.widget.SwitchCompat
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.graphics.ColorUtils
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.syncproviders.AccountManager
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
@@ -74,12 +44,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.sin
 open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragment() {
-    private val supportSparkleTargets = mutableListOf<BorderSparkleTarget>()
     private var activeBackupDialog: AlertDialog? = null
     private var backupLocationText: TextView? = null
     private val backupFolderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -132,13 +99,12 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         container: ViewGroup?,
         savedInstanceState: Bundle?,
     ): View {
-        supportSparkleTargets.clear()
         val content = rootContainer()
         content.minimumHeight = standardSubmenuMinimumHeight()
         content.addView(
             header(
                 title = "Supporto",
-                icon = "🛟",
+                icon = "❓",
                 accent = COLOR_SUPPORT,
             ),
         )
@@ -146,7 +112,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "\uD83D\uDCCB",
             title = "Log",
-            summary = "Gestisci la registrazione e consulta tutti i dettagli e le relative fonti.",
+            summary = "",
             accent = COLOR_LOG,
         ) {
             val tag = "StreamCenterLogsSettings"
@@ -157,7 +123,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "💬",
             title = "Invia feedback",
-            summary = "Segnala un problema o proponi un miglioramento.",
+            summary = "",
             accent = COLOR_FEEDBACK,
         ) {
             showFeedbackChoiceDialog()
@@ -165,7 +131,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "\uD83D\uDCDD",
             title = "Cambiamenti",
-            summary = "Consulta le modifiche delle vecchie versioni e dell'attuale versione.",
+            summary = "",
             accent = COLOR_SUPPORT,
         ) {
             showChangelogDialog()
@@ -173,15 +139,15 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "\uD83D\uDCBE",
             title = "Esporta/Importa",
-            summary = "Crea un backup completo o ripristina una configurazione salvata.",
+            summary = "",
             accent = COLOR_BACKUP,
         ) {
             showBackupChoiceDialog()
         })
         content.addView(supportCard(
             icon = "🔐",
-            title = "Sync locale",
-            summary = "Trasferisci tutto oppure scegli CloudStream, Libreria o StreamCenter.",
+            title = "Sync Locale",
+            summary = "",
             accent = COLOR_LOCAL_SYNC,
         ) {
             showLocalSyncWarningDialog()
@@ -189,7 +155,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         content.addView(supportCard(
             icon = "♻️",
             title = "Ripristina tutte le impostazioni",
-            summary = "Cancella preferenze, sessioni e dati salvati.",
+            summary = "",
             accent = COLOR_RESET,
         ) {
             val alertDialog = AlertDialog.Builder(requireContext())
@@ -217,13 +183,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             (layoutParams as LinearLayout.LayoutParams).topMargin = dp(18)
         })
 
-        startBorderSparkleCycle(supportSparkleTargets)
         return scroll(content, fixedSubmenuHeight = true)
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        supportSparkleTargets.clear()
     }
 
     private fun supportCard(
@@ -244,7 +204,6 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             touchTarget = arrow,
             onClick = onClick,
         ).view
-        supportSparkleTargets += BorderSparkleTarget(card, accent)
         return card
     }
 
@@ -353,6 +312,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
     }
 
     private suspend fun fetchChangelogVersions(): List<ChangelogVersion> {
+        StreamCenterVpnGuard.requireInternetAccess(sharedPref)
         val html = app.get(
             CHANGELOG_URL,
             headers = mapOf(

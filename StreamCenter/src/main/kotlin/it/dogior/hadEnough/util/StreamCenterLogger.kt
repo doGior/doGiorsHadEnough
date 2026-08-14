@@ -19,12 +19,17 @@ import java.util.UUID
 
 object StreamCenterLogger {
     const val PREF_ENABLED = "loggingEnabled"
+    const val PREF_RETENTION_MODE = "loggingRetentionMode"
+    const val PREF_RETENTION_VALUE = "loggingRetentionValue"
+    const val PREF_RETENTION_DAYS = "loggingRetentionDays"
+    const val PREF_RETENTION_LOG_COUNT = "loggingRetentionLogCount"
 
     private const val LOG_DIRECTORY_NAME = "streamcenter-logs"
     private const val LOG_FILE_PREFIX = "streamcenter-log-"
     private const val LOG_FILE_EXTENSION = ".jsonl"
     private const val LOG_FORMAT_VERSION = 2
-    private const val MAX_RETAINED_LOG_FILES = 30
+    private const val MILLIS_PER_DAY = 24L * 60L * 60L * 1_000L
+    private val LEGACY_RETENTION_MODES = setOf("DAYS", "LOG_COUNT")
 
     private const val RECORD_TYPE_SESSION = "session"
     private const val RECORD_TYPE_EVENT = "event"
@@ -42,6 +47,14 @@ object StreamCenterLogger {
         INFO,
         WARNING,
         ERROR,
+    }
+
+    data class RetentionPolicy(
+        val days: Int? = null,
+        val maximumLogCount: Int? = null,
+    ) {
+        val isEnabled: Boolean
+            get() = days != null || maximumLogCount != null
     }
 
     data class SourcedValue(
@@ -86,6 +99,43 @@ object StreamCenterLogger {
 
     fun isEnabled(preferences: SharedPreferences?): Boolean {
         return preferences?.getBoolean(PREF_ENABLED, false) ?: false
+    }
+
+    fun retentionPolicy(preferences: SharedPreferences?): RetentionPolicy {
+        val days = preferences?.getInt(PREF_RETENTION_DAYS, 0)?.takeIf { it > 0 }
+        val maximumLogCount = preferences?.getInt(PREF_RETENTION_LOG_COUNT, 0)?.takeIf { it > 0 }
+        if (days != null || maximumLogCount != null) {
+            return RetentionPolicy(days, maximumLogCount)
+        }
+
+        val legacyValue = preferences?.getInt(PREF_RETENTION_VALUE, 0)?.takeIf { it > 0 }
+            ?: return RetentionPolicy()
+        return when (preferences.getString(PREF_RETENTION_MODE, null)) {
+            "DAYS" -> RetentionPolicy(days = legacyValue)
+            "LOG_COUNT" -> RetentionPolicy(maximumLogCount = legacyValue)
+            else -> RetentionPolicy()
+        }
+    }
+
+    fun setRetentionPolicy(preferences: SharedPreferences, policy: RetentionPolicy) {
+        val days = policy.days?.takeIf { it > 0 }
+        val maximumLogCount = policy.maximumLogCount?.takeIf { it > 0 }
+        preferences.edit().apply {
+            days?.let { putInt(PREF_RETENTION_DAYS, it) } ?: remove(PREF_RETENTION_DAYS)
+            maximumLogCount?.let { putInt(PREF_RETENTION_LOG_COUNT, it) }
+                ?: remove(PREF_RETENTION_LOG_COUNT)
+            remove(PREF_RETENTION_MODE)
+            remove(PREF_RETENTION_VALUE)
+        }.apply()
+    }
+
+    fun isDefaultRetentionPreference(key: String, value: Any?): Boolean {
+        return when (key) {
+            PREF_RETENTION_MODE -> value !is String || value !in LEGACY_RETENTION_MODES
+            PREF_RETENTION_VALUE -> value !is Int || value <= 0
+            PREF_RETENTION_DAYS, PREF_RETENTION_LOG_COUNT -> value !is Int || value <= 0
+            else -> false
+        }
     }
 
     fun setEnabled(preferences: SharedPreferences, enabled: Boolean) {
@@ -143,10 +193,24 @@ object StreamCenterLogger {
             activePreferences = preferences
             activeSession = null
             writingEnabled = isEnabled(preferences)
-            if (!writingEnabled) return
+            val directory = logDirectory(context.applicationContext)
+            val retentionPolicy = retentionPolicy(preferences)
+            if (!writingEnabled) {
+                pruneLogsLocked(directory, retentionPolicy)
+                return
+            }
 
             createSessionLocked(context.applicationContext, sessionMetadata)
             writingEnabled = activeSession != null
+            val removedLogs = pruneLogsLocked(directory, retentionPolicy, activeSession?.file)
+            if (removedLogs > 0) {
+                appendMenuLocked(
+                    action = "Pulizia automatica log completata",
+                    metadata = retentionMetadata(retentionPolicy, removedLogs),
+                    level = Level.INFO,
+                    throwable = null,
+                )
+            }
             appendMenuLocked(
                 action = "Avvio di StreamCenter completato",
                 metadata = mapOf(
@@ -156,6 +220,28 @@ object StreamCenterLogger {
                 level = Level.INFO,
                 throwable = null,
             )
+        }
+    }
+
+    fun pruneLogs(context: Context, preferences: SharedPreferences?): Int {
+        synchronized(lock) {
+            applicationContext = context.applicationContext
+            activePreferences = preferences
+            val retentionPolicy = retentionPolicy(preferences)
+            val removedLogs = pruneLogsLocked(
+                directory = logDirectory(context.applicationContext),
+                retentionPolicy = retentionPolicy,
+                except = activeSession?.file,
+            )
+            if (removedLogs > 0) {
+                appendMenuLocked(
+                    action = "Pulizia automatica log completata",
+                    metadata = retentionMetadata(retentionPolicy, removedLogs),
+                    level = Level.INFO,
+                    throwable = null,
+                )
+            }
+            return removedLogs
         }
     }
 
@@ -368,17 +454,66 @@ object StreamCenterLogger {
 
         if (!appendJsonLine(file, header)) return
         activeSession = session
-        pruneOldLogsLocked(directory, except = file)
     }
 
-    private fun pruneOldLogsLocked(directory: File, except: File) {
-        val oldFiles = directory
-            .listFiles { file -> file.isFile && file.name.startsWith(LOG_FILE_PREFIX) && file.name.endsWith(LOG_FILE_EXTENSION) }
-            ?.sortedByDescending(File::lastModified)
+    private fun pruneLogsLocked(
+        directory: File,
+        retentionPolicy: RetentionPolicy,
+        except: File? = null,
+    ): Int {
+        if (!retentionPolicy.isEnabled || !directory.isDirectory) return 0
+        val removedByAge = retentionPolicy.days
+            ?.let { days -> pruneLogsByAgeLocked(directory, days, except) }
+            ?: 0
+        val removedByCount = retentionPolicy.maximumLogCount
+            ?.let { maximumLogCount -> pruneLogsByCountLocked(directory, maximumLogCount, except) }
+            ?: 0
+        return removedByAge + removedByCount
+    }
+
+    private fun pruneLogsByAgeLocked(
+        directory: File,
+        retentionDays: Int,
+        except: File?,
+    ): Int {
+        val threshold = System.currentTimeMillis() - retentionDays * MILLIS_PER_DAY
+        return logFiles(directory)
+            .asSequence()
+            .filter { file -> file.absolutePath != except?.absolutePath && file.lastModified() < threshold }
+            .count { file -> runCatching { file.delete() }.getOrDefault(false) }
+    }
+
+    private fun pruneLogsByCountLocked(
+        directory: File,
+        maximumLogCount: Int,
+        except: File?,
+    ): Int {
+        val protectedPath = except?.absolutePath
+        val logsToRemove = logFiles(directory)
+            .filter { file -> file.absolutePath != protectedPath }
+            .sortedByDescending(File::lastModified)
+            .drop((maximumLogCount - if (except == null) 0 else 1).coerceAtLeast(0))
+        return logsToRemove.count { file -> runCatching { file.delete() }.getOrDefault(false) }
+    }
+
+    private fun logFiles(directory: File): List<File> {
+        return directory
+            .listFiles { file ->
+                file.isFile && file.name.startsWith(LOG_FILE_PREFIX) && file.name.endsWith(LOG_FILE_EXTENSION)
+            }
             .orEmpty()
-            .filter { it.absolutePath != except.absolutePath }
-            .drop(MAX_RETAINED_LOG_FILES - 1)
-        oldFiles.forEach { runCatching { it.delete() } }
+            .toList()
+    }
+
+    private fun retentionMetadata(
+        policy: RetentionPolicy,
+        removedLogs: Int,
+    ): Map<String, Any> {
+        return buildMap<String, Any> {
+            policy.days?.let { days -> put("giorni", days) }
+            policy.maximumLogCount?.let { maximumLogCount -> put("numero_massimo_log", maximumLogCount) }
+            put("sessioni_eliminate", removedLogs)
+        }
     }
 
     private fun appendJsonLine(file: File, value: JSONObject): Boolean {

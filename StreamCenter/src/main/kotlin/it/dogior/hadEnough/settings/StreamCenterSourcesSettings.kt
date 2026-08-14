@@ -5,77 +5,62 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import it.dogior.hadEnough.catalog.StreamCenterCatalogSection
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.stremio.*
-import it.dogior.hadEnough.torrent.StreamCenterTorrentFilterPreferences
-import it.dogior.hadEnough.torrent.StreamCenterTorrentLanguageFilter
-import it.dogior.hadEnough.torrent.StreamCenterTorrentSourceDefinition
-import it.dogior.hadEnough.torrent.StreamCenterTorrentSources
+import it.dogior.hadEnough.torrent.StreamCenterExtAvailability
 import it.dogior.hadEnough.torrent.StreamCenterExtCloudflareSession
+import it.dogior.hadEnough.torrent.StreamCenterExtContainLocation
+import it.dogior.hadEnough.torrent.StreamCenterExtDomain
+import it.dogior.hadEnough.torrent.StreamCenterExtDomainStatus
+import it.dogior.hadEnough.torrent.StreamCenterExtTorrentClient
+import it.dogior.hadEnough.torrent.StreamCenterTorrentLanguageFilter
+import it.dogior.hadEnough.torrent.StreamCenterTorrentPreferences
+import it.dogior.hadEnough.torrent.StreamCenterTorrentVideoCodec
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
 import android.annotation.SuppressLint
-import android.animation.ArgbEvaluator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
-import android.content.SharedPreferences
-import android.content.res.ColorStateList
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PathMeasure
-import android.graphics.RectF
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.RippleDrawable
-import android.graphics.drawable.StateListDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.text.InputFilter
+import android.text.InputType
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.widget.PopupMenu
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.graphics.ColorUtils
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import com.lagradost.cloudstream3.syncproviders.AccountManager
-import com.lagradost.cloudstream3.syncproviders.SyncIdName
+import androidx.lifecycle.lifecycleScope
 import com.lagradost.cloudstream3.utils.ImageLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import org.jsoup.Connection
 import org.jsoup.Jsoup
-import java.util.Calendar
 import java.util.Locale
-import kotlin.math.sin
 
 private const val STREMIO_CATEGORY_TITLE = "Add-on Stremio"
 private const val STREMIO_MANIFEST_REFRESH_NOTICE_MS = 3_000L
@@ -100,6 +85,26 @@ private data class SourceActionCard(
     val badge: View,
 )
 
+private data class TorrentChoice<T>(
+    val title: String,
+    val description: String,
+    val value: T,
+)
+
+private data class TorrentToggleOption(
+    val title: String,
+    val enabled: Boolean,
+    val onChanged: (Boolean) -> Unit,
+)
+
+private enum class TorrentSizeUnit(
+    val label: String,
+    val bytes: Long,
+) {
+    MB("MB", 1_048_576L),
+    GB("GB", 1_073_741_824L),
+}
+
 class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment() {
     private val rows = mutableListOf<SourceRowState>()
     private val preloadedSourceIconUrls = mutableSetOf<String>()
@@ -110,6 +115,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     private val categoryStatusViews = mutableMapOf<String, TextView>()
     private var expandedCategoryKey: String? = null
     private var pendingCategoryExpansionKey: String? = null
+    private var pendingCategoryFocusKey: String? = null
     private var categoryTransitionRunning = false
     private var rowsContainer: LinearLayout? = null
     private var sourceIconPreloadContainer: FrameLayout? = null
@@ -119,6 +125,9 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     private var torrentCategoryStatusView: TextView? = null
     private var isStreamingCommunityLinkCheckRunning = false
     private var isStremioAddonInstallRunning = false
+    private var isExtAvailabilityCheckRunning = false
+    private val extDomainStatuses = mutableMapOf<StreamCenterExtDomain, StreamCenterExtDomainStatus>()
+    private var extAvailabilityStatusViews: Map<StreamCenterExtDomain, TextView> = emptyMap()
     private var manifestRefreshObserverToken: Int? = null
     private var stremioManifestRefreshNoticeUntil = 0L
     private val fadeStremioManifestRefreshNotice = Runnable {
@@ -257,8 +266,8 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     private fun apiCheckCard(): LinearLayout {
         val arrow = chevron(COLOR_API_CHECK)
         return sourceActionCard(
-            title = "Verifica API e fonti",
-            summary = "Controlla la raggiungibilità di servizi e fonti streaming.",
+            title = "Verifica API e Fonti",
+            summary = "",
             accent = COLOR_API_CHECK,
             icon = "📡",
             trailing = arrow,
@@ -286,7 +295,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 accent = COLOR_STREMIO,
                 size = 34,
             ) { toggleCategory(categoryKey) }
-            addView(categoryHeaderRow(
+            val headerRow = categoryHeaderRow(
                 title = STREMIO_CATEGORY_TITLE,
                 summaryView = status,
                 icon = "\uD83D\uDD0C",
@@ -301,7 +310,9 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                     size = 40,
                     marginEnd = 10,
                 ),
-            ) { expandButton.callOnClick() }.view)
+            ) { expandButton.callOnClick() }
+            headerRow.view.tag = "source-category-header:$categoryKey"
+            addView(headerRow.view)
 
             if (expanded) {
                 val expandedContent = LinearLayout(requireContext()).apply {
@@ -708,7 +719,6 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
 
     private fun renderRows() {
         val container = rowsContainer ?: return
-        replaceBorderSparkleCycle("source-categories", emptyList())
         stremioManifestRefreshNoticeView?.removeCallbacks(fadeStremioManifestRefreshNotice)
         stremioManifestRefreshNoticeView?.animate()?.cancel()
         container.removeAllViews()
@@ -716,22 +726,15 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         stremioManifestRefreshNoticeView = null
         stremioCategoryStatusView = null
         torrentCategoryStatusView = null
-        val sparkleTargets = mutableListOf<BorderSparkleTarget>()
-        val torrentCard = torrentCategoryCard()
-        sparkleTargets += BorderSparkleTarget(torrentCard, COLOR_TORRENT)
-        container.addView(torrentCard)
+        container.addView(torrentCategoryCard())
         sourceCategories.forEach { category ->
             val categoryRows = rows.filter { it.source.category == category.key }
             if (categoryRows.isNotEmpty()) {
-                val categoryCard = sourceCategoryCard(category, categoryRows)
-                sparkleTargets += BorderSparkleTarget(categoryCard, category.accent)
-                container.addView(categoryCard)
+                container.addView(sourceCategoryCard(category, categoryRows))
             }
         }
-        val stremioCategoryCard = stremioAddonsCategoryCard()
-        sparkleTargets += BorderSparkleTarget(stremioCategoryCard, COLOR_STREMIO)
-        container.addView(stremioCategoryCard)
-        replaceBorderSparkleCycle("source-categories", sparkleTargets)
+        container.addView(stremioAddonsCategoryCard())
+        restorePendingCategoryFocus(container)
     }
 
     private fun torrentCategoryCard(): LinearLayout {
@@ -773,6 +776,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 val expandedContent = rowsContainer
                     ?.findViewWithTag<View>("source-category-content:$categoryKey")
                 if (!isEnabled && expandedContent != null) {
+                    rememberCategoryFocus(categoryKey)
                     categoryTransitionRunning = true
                     animateCategoryCollapse(expandedContent) {
                         expandedCategoryKey = null
@@ -783,9 +787,11 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 }
                 saveToast(if (isEnabled) "Torrent attivati" else "Torrent disattivati")
             }.apply {
+                id = View.generateViewId()
+                isFocusable = true
                 contentDescription = "Attiva o disattiva tutte le fonti Torrent"
             }
-            addView(categoryHeaderRow(
+            val headerRow = categoryHeaderRow(
                 title = "Torrent",
                 summaryView = status,
                 icon = "🧲",
@@ -795,17 +801,67 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
                     expandButton.callOnClick()
                 }
-            }.view)
+            }
+            headerRow.view.id = View.generateViewId()
+            headerRow.view.tag = "source-category-header:$categoryKey"
+            headerRow.view.nextFocusRightId = masterSwitch.id
+            headerRow.view.nextFocusForwardId = masterSwitch.id
+            masterSwitch.nextFocusLeftId = headerRow.view.id
+            addView(headerRow.view)
 
             if (expanded) {
                 val expandedContent = LinearLayout(requireContext()).apply {
                     tag = "source-category-content:$categoryKey"
                     orientation = LinearLayout.VERTICAL
                 }
-                expandedContent.addView(torrentFiltersRow())
-                StreamCenterTorrentSources.definitions.forEach { source ->
-                    expandedContent.addView(torrentSourceRow(source))
+                expandedContent.addView(torrentSectionLabel("Collegamento", top = 10))
+                expandedContent.addView(torrentSettingsRow(
+                    title = "Endpoint EXT",
+                ) { showExtDomainsDialog() })
+                if (StreamCenterPlugin.isPerformanceModeEnabled(sharedPref)) {
+                    expandedContent.addView(bodyText(
+                        "Modalità Prestazioni attiva: usa un budget più breve e rispetta il numero di torrent scelto.",
+                        12,
+                    ).apply {
+                        setPadding(dp(4), 0, dp(4), 0)
+                        layoutParams = verticalParams(top = 9)
+                    })
                 }
+                expandedContent.addView(torrentSectionLabel("Ricerca"))
+                expandedContent.addView(torrentSettingsRow(
+                    title = "Dove cercare",
+                    summary = torrentSearchLocationSummary(),
+                ) {
+                    showTorrentChoiceDialog(
+                        title = "Dove cercare",
+                        options = StreamCenterExtContainLocation.entries.map { location ->
+                            TorrentChoice(location.title, location.description, location)
+                        },
+                        selected = StreamCenterTorrentPreferences.read(sharedPref).containLocation,
+                        dismissLabel = "Chiudi",
+                    ) { selected ->
+                        StreamCenterTorrentPreferences.setContainLocation(sharedPref, selected.value)
+                        renderRows()
+                    }
+                })
+                expandedContent.addView(torrentSettingsRow(
+                    title = "Lingua",
+                    summary = StreamCenterTorrentPreferences.read(sharedPref).language.title,
+                ) { showTorrentLanguageDialog() })
+                expandedContent.addView(torrentSectionLabel("Filtri dei risultati"))
+                expandedContent.addView(torrentSettingsRow(
+                    title = "Filtri e Risultati",
+                    summary = torrentFiltersSummary(),
+                ) { showTorrentFiltersDialog() })
+                expandedContent.addView(torrentSettingsRow(
+                    title = "Codec video",
+                    summary = torrentVideoCodecsSummary(),
+                ) { showTorrentVideoCodecsDialog() })
+                expandedContent.addView(actionButton("Ripristina impostazioni Torrent", COLOR_TORRENT) {
+                    confirmTorrentReset()
+                }.apply {
+                    layoutParams = verticalParams(top = 10)
+                })
                 addView(expandedContent)
                 if (pendingCategoryExpansionKey == categoryKey) {
                     animateCategoryExpansion(expandedContent)
@@ -815,363 +871,837 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     }
 
     private fun torrentCategoryStatus(): String {
-        if (!StreamCenterPlugin.isTorrentEnabled(sharedPref)) return "Disattivato"
-        val sources = StreamCenterTorrentSources.definitions
-        val active = sources.count { source ->
-            StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
-        }
-        val sourceLabel = if (sources.size == 1) "fonte" else "fonti"
-        val activeLabel = if (active == 1) "attiva" else "attive"
-        return "$active/${sources.size} $sourceLabel $activeLabel"
+        return if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) "Attivo" else "Disattivato"
     }
 
     private fun refreshTorrentCategoryStatus() {
         torrentCategoryStatusView?.text = torrentCategoryStatus()
     }
 
-    private fun torrentFiltersRow(): LinearLayout {
-        val summary = bodyText(torrentFiltersSummary(), 12)
+    private fun torrentSettingsRow(
+        title: String,
+        summary: String? = null,
+        onClick: () -> Unit,
+    ): LinearLayout {
         val arrow = chevron(COLOR_TORRENT)
         return settingsRow(
-            title = "Filtri Torrent",
-            summaryView = summary,
-            icon = "⚙",
+            title = title,
+            summary = summary,
             accent = COLOR_TORRENT,
             fillColor = COLOR_CARD,
-            strokeColor = tint(COLOR_TORRENT, "66"),
+            strokeColor = tint(COLOR_TORRENT, "55"),
             trailingViews = listOf(arrow),
             touchTarget = arrow,
             topMargin = 7,
-        ) {
-            showTorrentFiltersDialog(summary)
-        }.view
+            onClick = onClick,
+        ).view
     }
 
-    private fun torrentFiltersSummary(): String {
-        val filters = StreamCenterTorrentFilterPreferences.read(sharedPref)
-        val active = buildList {
-            when (filters.language) {
-                StreamCenterTorrentLanguageFilter.ANY -> Unit
-                StreamCenterTorrentLanguageFilter.PRIORITIZE_ITALIAN -> add("Priorità ITA")
-                StreamCenterTorrentLanguageFilter.ITALIAN_OR_MULTI -> add("ITA / MULTI")
-                StreamCenterTorrentLanguageFilter.EXPLICIT_ITALIAN -> add("Solo ITA")
-            }
-            if (filters.excludeCinemaCopies) add("Copie cinema escluse")
-            if (filters.minimumResolution > 0) add("≥ ${filters.minimumResolution}p")
-            if (filters.minimumSeeders > 0) add("≥ ${filters.minimumSeeders} seed")
-            if (filters.maximumSizeBytes > 0L) {
-                add("≤ ${torrentFilterSizeLabel(filters.maximumSizeBytes)}")
+    private fun compactTorrentSelector(
+        label: String,
+        contentDescription: String,
+        onClick: () -> Unit,
+    ): TextView = TextView(requireContext()).apply {
+        text = "$label  ▾"
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor(COLOR_TEXT))
+        this.contentDescription = contentDescription
+        isClickable = true
+        isFocusable = true
+        minimumHeight = dp(44)
+        setPadding(dp(10), dp(6), dp(10), dp(6))
+        background = interactiveBackground(
+            fill = COLOR_CARD_ALT,
+            accent = COLOR_TORRENT,
+            radius = 10,
+            strokeColor = COLOR_STROKE,
+        )
+        setOnClickListener { onClick() }
+    }
+
+    private fun torrentToggleGrid(options: List<TorrentToggleOption>): GridLayout {
+        return GridLayout(requireContext()).apply {
+            columnCount = 2
+            alignmentMode = GridLayout.ALIGN_MARGINS
+            useDefaultMargins = false
+            options.forEach { option ->
+                var enabled = option.enabled
+                val item = TextView(requireContext()).apply {
+                    text = option.title
+                    textSize = 14f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER_VERTICAL
+                    maxLines = 2
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    isClickable = true
+                    isFocusable = true
+                    minimumHeight = dp(48)
+                    layoutParams = GridLayout.LayoutParams().apply {
+                        width = 0
+                        height = ViewGroup.LayoutParams.WRAP_CONTENT
+                        columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                        setMargins(dp(4), dp(4), dp(4), dp(4))
+                    }
+                }
+                fun refreshAppearance() {
+                    item.isSelected = enabled
+                    item.alpha = if (enabled) 1f else 0.48f
+                    item.setTextColor(Color.parseColor(if (enabled) COLOR_TEXT else COLOR_MUTED))
+                    item.background = interactiveBackground(
+                        fill = if (enabled) tint(COLOR_TORRENT, "24") else COLOR_CARD_ALT,
+                        accent = COLOR_TORRENT,
+                        radius = 12,
+                        strokeColor = if (enabled) tint(COLOR_TORRENT, "99") else COLOR_STROKE,
+                    )
+                    item.contentDescription = "${option.title}, ${if (enabled) "attivo" else "disattivato"}"
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        item.stateDescription = if (enabled) "Attivo" else "Disattivato"
+                    }
+                }
+                item.setOnClickListener {
+                    enabled = !enabled
+                    refreshAppearance()
+                    option.onChanged(enabled)
+                }
+                refreshAppearance()
+                addView(item)
             }
         }
-        return active.joinToString(" · ").ifBlank { "Nessun filtro attivo" }
     }
 
-    private fun showTorrentFiltersDialog(parentSummary: TextView) {
+    private fun torrentSectionLabel(value: String, top: Int = 16): TextView = sectionLabel(value).apply {
+        setPadding(dp(4), 0, dp(4), 0)
+        layoutParams = verticalParams(top = top)
+    }
+
+    private fun confirmTorrentReset() {
         val ctx = context ?: return
-        val filters = StreamCenterTorrentFilterPreferences.read(sharedPref)
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Ripristina Torrent"))
+            .setMessage(
+                "Ripristina la configurazione dei torrent ai valori predefiniti.",
+            )
+            .setPositiveButton("Ripristina") { _, _ ->
+                StreamCenterPlugin.resetTorrentConfiguration(sharedPref)
+                extDomainStatuses.clear()
+                renderRows()
+                saveToast("Impostazioni Torrent ripristinate")
+            }
+            .setNegativeButton("Annulla", null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
+    }
+
+    private fun torrentDomainShortLabel(domain: StreamCenterExtDomain): String {
+        val role = when (domain) {
+            StreamCenterExtDomain.PRIMARY -> "Principale"
+            StreamCenterExtDomain.SECONDARY -> "Secondario"
+            StreamCenterExtDomain.PROXY -> "Proxy"
+        }
+        val host = domain.baseUrl.substringAfter("://").removePrefix("www.").trimEnd('/')
+        return "$role · $host"
+    }
+
+    private fun moveExtDomain(domain: StreamCenterExtDomain, direction: Int) {
+        val order = StreamCenterTorrentPreferences.domainOrder(sharedPref).toMutableList()
+        val index = order.indexOf(domain)
+        val target = index + direction
+        if (index < 0 || target !in order.indices) return
+        order[index] = order[target].also { order[target] = order[index] }
+        StreamCenterTorrentPreferences.setDomainOrder(sharedPref, order)
+    }
+
+    private fun torrentSearchLocationSummary(): String =
+        StreamCenterTorrentPreferences.read(sharedPref).containLocation.title
+
+    private fun torrentFiltersSummary(): String {
+        val filters = StreamCenterTorrentPreferences.read(sharedPref)
+        val seed = when {
+            filters.minimumSeeders != null && filters.maximumSeeders != null ->
+                "Seeds ${filters.minimumSeeders}–${filters.maximumSeeders}"
+            filters.minimumSeeders != null -> "Seeds ≥ ${filters.minimumSeeders}"
+            filters.maximumSeeders != null -> "Seeds ≤ ${filters.maximumSeeders}"
+            else -> "Seeds qualsiasi"
+        }
+        val quality = filters.minimumResolution.takeIf { value -> value > 0 }
+            ?.let { value -> "Qualità ≥ ${value}p" }
+            ?: "Qualità qualsiasi"
+        return listOf("${filters.resultLimit} risultati", seed, quality).joinToString(" · ")
+    }
+
+    private fun showTorrentFiltersDialog() {
+        val ctx = context ?: return
+        val filters = StreamCenterTorrentPreferences.read(sharedPref)
         val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(20))
         }
-
-        content.addView(torrentFilterChoiceRow(
-            title = "Lingua",
-            summary = "",
-            icon = "IT",
-            options = listOf(
-                SettingsChoiceOption(
-                    "Qualsiasi",
-                    StreamCenterTorrentLanguageFilter.ANY,
-                    "∞",
-                ),
-                SettingsChoiceOption(
-                    "Italiano, SUB ITA o MULTI",
-                    StreamCenterTorrentLanguageFilter.ITALIAN_OR_MULTI,
-                    "IT+",
-                ),
-                SettingsChoiceOption(
-                    "Priorità Italiano (sub/dub)",
-                    StreamCenterTorrentLanguageFilter.PRIORITIZE_ITALIAN,
-                    "IT→∞",
-                ),
-                SettingsChoiceOption(
-                    "Solo audio ITA esplicito",
-                    StreamCenterTorrentLanguageFilter.EXPLICIT_ITALIAN,
-                    "ITA",
-                ),
-            ),
-            selectedValue = filters.language,
-            parentSummary = parentSummary,
-        ) { value ->
-            StreamCenterTorrentFilterPreferences.setLanguage(sharedPref, value)
+        var persistIfValid: () -> Unit = {}
+        var sizeUnit = torrentSizeUnitFor(filters.minimumSizeBytes ?: filters.maximumSizeBytes)
+        val minimumSizeInput = input(formatTorrentSizeInput(filters.minimumSizeBytes, sizeUnit), widthDp = 92).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            gravity = Gravity.CENTER
+            hint = "Minima"
+            contentDescription = "Dimensione minima del torrent, ${sizeUnit.label}"
+        }
+        val maximumSizeInput = input(formatTorrentSizeInput(filters.maximumSizeBytes, sizeUnit), widthDp = 92).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            gravity = Gravity.CENTER
+            hint = "Massima"
+            contentDescription = "Dimensione massima del torrent, ${sizeUnit.label}"
+        }
+        lateinit var sizeUnitButton: TextView
+        sizeUnitButton = compactTorrentSelector(
+            label = sizeUnit.label,
+            contentDescription = "Unità di misura: ${sizeUnit.label}",
+        ) {
+            PopupMenu(ctx, sizeUnitButton).apply {
+                TorrentSizeUnit.entries.forEachIndexed { index, unit ->
+                    menu.add(0, index, index, unit.label).apply {
+                        isCheckable = true
+                        isChecked = unit == sizeUnit
+                    }
+                }
+                menu.setGroupCheckable(0, true, true)
+                setOnMenuItemClickListener { item ->
+                    val unit = TorrentSizeUnit.entries.getOrNull(item.itemId)
+                        ?: return@setOnMenuItemClickListener false
+                    val previousUnit = sizeUnit
+                    sizeUnit = unit
+                    minimumSizeInput.setText(
+                        convertTorrentSizeInput(minimumSizeInput.text?.toString(), previousUnit, sizeUnit),
+                    )
+                    maximumSizeInput.setText(
+                        convertTorrentSizeInput(maximumSizeInput.text?.toString(), previousUnit, sizeUnit),
+                    )
+                    minimumSizeInput.contentDescription = "Dimensione minima del torrent, ${sizeUnit.label}"
+                    maximumSizeInput.contentDescription = "Dimensione massima del torrent, ${sizeUnit.label}"
+                    sizeUnitButton.text = "${sizeUnit.label}  ▾"
+                    sizeUnitButton.contentDescription = "Unità di misura: ${sizeUnit.label}"
+                    persistIfValid()
+                    true
+                }
+                show()
+            }
+        }
+        content.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(titleText("Dimensione", 16, true).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+            })
+            addView(sizeUnitButton.apply {
+                layoutParams = LinearLayout.LayoutParams(dp(88), dp(44)).apply {
+                    marginStart = dp(8)
+                }
+            })
         })
-
+        content.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = verticalParams(top = 8)
+            addView(bodyText("Da", 12).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            addView(minimumSizeInput.apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(bodyText("a", 12).apply {
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            addView(maximumSizeInput.apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+        })
+        content.addView(titleText("Seeders", 16, true).apply { layoutParams = verticalParams(top = 14) })
+        val minimumSeedInput = input(filters.minimumSeeders?.toString().orEmpty(), widthDp = 92).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            gravity = Gravity.CENTER
+            hint = "Minimi"
+            contentDescription = "Numero minimo di seeders"
+        }
+        val maximumSeedInput = input(filters.maximumSeeders?.toString().orEmpty(), widthDp = 92).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            gravity = Gravity.CENTER
+            hint = "Massimi"
+            contentDescription = "Numero massimo di seeders"
+        }
+        content.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = verticalParams(top = 8)
+            addView(bodyText("Da", 12).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            addView(minimumSeedInput.apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(bodyText("a", 12).apply {
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT)
+            })
+            addView(maximumSeedInput.apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+        })
+        var selectedMinimumResolution = filters.minimumResolution
+        fun resolutionLabel(value: Int): String = value.takeIf { it > 0 }?.let { "$it p" } ?: "Qualsiasi"
+        lateinit var resolutionButton: TextView
+        resolutionButton = compactTorrentSelector(
+            label = resolutionLabel(selectedMinimumResolution),
+            contentDescription = "Risoluzione minima: ${resolutionLabel(selectedMinimumResolution)}",
+        ) {
+            val options = StreamCenterTorrentPreferences.minimumResolutionOptions
+            PopupMenu(ctx, resolutionButton).apply {
+                options.forEachIndexed { index, resolution ->
+                    menu.add(
+                        0,
+                        index,
+                        index,
+                        resolution.takeIf { it > 0 }?.let { "$it p" } ?: "Qualsiasi",
+                    ).apply {
+                        isCheckable = true
+                        isChecked = resolution == selectedMinimumResolution
+                    }
+                }
+                menu.setGroupCheckable(0, true, true)
+                setOnMenuItemClickListener { item ->
+                    val resolution = options.getOrNull(item.itemId) ?: return@setOnMenuItemClickListener false
+                    selectedMinimumResolution = resolution
+                    resolutionButton.text = "${resolutionLabel(resolution)}  ▾"
+                    resolutionButton.contentDescription = "Risoluzione minima: ${resolutionLabel(resolution)}"
+                    StreamCenterTorrentPreferences.setMinimumResolution(sharedPref, resolution)
+                    true
+                }
+                show()
+            }
+        }
+        content.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = verticalParams(top = 16)
+            addView(titleText("Risoluzione minima", 16, true).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+            })
+            addView(resolutionButton.apply {
+                layoutParams = LinearLayout.LayoutParams(dp(104), dp(44)).apply {
+                    marginStart = dp(8)
+                }
+            })
+        })
+        val resultLimitInput = input(filters.resultLimit.toString(), widthDp = 64).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            gravity = Gravity.CENTER
+            hint = "Da 1 a 100"
+            this.filters = arrayOf(InputFilter.LengthFilter(3))
+            contentDescription = "Numero di torrent da trovare, da 1 a 100"
+        }
+        content.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = verticalParams(top = 14)
+            addView(titleText("Torrent da trovare", 16, true))
+            addView(resultLimitInput.apply {
+                layoutParams = LinearLayout.LayoutParams(dp(64), dp(44)).apply {
+                    marginStart = dp(8)
+                }
+            })
+        })
+        content.addView(titleText("Parole da escludere", 16, true).apply {
+            layoutParams = verticalParams(top = 14)
+        })
+        val termsInput = input(filters.excludedTerms).apply {
+            hint = "sample, trailer, cam"
+            this.filters = arrayOf(InputFilter.LengthFilter(500))
+            contentDescription = "Parole o frasi da escludere dai risultati torrent"
+            layoutParams = verticalParams(top = 8)
+        }
+        content.addView(termsInput)
+        val termsCounter = counterText("0 esclusioni", 12).apply {
+            layoutParams = verticalParams(top = 6)
+        }
+        fun updateTermsCounter() {
+            val count = termsInput.text?.toString().orEmpty()
+                .split(',', ';', '\n')
+                .map(String::trim)
+                .count(String::isNotBlank)
+            termsCounter.text = if (count == 1) "1 esclusione" else "$count esclusioni"
+        }
+        termsInput.doAfterTextChanged {
+            StreamCenterTorrentPreferences.setExcludedTerms(sharedPref, termsInput.text?.toString().orEmpty())
+            updateTermsCounter()
+        }
+        updateTermsCounter()
+        content.addView(termsCounter)
         content.addView(switchRow(
-            title = "Nascondi copie cinema",
-            summary = "",
+            title = "Escludi copie cinema",
             checked = filters.excludeCinemaCopies,
             accent = COLOR_TORRENT,
-            icon = "CAM",
             strokeColor = tint(COLOR_TORRENT, "55"),
-            topMargin = 8,
+            topMargin = 12,
         ) { enabled ->
-            StreamCenterTorrentFilterPreferences.setExcludeCinemaCopies(
-                sharedPref,
-                enabled,
-            )
-            parentSummary.text = torrentFiltersSummary()
+            StreamCenterTorrentPreferences.setExcludeCinemaCopies(sharedPref, enabled)
         })
+        persistIfValid = persist@ {
+            val minimumSize = parseTorrentSize(minimumSizeInput.text?.toString(), sizeUnit)
+            val maximumSize = parseTorrentSize(maximumSizeInput.text?.toString(), sizeUnit)
+            val minimumSeeders = parseOptionalNonNegativeInt(minimumSeedInput.text?.toString())
+            val maximumSeeders = parseOptionalNonNegativeInt(maximumSeedInput.text?.toString())
+            val resultLimit = resultLimitInput.text?.toString()?.trim()?.toIntOrNull()
+            val invalidMinimumSize = minimumSizeInput.text?.toString().orEmpty().trim().isNotBlank() &&
+                minimumSize == null
+            val invalidMaximumSize = maximumSizeInput.text?.toString().orEmpty().trim().isNotBlank() &&
+                maximumSize == null
+            val invalidMinimumSeeders = minimumSeedInput.text?.toString().orEmpty().trim().isNotBlank() &&
+                minimumSeeders == null
+            val invalidMaximumSeeders = maximumSeedInput.text?.toString().orEmpty().trim().isNotBlank() &&
+                maximumSeeders == null
+            val invalidResultLimit = resultLimit !in 1..100
+            val invalidSizeBounds = minimumSize != null && maximumSize != null && minimumSize > maximumSize
+            val invalidSeederBounds =
+                minimumSeeders != null && maximumSeeders != null && minimumSeeders > maximumSeeders
 
-        val resolutionOptions = StreamCenterTorrentFilterPreferences
-            .minimumResolutionOptions
-            .map { resolution ->
-                SettingsChoiceOption(
-                    label = if (resolution == 0) "Qualsiasi" else "${resolution}p",
-                    value = resolution,
-                    badge = when (resolution) {
-                        0 -> "∞"
-                        2160 -> "4K"
-                        else -> resolution.toString()
+            minimumSizeInput.error = when {
+                invalidMinimumSize -> "Inserisci una dimensione positiva."
+                invalidSizeBounds -> "Non può superare la dimensione massima."
+                else -> null
+            }
+            maximumSizeInput.error = if (invalidMaximumSize) "Inserisci una dimensione positiva." else null
+            minimumSeedInput.error = when {
+                invalidMinimumSeeders -> "Inserisci un numero non negativo."
+                invalidSeederBounds -> "Non può superare il numero massimo."
+                else -> null
+            }
+            maximumSeedInput.error = if (invalidMaximumSeeders) "Inserisci un numero non negativo." else null
+            resultLimitInput.error = if (invalidResultLimit) "Inserisci un valore da 1 a 100." else null
+
+            if (
+                invalidMinimumSize ||
+                invalidMaximumSize ||
+                invalidMinimumSeeders ||
+                invalidMaximumSeeders ||
+                invalidResultLimit ||
+                invalidSizeBounds ||
+                invalidSeederBounds
+            ) return@persist
+            StreamCenterTorrentPreferences.setSizeBounds(sharedPref, minimumSize, maximumSize)
+            StreamCenterTorrentPreferences.setSeederBounds(sharedPref, minimumSeeders, maximumSeeders)
+            StreamCenterTorrentPreferences.setResultLimit(sharedPref, resultLimit ?: return@persist)
+        }
+        listOf(
+            minimumSizeInput,
+            maximumSizeInput,
+            minimumSeedInput,
+            maximumSeedInput,
+            resultLimitInput,
+        ).forEach { input ->
+            input.doAfterTextChanged { persistIfValid() }
+        }
+        val scroll = ScrollView(ctx).apply { addView(content) }
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Filtri e Risultati"))
+            .setView(scroll)
+            .setNegativeButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(dialog, onDismiss = { renderRows() })
+        dialog.show()
+    }
+
+    private fun showExtDomainsDialog() {
+        val ctx = context ?: return
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(20))
+        }
+        val statusViews = mutableMapOf<StreamCenterExtDomain, TextView>()
+        fun rebuildDomainRows() {
+            content.removeAllViews()
+            statusViews.clear()
+            val orderedDomains = StreamCenterTorrentPreferences.domainOrder(sharedPref)
+            orderedDomains.forEachIndexed { index, domain ->
+                val status = bodyText(torrentDomainStatusText(domain, extDomainStatuses[domain]), 12)
+                statusViews[domain] = status
+                val trailing = buildList<View> {
+                    add(styledSwitch(
+                        StreamCenterTorrentPreferences.isDomainEnabled(sharedPref, domain),
+                        COLOR_TORRENT,
+                    ) { enabled ->
+                        StreamCenterTorrentPreferences.setDomainEnabled(sharedPref, domain, enabled)
+                        rebuildDomainRows()
+                        renderRows()
+                    }.apply {
+                        contentDescription = "Attiva o disattiva ${torrentDomainShortLabel(domain)}"
+                    })
+                    if (domain.requiresCloudflare) {
+                        add(iconButton(
+                            symbol = "🛡",
+                            description = "Verifica Cloudflare per ${torrentDomainShortLabel(domain)}",
+                            accent = COLOR_TORRENT,
+                            size = 30,
+                        ) {
+                            showExtCloudflareVerification(domain.baseUrl)
+                        })
+                    } else {
+                        add(View(ctx).apply {
+                            layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply {
+                                marginStart = dp(8)
+                            }
+                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        })
+                    }
+                    add(reorderIconButton(
+                        symbol = "↑",
+                        description = "Alza la priorità di ${torrentDomainShortLabel(domain)}",
+                        accent = COLOR_TORRENT,
+                        enabled = index > 0,
+                        size = 30,
+                    ) {
+                        moveExtDomain(domain, -1)
+                        rebuildDomainRows()
+                    })
+                    add(reorderIconButton(
+                        symbol = "↓",
+                        description = "Abbassa la priorità di ${torrentDomainShortLabel(domain)}",
+                        accent = COLOR_TORRENT,
+                        enabled = index < orderedDomains.size - 1,
+                        size = 30,
+                    ) {
+                        moveExtDomain(domain, 1)
+                        rebuildDomainRows()
+                    })
+                }
+                content.addView(endpointDomainCard(domain, index + 1, status, trailing))
+            }
+        }
+        rebuildDomainRows()
+        extAvailabilityStatusViews = statusViews
+        refreshExtAvailabilityDialogState()
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Endpoint EXT"))
+            .setView(ScrollView(ctx).apply { addView(content) })
+            .setNegativeButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(dialog, onDismiss = {
+            extAvailabilityStatusViews = emptyMap()
+        })
+        dialog.show()
+        startExtAvailabilityCheck()
+    }
+
+    private fun endpointDomainCard(
+        domain: StreamCenterExtDomain,
+        priority: Int,
+        status: TextView,
+        controls: List<View>,
+    ): LinearLayout {
+        val isEnabled = StreamCenterTorrentPreferences.isDomainEnabled(sharedPref, domain)
+        val host = domain.baseUrl
+            .substringAfter("://")
+            .removePrefix("www.")
+            .trimEnd('/')
+        updateEndpointStatusChip(status, domain, extDomainStatuses[domain])
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            background = cardBackground(
+                fillColor = if (isEnabled) COLOR_CARD_ALT else COLOR_CARD,
+                strokeColor = tint(COLOR_TORRENT, if (isEnabled) "65" else "36"),
+                radius = 16,
+            )
+            setPadding(dp(14), dp(13), dp(12), dp(12))
+            layoutParams = verticalParams(top = 10)
+            contentDescription = "${domain.title}, priorità $priority"
+
+            addView(LinearLayout(requireContext()).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(chip(priority.toString(), COLOR_TORRENT).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        marginEnd = dp(10)
+                    }
+                })
+                addView(LinearLayout(requireContext()).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        1f,
+                    ).apply {
+                        marginEnd = dp(8)
+                    }
+                    addView(titleText(domain.title, 15, true))
+                    addView(bodyText(host, 11).apply {
+                        setPadding(0, dp(3), 0, 0)
+                    })
+                })
+                addView(status)
+            })
+
+            addView(LinearLayout(requireContext()).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, 0)
+                addView(chip("PRIORITÀ $priority", COLOR_TORRENT))
+                addView(View(requireContext()).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, 0, 1f)
+                })
+                controls.forEach(::addView)
+            })
+        }
+    }
+
+    private fun updateEndpointStatusChip(
+        target: TextView,
+        domain: StreamCenterExtDomain,
+        status: StreamCenterExtDomainStatus?,
+        checking: Boolean = false,
+    ) {
+        val accent = when {
+            checking -> COLOR_TORRENT
+            !StreamCenterTorrentPreferences.isDomainEnabled(sharedPref, domain) -> COLOR_MUTED
+            status?.availability == StreamCenterExtAvailability.AVAILABLE -> COLOR_VPN_ON
+            status == null -> COLOR_TORRENT
+            else -> COLOR_DANGER
+        }
+        target.text = if (checking) "Verifica in corso…" else torrentDomainStatusText(domain, status)
+        target.visibility = if (target.text.isBlank()) View.GONE else View.VISIBLE
+        target.maxLines = 1
+        target.setTextColor(Color.parseColor(tint(accent, "C7")))
+        target.background = outlined(tint(accent, "4D"), tint(accent, "14"), 999)
+        target.setPadding(dp(8), dp(4), dp(8), dp(4))
+    }
+
+    private fun startExtAvailabilityCheck() {
+        if (isExtAvailabilityCheckRunning) return
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) {
+            return
+        }
+        isExtAvailabilityCheckRunning = true
+        refreshExtAvailabilityDialogState()
+        viewLifecycleOwner.lifecycleScope.launch {
+            val statuses = supervisorScope {
+                StreamCenterExtDomain.entries.map { domain ->
+                    async(Dispatchers.IO) {
+                        val result = try {
+                            Result.success(StreamCenterExtTorrentClient.checkAvailability(domain))
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            Result.failure(error)
+                        }
+                        domain to result
+                    }
+                }.awaitAll()
+            }
+            statuses.forEach { (domain, result) ->
+                extDomainStatuses[domain] = result.getOrElse { error ->
+                    StreamCenterExtDomainStatus(
+                        domain = domain,
+                        availability = StreamCenterExtAvailability.UNAVAILABLE,
+                        detail = error.message,
+                    )
+                }
+            }
+            isExtAvailabilityCheckRunning = false
+            if (!isAdded) return@launch
+            refreshExtAvailabilityDialogState()
+            refreshTorrentCategoryStatus()
+        }
+    }
+
+    private fun refreshExtAvailabilityDialogState() {
+        extAvailabilityStatusViews.forEach { (domain, view) ->
+            updateEndpointStatusChip(
+                target = view,
+                domain = domain,
+                status = extDomainStatuses[domain],
+                checking = isExtAvailabilityCheckRunning,
+            )
+        }
+    }
+
+    private fun torrentDomainStatusText(
+        domain: StreamCenterExtDomain,
+        status: StreamCenterExtDomainStatus?,
+    ): String {
+        if (
+            !StreamCenterTorrentPreferences.isDomainEnabled(sharedPref, domain)
+        ) {
+            return "Disattivato"
+        }
+        if (!domain.requiresCloudflare) {
+            return when (status?.availability) {
+                null -> "Non verificato"
+                StreamCenterExtAvailability.AVAILABLE -> ""
+                else -> "Non disponibile"
+            }
+        }
+        val hasClearance = StreamCenterExtCloudflareSession.hasVerifiedClearance(domain.baseUrl)
+        return when {
+            status == null -> if (hasClearance) "Cloudflare verificato ✓" else "Non verificato"
+            status.availability == StreamCenterExtAvailability.AVAILABLE ->
+                if (hasClearance) "Cloudflare ✓" else ""
+            status.availability == StreamCenterExtAvailability.VERIFICATION_REQUIRED && hasClearance ->
+                "Clearance scaduta"
+            status.availability == StreamCenterExtAvailability.VERIFICATION_REQUIRED ->
+                "Verifica Cloudflare richiesta"
+            else -> "Non disponibile"
+        }
+    }
+
+    private fun showTorrentLanguageDialog() {
+        showTorrentChoiceDialog(
+            title = "Lingua",
+            options = StreamCenterTorrentLanguageFilter.entries.map { language ->
+                TorrentChoice(language.title, language.description, language)
+            },
+            selected = StreamCenterTorrentPreferences.read(sharedPref).language,
+            dismissLabel = "Chiudi",
+        ) { selected ->
+            StreamCenterTorrentPreferences.setLanguage(sharedPref, selected.value)
+            renderRows()
+        }
+    }
+
+    private fun torrentVideoCodecsSummary(): String {
+        val blocked = StreamCenterTorrentPreferences.read(sharedPref).blockedVideoCodecs
+        return when {
+            blocked.isEmpty() -> "Tutti i codec consentiti"
+            blocked.size >= StreamCenterTorrentVideoCodec.entries.size -> "Nessun codec consentito"
+            else -> "Esclusi: " + blocked.joinToString(", ") { codec -> codec.displayName }
+        }
+    }
+
+    private fun showTorrentVideoCodecsDialog() {
+        val ctx = context ?: return
+        val filters = StreamCenterTorrentPreferences.read(sharedPref)
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(4), dp(12), dp(16))
+        }
+        content.addView(torrentToggleGrid(
+            StreamCenterTorrentVideoCodec.entries.map { codec ->
+                TorrentToggleOption(
+                    title = codec.displayName,
+                    enabled = codec !in filters.blockedVideoCodecs,
+                    onChanged = { allowed ->
+                        StreamCenterTorrentPreferences.setVideoCodecAllowed(sharedPref, codec, allowed)
+                        renderRows()
                     },
                 )
-            }
-        content.addView(torrentFilterChoiceRow(
-            title = "Risoluzione minima",
-            summary = "",
-            icon = "▣",
-            options = resolutionOptions,
-            selectedValue = filters.minimumResolution,
-            parentSummary = parentSummary,
-        ) { value ->
-            StreamCenterTorrentFilterPreferences.setMinimumResolution(sharedPref, value)
-        })
-
-        val seederOptions = StreamCenterTorrentFilterPreferences.minimumSeederOptions.map { seeders ->
-            SettingsChoiceOption(
-                label = if (seeders == 0) "Nessun minimo" else "$seeders o più",
-                value = seeders,
-                badge = if (seeders == 0) "∞" else "$seeders+",
-            )
-        }
-        content.addView(torrentFilterChoiceRow(
-            title = "Seed minimi",
-            summary = "",
-            icon = "S",
-            options = seederOptions,
-            selectedValue = filters.minimumSeeders,
-            parentSummary = parentSummary,
-        ) { value ->
-            StreamCenterTorrentFilterPreferences.setMinimumSeeders(sharedPref, value)
-        })
-
-        val sizeOptions = StreamCenterTorrentFilterPreferences.maximumSizeOptions.map { bytes ->
-            val label = if (bytes == 0L) "Nessun limite" else torrentFilterSizeLabel(bytes)
-            SettingsChoiceOption(
-                label = label,
-                value = bytes,
-                badge = if (bytes == 0L) "∞" else label.substringBefore(' '),
-            )
-        }
-        content.addView(torrentFilterChoiceRow(
-            title = "Dimensione massima",
-            summary = "",
-            icon = "GB",
-            options = sizeOptions,
-            selectedValue = filters.maximumSizeBytes,
-            parentSummary = parentSummary,
-        ) { value ->
-            StreamCenterTorrentFilterPreferences.setMaximumSizeBytes(sharedPref, value)
-        })
-
-        lateinit var dialog: AlertDialog
-        content.addView(actionButton("Ripristina filtri", COLOR_TORRENT) {
-            StreamCenterTorrentFilterPreferences.reset(sharedPref)
-            parentSummary.text = torrentFiltersSummary()
-            dialog.dismiss()
-            saveToast("Filtri Torrent ripristinati")
-        }.apply {
-            layoutParams = verticalParams(top = 12)
-        })
-
-        val scroll = ScrollView(ctx).apply {
-            isFillViewport = true
-            addView(content)
-        }
-        dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Filtri Torrent"))
-            .setView(scroll)
+            },
+        ))
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Codec video"))
+            .setView(ScrollView(ctx).apply { addView(content) })
             .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
     }
 
-    private fun <T> torrentFilterChoiceRow(
+    private fun <T> showTorrentChoiceDialog(
         title: String,
-        summary: String,
-        icon: String,
-        options: List<SettingsChoiceOption<T>>,
-        selectedValue: T,
-        parentSummary: TextView,
-        onSelected: (T) -> Unit,
-    ): LinearLayout {
-        var currentValue = selectedValue
-        val status = chip(
-            options.firstOrNull { option -> option.value == currentValue }?.badge.orEmpty(),
-            COLOR_TORRENT,
-        )
-        val arrow = chevron(COLOR_TORRENT)
-        return settingsRow(
-            title = title,
-            summary = summary,
-            icon = icon,
-            accent = COLOR_TORRENT,
-            fillColor = COLOR_CARD_ALT,
-            strokeColor = tint(COLOR_TORRENT, "55"),
-            statusView = status,
-            trailingViews = listOf(arrow),
-            touchTarget = arrow,
-            topMargin = 8,
-        ) {
-            showSettingsChoiceDialog(
-                title = title,
-                options = options,
-                selectedValue = currentValue,
-                accent = COLOR_TORRENT,
-            ) { selected ->
-                currentValue = selected.value
-                status.text = selected.badge
-                onSelected(selected.value)
-                parentSummary.text = torrentFiltersSummary()
-            }
-        }.view
-    }
-
-    private fun torrentFilterSizeLabel(bytes: Long): String {
-        val gibibytes = bytes / 1_073_741_824L
-        return "$gibibytes GB"
-    }
-
-    private fun torrentSourceRow(source: StreamCenterTorrentSourceDefinition): LinearLayout {
-        val enabled = StreamCenterPlugin.isTorrentSourceEnabled(sharedPref, source.key)
-        val sourceUrl = StreamCenterPlugin.getTorrentSourceUrl(sharedPref, source.key)
-        return LinearLayout(requireContext()).apply {
-            val rowView = this
-            lateinit var linkInput: EditText
+        options: List<TorrentChoice<T>>,
+        selected: T,
+        dismissLabel: String = "Annulla",
+        onSelected: (TorrentChoice<T>) -> Unit,
+    ) {
+        val ctx = context ?: return
+        val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(11), dp(12), dp(12))
-            background = cardBackground(
-                if (enabled) COLOR_CARD else COLOR_CARD_DISABLED,
-                if (enabled) tint(COLOR_TORRENT, "66") else COLOR_STROKE,
-            )
-            layoutParams = verticalParams(top = 7)
-
-            val topLine = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val badge = siteIconBadge(
-                fallback = "🧲",
-                accent = COLOR_TORRENT,
-                contentDescription = "Icona di ${source.title}",
-                websiteUrl = sourceUrl,
-            ).apply {
-                alpha = if (enabled) 1f else 0.5f
-            }
-            topLine.addView(badge)
-            topLine.addView(titleText(source.title, 15, true).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    1f,
-                )
-            })
-            val toggle = styledSwitch(enabled, COLOR_TORRENT) { isEnabled ->
-                StreamCenterPlugin.setTorrentSourceEnabled(sharedPref, source.key, isEnabled)
-                animateCardFill(
-                    rowView,
-                    fromColor = if (isEnabled) COLOR_CARD_DISABLED else COLOR_CARD,
-                    toColor = if (isEnabled) COLOR_CARD else COLOR_CARD_DISABLED,
-                    strokeColor = if (isEnabled) tint(COLOR_TORRENT, "66") else COLOR_STROKE,
-                )
-                badge.alpha = if (isEnabled) 1f else 0.5f
-                refreshTorrentCategoryStatus()
-            }.apply {
-                contentDescription = "Attiva o disattiva ${source.title}"
-            }
-            topLine.addView(toggle)
-            addView(topLine)
-
-            val linkRow = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = verticalParams(top = 10)
-            }
-            linkRow.addView(bodyText("Link", 12).apply {
-                typeface = Typeface.DEFAULT_BOLD
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    marginEnd = dp(10)
-                }
-            })
-            linkInput = input(sourceUrl).apply {
-                filters = arrayOf(InputFilter.LengthFilter(160))
-
-                fun saveLink(value: String) {
-                    StreamCenterPlugin.setTorrentSourceUrl(sharedPref, source.key, value)
-                }
-
-                doAfterTextChanged { editable ->
-                    saveLink(editable?.toString().orEmpty())
-                }
-                setOnFocusChangeListener { _, hasFocus ->
-                    if (!hasFocus) {
-                        saveLink(text?.toString().orEmpty())
-                        val savedUrl = StreamCenterPlugin.getTorrentSourceUrl(
-                            sharedPref,
-                            source.key,
-                        )
-                        if (text?.toString() != savedUrl) {
-                            setText(savedUrl)
-                        }
-                    }
-                }
-            }
-            linkRow.addView(linkInput)
-            linkRow.addView(iconButton(
-                symbol = "↶",
-                description = "Ripristina il link predefinito di ${source.title}",
-                accent = COLOR_TORRENT,
-                size = 30,
-            ) {
-                linkInput.clearFocus()
-                StreamCenterPlugin.setTorrentSourceUrl(sharedPref, source.key, "")
-                val defaultUrl = StreamCenterPlugin.getTorrentSourceUrl(sharedPref, source.key)
-                if (linkInput.text?.toString() != defaultUrl) {
-                    linkInput.setText(defaultUrl)
-                }
-                saveToast("Link di ${source.title} ripristinato")
-            })
-            addView(linkRow)
-
-            if (source.key == StreamCenterTorrentSources.EXT_KEY) {
-                addView(actionButton("Verifica Cloudflare", COLOR_TORRENT) {
-                    linkInput.clearFocus()
-                    showExtCloudflareVerification(
-                        StreamCenterPlugin.getTorrentSourceUrl(sharedPref, source.key),
-                    )
-                }.apply {
-                    layoutParams = verticalParams(top = 10)
-                    contentDescription = "Apri EXT per completare la verifica Cloudflare"
-                })
-            }
+            setPadding(dp(20), dp(8), dp(20), dp(20))
         }
+        lateinit var dialog: AlertDialog
+        options.forEach { option ->
+            val isSelected = option.value == selected
+            val selectedBadge = iconBadge("✓", COLOR_TORRENT, size = 30, marginEnd = 0).apply {
+                visibility = if (isSelected) View.VISIBLE else View.INVISIBLE
+            }
+            val row = settingsRow(
+                title = option.title,
+                summary = option.description,
+                accent = COLOR_TORRENT,
+                fillColor = COLOR_CARD_ALT,
+                strokeColor = if (isSelected) COLOR_TORRENT else tint(COLOR_TORRENT, "55"),
+                trailingViews = listOf(selectedBadge),
+                touchTarget = selectedBadge,
+                topMargin = 8,
+                accessibilityState = { if (isSelected) "Selezionata" else "Non selezionata" },
+            ) {
+                onSelected(option)
+                dialog.dismiss()
+            }
+            row.view.isSelected = isSelected
+            content.addView(row.view)
+        }
+        dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle(title))
+            .setView(ScrollView(ctx).apply { addView(content) })
+            .setNegativeButton(dismissLabel, null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
+    }
+
+    private fun torrentSizeUnitFor(bytes: Long?): TorrentSizeUnit =
+        if ((bytes ?: 0L) >= TorrentSizeUnit.GB.bytes) TorrentSizeUnit.GB else TorrentSizeUnit.MB
+
+    private fun formatTorrentSizeInput(bytes: Long?, unit: TorrentSizeUnit): String {
+        val value = bytes ?: return ""
+        return "%.3f".format(Locale.ROOT, value.toDouble() / unit.bytes)
+            .trimEnd('0')
+            .trimEnd('.')
+    }
+
+    private fun convertTorrentSizeInput(
+        value: String?,
+        from: TorrentSizeUnit,
+        to: TorrentSizeUnit,
+    ): String {
+        val number = value?.trim()?.replace(',', '.')?.toDoubleOrNull() ?: return ""
+        return "%.3f".format(Locale.ROOT, number * from.bytes / to.bytes)
+            .trimEnd('0')
+            .trimEnd('.')
+    }
+
+    private fun parseTorrentSize(value: String?, unit: TorrentSizeUnit): Long? {
+        val text = value?.trim().orEmpty()
+        if (text.isBlank()) return null
+        val amount = text.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0.0 } ?: return null
+        return (amount * unit.bytes)
+            .takeIf { bytes -> bytes <= Long.MAX_VALUE.toDouble() }
+            ?.toLong()
+            ?.takeIf { bytes -> bytes > 0L }
+    }
+
+    private fun parseOptionalNonNegativeInt(value: String?): Int? {
+        val text = value?.trim().orEmpty()
+        if (text.isBlank()) return null
+        return text.toIntOrNull()?.takeIf { number -> number >= 0 }
+    }
+
+    private fun formatTorrentSize(bytes: Long): String {
+        val unit = torrentSizeUnitFor(bytes)
+        return "${formatTorrentSizeInput(bytes, unit)} ${unit.label}"
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun showExtCloudflareVerification(sourceUrl: String) {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) {
+            Toast.makeText(requireContext(), "Attiva una VPN per usare la verifica Cloudflare", Toast.LENGTH_SHORT).show()
+            return
+        }
         val normalizedUrl = sourceUrl.trim().let { value ->
             when {
                 value.startsWith("https://", ignoreCase = true) -> value
@@ -1218,26 +1748,74 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
             .setView(content)
             .setNegativeButton("Chiudi", null)
             .create()
+        var clearanceRecheckStarted = false
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val target = request?.url?.toString() ?: return true
+                val blocked = !isAllowedExtNavigation(baseUrl, target)
+                if (blocked) status.text = "Navigazione esterna bloccata per sicurezza."
+                return blocked
+            }
+
+            @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                val target = url ?: return true
+                val blocked = !isAllowedExtNavigation(baseUrl, target)
+                if (blocked) status.text = "Navigazione esterna bloccata per sicurezza."
+                return blocked
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 cookieManager.flush()
-                status.text = if (StreamCenterExtCloudflareSession.isReady(baseUrl)) {
+                val clearanceReady = StreamCenterExtCloudflareSession.isReady(baseUrl)
+                status.text = if (clearanceReady) {
                     "Verifica completata. Puoi chiudere questa finestra."
                 } else {
                     "Completa la verifica nella pagina qui sotto."
                 }
+                if (clearanceReady && !clearanceRecheckStarted) {
+                    clearanceRecheckStarted = true
+                    val domain = StreamCenterExtDomain.entries.firstOrNull { candidate ->
+                        Uri.parse(candidate.baseUrl).host.equals(parsedUrl.host, ignoreCase = true)
+                    }
+                    if (domain != null) {
+                        viewLifecycleOwner.lifecycleScope.launch {
+                            val refreshed = withContext(Dispatchers.IO) {
+                                try {
+                                    StreamCenterExtTorrentClient.checkAvailability(domain)
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Throwable) {
+                                    null
+                                }
+                            }
+                            if (refreshed != null) extDomainStatuses[domain] = refreshed
+                            if (!isAdded) return@launch
+                            refreshExtAvailabilityDialogState()
+                            refreshTorrentCategoryStatus()
+                        }
+                    }
+                }
             }
         }
-        dialog.setOnDismissListener {
+        applyDialogBackdrop(dialog, onDismiss = {
             cookieManager.flush()
             webView.stopLoading()
             webView.loadUrl("about:blank")
             webView.removeAllViews()
             webView.destroy()
-        }
-        applyDialogBackdrop(dialog)
+        })
         dialog.show()
         webView.loadUrl(baseUrl)
+    }
+
+    private fun isAllowedExtNavigation(baseUrl: String, targetUrl: String): Boolean {
+        val base = Uri.parse(baseUrl)
+        val target = Uri.parse(targetUrl)
+        if (target.scheme?.lowercase(Locale.ROOT) !in setOf("http", "https")) return false
+        val baseHost = base.host?.lowercase(Locale.ROOT)?.removePrefix("www.") ?: return false
+        val targetHost = target.host?.lowercase(Locale.ROOT)?.removePrefix("www.") ?: return false
+        return baseHost == targetHost
     }
 
     private fun sourceCategoryCard(
@@ -1255,13 +1833,15 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 accent = category.accent,
                 size = 34,
             ) { toggleCategory(category.key) }
-            addView(categoryHeaderRow(
+            val headerRow = categoryHeaderRow(
                 title = category.title,
                 summaryView = status,
                 icon = category.icon,
                 accent = category.accent,
                 trailingViews = listOf(expandButton),
-            ) { expandButton.callOnClick() }.view)
+            ) { expandButton.callOnClick() }
+            headerRow.view.tag = "source-category-header:${category.key}"
+            addView(headerRow.view)
 
             if (expanded) {
                 val expandedContent = LinearLayout(requireContext()).apply {
@@ -1303,6 +1883,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
 
     private fun toggleCategory(categoryKey: String) {
         if (categoryTransitionRunning) return
+        rememberCategoryFocus(categoryKey)
         val currentExpanded = expandedCategoryKey
         if (currentExpanded != null) {
             val expandedContent = rowsContainer
@@ -1325,6 +1906,20 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         pendingCategoryExpansionKey = categoryKey.takeIf { opening }
         renderRows()
         pendingCategoryExpansionKey = null
+    }
+
+    private fun rememberCategoryFocus(categoryKey: String) {
+        val focused = rowsContainer?.findFocus() ?: return
+        if (!focused.isInTouchMode) pendingCategoryFocusKey = categoryKey
+    }
+
+    private fun restorePendingCategoryFocus(container: View) {
+        val categoryKey = pendingCategoryFocusKey ?: return
+        val header = container.findViewWithTag<View>("source-category-header:$categoryKey") ?: return
+        pendingCategoryFocusKey = null
+        header.post {
+            if (isAdded && header.isAttachedToWindow) header.requestFocus()
+        }
     }
 
     private fun priorityBadge(index: Int, enabled: Boolean, accent: String): TextView {
@@ -1356,6 +1951,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     }
 
     private fun preloadStreamingSourceIcons() {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
         val container = sourceIconPreloadContainer ?: return
         val generation = ++sourceIconPreloadGeneration
 
@@ -1387,6 +1983,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     }
 
     private fun preloadSourceIcon(container: FrameLayout, iconUrl: String) {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
         if (!preloadedSourceIconUrls.add(iconUrl)) return
         val preloadView = ImageView(requireContext()).apply {
             layoutParams = FrameLayout.LayoutParams(dp(42), dp(42))
@@ -1456,7 +2053,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
                 }
             })
             linkInput = input(row.url).apply {
-                filters = arrayOf(InputFilter.LengthFilter(120))
+                this.filters = arrayOf(InputFilter.LengthFilter(120))
                 fun saveLink(value: String) {
                     val previousUrl = row.url
                     StreamCenterPlugin.setSourceBaseUrl(sharedPref, row.source.key, value)
@@ -1621,6 +2218,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     }
 
     private fun streamingCommunityPublishedUrl(): String? {
+        StreamCenterVpnGuard.requireInternetAccess(sharedPref)
         val page = Jsoup.connect(STREAMING_COMMUNITY_UPDATED_LINK_PAGE)
             .userAgent("Mozilla/5.0 (Android 14; Mobile)")
             .timeout(15_000)
@@ -1668,6 +2266,9 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         stremioManifestRefreshNoticeView = null
         stremioCategoryStatusView = null
         torrentCategoryStatusView = null
+        extDomainStatuses.clear()
+        extAvailabilityStatusViews = emptyMap()
+        isExtAvailabilityCheckRunning = false
         super.onDestroyView()
     }
 }

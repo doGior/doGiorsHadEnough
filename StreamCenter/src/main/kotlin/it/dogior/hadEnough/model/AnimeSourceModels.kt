@@ -51,6 +51,8 @@ internal data class AnimeUnityEpisodeInfo(
 internal data class AnimeUnityPageData(
     val anime: AnimeUnityAnime,
     val episodes: List<AnimeUnityEpisodeInfo>,
+    val related: List<AnimeUnityAnime> = emptyList(),
+    val recommendations: List<AnimeUnityAnime> = emptyList(),
 )
 
 internal data class AnimeWorldSearchItem(
@@ -137,6 +139,8 @@ internal data class AnimeUnityTitleSources(
     val title: String? = null,
     val plot: String? = null,
     val posterUrl: String? = null,
+    val related: List<AnimeUnityAnime> = emptyList(),
+    val recommendations: List<AnimeUnityAnime> = emptyList(),
 ) {
     fun playbackForEpisode(number: String?): AnimeUnityPlaybackData? {
         val normalizedNumber = normalizeAnimeEpisodeNumber(number) ?: return null

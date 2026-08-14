@@ -3,6 +3,7 @@ package it.dogior.hadEnough.settings
 import android.content.Context
 import android.content.SharedPreferences
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.util.StreamCenterLogger
 
 internal object StreamCenterConfigurationStore {
     fun preferences(context: Context): SharedPreferences =
@@ -24,8 +25,11 @@ internal object StreamCenterConfigurationStore {
                 null -> return@mapNotNull null
                 else -> throw IllegalArgumentException("Tipo non supportato per la preferenza $key.")
             }
-            val excluded = StreamCenterPlugin.isObsoleteTorrentSourcePreference(key) ||
-                StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue)
+            val excluded = StreamCenterPlugin.isObsoleteTorrentPreference(key) ||
+                StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue) ||
+                StreamCenterPlugin.isDefaultHomePreference(key, portableValue) ||
+                StreamCenterPlugin.isDefaultVpnRequirementPreference(key, portableValue) ||
+                StreamCenterLogger.isDefaultRetentionPreference(key, portableValue)
             if (excluded) null else key to portableValue
         }.toMap()
     }

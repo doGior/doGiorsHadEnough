@@ -61,6 +61,7 @@ internal data class AniZipEpisodeMetadata(
     val airDate: String?,
     val fallbackAirDate: String?,
     val rating: Double?,
+    val seasonNumber: Int?,
     val episodeNumber: Int?,
     val absoluteEpisodeNumber: Int?,
 )
@@ -87,6 +88,7 @@ internal data class AniZipEpisodeCatalog(
     val malId: Int? = null,
     val kitsuId: Int? = null,
     val tmdbId: Int? = null,
+    val imdbId: String? = null,
 )
 
 internal data class TmdbAnimeEpisodeMetadata(

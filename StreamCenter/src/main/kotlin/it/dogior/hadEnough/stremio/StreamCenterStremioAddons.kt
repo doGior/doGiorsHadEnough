@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.stremio
 
 import android.util.Log
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.app
@@ -130,6 +131,7 @@ internal object StreamCenterStremioAddonClient {
         titleCandidates: List<String>,
         year: Int?,
     ): String? {
+        StreamCenterVpnGuard.requireInternetAccess()
         val type = contentType.lowercase(Locale.ROOT).takeIf { it == "movie" || it == "series" }
             ?: return null
         val candidates = titleCandidates
@@ -167,6 +169,7 @@ internal object StreamCenterStremioAddonClient {
     }
 
     suspend fun readManifest(input: String): StreamCenterStremioAddon {
+        StreamCenterVpnGuard.requireInternetAccess()
         val manifestUrl = normalizeManifestUrl(input)
         val response = app.get(
             manifestUrl,
@@ -202,6 +205,7 @@ internal object StreamCenterStremioAddonClient {
         page: Int,
         query: String? = null,
     ): StreamCenterStremioCatalogPage {
+        StreamCenterVpnGuard.requireInternetAccess()
         val normalizedPage = page.coerceAtLeast(1)
         if (normalizedPage > 1 && !catalog.supportsExtra("skip")) {
             return StreamCenterStremioCatalogPage(emptyList(), false)
@@ -250,6 +254,7 @@ internal object StreamCenterStremioAddonClient {
         type: String,
         id: String,
     ): StreamCenterStremioCatalogItem? {
+        StreamCenterVpnGuard.requireInternetAccess()
         val supportsMeta = addon.resources.isEmpty() || addon.resources.any { resource ->
             resource.name.equals("meta", ignoreCase = true)
         }
@@ -281,6 +286,7 @@ internal object StreamCenterStremioAddonClient {
         callback: (ExtractorLink) -> Unit,
         stopAfterFirstResult: Boolean = false,
     ): Boolean = supervisorScope {
+        StreamCenterVpnGuard.requireInternetAccess()
         val streamRequests = resolveResourceRequests(addon, "stream", context)
         val subtitleRequests = resolveResourceRequests(addon, "subtitles", context)
         val streamSemaphore = Semaphore(MAX_CONCURRENT_STREAM_REQUESTS)
@@ -406,6 +412,7 @@ internal object StreamCenterStremioAddonClient {
         addon: StreamCenterStremioAddon,
         request: ResourceRequest,
     ): JSONObject? {
+        StreamCenterVpnGuard.requireInternetAccess()
         val resourceUrl = buildString {
             append(addonBaseUrl(addon.manifestUrl))
             append('/')
@@ -812,6 +819,7 @@ internal object StreamCenterStremioAddonClient {
         type: String,
         id: String,
     ): StreamCenterStremioCatalogItem? {
+        StreamCenterVpnGuard.requireInternetAccess()
         if (!IMDB_ID.matches(id)) return null
         val cinemetaType = when (type.lowercase(Locale.ROOT)) {
             "movie" -> "movie"

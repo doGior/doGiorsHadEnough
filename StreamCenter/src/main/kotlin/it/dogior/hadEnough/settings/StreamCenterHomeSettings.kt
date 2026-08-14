@@ -6,29 +6,15 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogSection
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.*
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
-import android.animation.ArgbEvaluator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
-import android.content.Intent
-import android.content.SharedPreferences
-import android.content.res.ColorStateList
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PathMeasure
-import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.RippleDrawable
-import android.graphics.drawable.StateListDrawable
-import android.net.Uri
 import android.os.Bundle
 import android.text.InputFilter
 import android.text.SpannableString
@@ -38,30 +24,20 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.DecelerateInterpolator
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
-import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.graphics.ColorUtils
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.syncproviders.AccountManager
-import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -71,7 +47,6 @@ import org.jsoup.Connection
 import org.jsoup.Jsoup
 import java.util.Calendar
 import java.util.Locale
-import kotlin.math.sin
 
 private const val CATALOG_ICON_SIZE_DP = 42
 
@@ -88,6 +63,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
     private val categoryEnabled = mutableMapOf<String, Boolean>()
     private var expandedCategoryKey: String? = null
     private var pendingCategoryExpansionKey: String? = null
+    private var pendingCategoryFocusKey: String? = null
     private var categoryTransitionRunning = false
     private var rowsContainer: LinearLayout? = null
     private var stremioCatalogInstallRunning = false
@@ -188,13 +164,13 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         fun resolvePreview(value: String): String {
             return StreamCenterPlugin.resolveHomeTitlePlaceholders(value, calendar)
         }
-        val exampleTitle = "Anime - Calendario %giorno%"
+        val exampleTitle = "Anime: calendario (%Giorno%)"
         val previewText = titleText(resolvePreview(exampleTitle), 14, false).apply {
             setTextColor(Color.parseColor(COLOR_TEXT))
             setPadding(0, dp(4), 0, 0)
         }
         val titleInput = input("").apply {
-            hint = "Es. Anime - Calendario %giorno%"
+            hint = "Es. Anime: calendario (%Giorno%)"
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -335,34 +311,25 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         val allSections = StreamCenterPlugin.getAllHomeSections(sharedPref)
         val byKey = allSections.associateBy { it.key }
-        val orderedKeys = sharedPref
-            ?.getString(StreamCenterPlugin.PREF_HOME_ORDER, null)
-            ?.split(",")
-            ?.map { it.trim() }
-            ?.filter { it in byKey }
-            ?.distinct()
-            .orEmpty()
-        val order = orderedKeys + allSections.map { it.key }.filterNot { it in orderedKeys }
-        order.mapNotNull { byKey[it] }
+        StreamCenterPlugin.getHomeSectionOrder(sharedPref)
+            .mapNotNull { byKey[it] }
             .sortedBy { categoryOrder.indexOf(StreamCenterPlugin.homeSectionCategoryKey(it)) }
             .forEach { section ->
-            rows += HomeRowState(
-                section = section,
-                title = StreamCenterPlugin.getHomeSectionTitleTemplate(sharedPref, section),
-                enabled = StreamCenterPlugin.isHomeSectionEnabled(sharedPref, section),
-                count = normalizedCount(
-                    StreamCenterPlugin.getHomeSectionCount(sharedPref, section).toString(),
-                    section,
-                ),
-            )
-        }
+                rows += HomeRowState(
+                    section = section,
+                    title = StreamCenterPlugin.getHomeSectionTitleTemplate(sharedPref, section),
+                    enabled = StreamCenterPlugin.isHomeSectionEnabled(sharedPref, section),
+                    count = normalizedCount(
+                        StreamCenterPlugin.getHomeSectionCount(sharedPref, section).toString(),
+                        section,
+                    ),
+                )
+            }
     }
 
     private fun renderRows() {
         val container = rowsContainer ?: return
-        replaceBorderSparkleCycle("home-categories", emptyList())
         container.removeAllViews()
-        val sparkleTargets = mutableListOf<BorderSparkleTarget>()
         categoryOrder.forEachIndexed { categoryIndex, categoryKey ->
             val categoryRows = rows.withIndex().filter {
                 StreamCenterPlugin.homeSectionCategoryKey(it.value.section) == categoryKey
@@ -422,10 +389,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                     animateCategoryExpansion(expandedContent)
                 }
             }
-            sparkleTargets += BorderSparkleTarget(categoryContainer, accent)
             container.addView(categoryContainer)
         }
-        replaceBorderSparkleCycle("home-categories", sparkleTargets)
+        restorePendingCategoryFocus(container)
     }
 
     private fun categoryHeader(categoryKey: String, categoryContainer: LinearLayout): LinearLayout {
@@ -477,11 +443,29 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             enabledAppearance = enabled,
         ) { expandButton.callOnClick() }
         header.view.tag = "home-category:$categoryKey"
+        header.view.contentDescription =
+            "${categoryTitle(categoryKey)}. Tieni premuto per ripristinare la categoria"
+        header.view.setOnLongClickListener {
+            resetHomeCategory(categoryKey)
+            true
+        }
         return header.view
+    }
+
+    private fun resetHomeCategory(categoryKey: String) {
+        val title = categoryTitle(categoryKey)
+        rowsContainer?.clearFocus()
+        StreamCenterPlugin.resetHomeCategoryConfiguration(sharedPref, categoryKey)
+        expandedCategoryKey = categoryKey
+        pendingCategoryExpansionKey = null
+        loadRows()
+        renderRows()
+        saveToast("Categoria $title ripristinata")
     }
 
     private fun toggleHomeCategory(categoryKey: String) {
         if (categoryTransitionRunning) return
+        rememberCategoryFocus(categoryKey)
         val currentExpanded = expandedCategoryKey
         if (currentExpanded != null) {
             val expandedContent = rowsContainer
@@ -504,6 +488,20 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         pendingCategoryExpansionKey = categoryKey.takeIf { opening }
         renderRows()
         pendingCategoryExpansionKey = null
+    }
+
+    private fun rememberCategoryFocus(categoryKey: String) {
+        val focused = rowsContainer?.findFocus() ?: return
+        if (!focused.isInTouchMode) pendingCategoryFocusKey = categoryKey
+    }
+
+    private fun restorePendingCategoryFocus(container: View) {
+        val categoryKey = pendingCategoryFocusKey ?: return
+        val header = container.findViewWithTag<View>("home-category:$categoryKey") ?: return
+        pendingCategoryFocusKey = null
+        header.post {
+            if (isAdded && header.isAttachedToWindow) header.requestFocus()
+        }
     }
 
     private fun categorySectionsLabel(categoryKey: String): String {
@@ -922,34 +920,101 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
     }
 
     private fun animeCategoryFooter(): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = verticalParams(top = 8)
-            addView(actionButton("+ Crea sezione Anime", categoryAccent("anime")) {
+        return customSectionActions(
+            accent = categoryAccent("anime"),
+            onCreate = {
                 promptCreateAnimeSection()
-            })
-        }
+            },
+            onCreateMultiple = { promptCreateMultipleGenreSections(contentType = "anime") },
+        )
     }
 
     private fun tvSeriesCategoryFooter(): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = verticalParams(top = 8)
-            addView(actionButton("+ Crea sezione Serie TV", categoryAccent("tv")) {
+        return customSectionActions(
+            accent = categoryAccent("tv"),
+            onCreate = {
                 promptCreateTvSeriesSection()
+            },
+            onCreateMultiple = { promptCreateMultipleGenreSections(contentType = "tv") },
+        )
+    }
+
+    private fun movieCategoryFooter(): LinearLayout {
+        return customSectionActions(
+            accent = categoryAccent("movie"),
+            onCreate = {
+                promptCreateMovieSection()
+            },
+            onCreateMultiple = { promptCreateMultipleGenreSections(contentType = "movie") },
+        )
+    }
+
+    private fun customSectionActions(
+        accent: String,
+        onCreate: () -> Unit,
+        onCreateMultiple: () -> Unit,
+    ): LinearLayout {
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = verticalParams(top = 8)
+            addView(actionButton("Crea sezione", accent, onCreate).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(actionButton("Crea più sezioni", accent, onCreateMultiple).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(8)
+                }
             })
         }
     }
 
-    private fun movieCategoryFooter(): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = verticalParams(top = 8)
-            addView(actionButton("+ Crea sezione Film", categoryAccent("movie")) {
-                promptCreateMovieSection()
-            })
+    private fun makeSectionCreationDialogSlightlyTaller(dialog: AlertDialog) {
+        dialog.window?.decorView?.post {
+            if (!dialog.isShowing) return@post
+            val window = dialog.window ?: return@post
+            val currentHeight = window.decorView.height
+            if (currentHeight <= 0) return@post
+            val maximumHeight = (resources.displayMetrics.heightPixels * 0.9f).toInt()
+            val targetHeight = minOf(currentHeight + dp(32), maximumHeight)
+            if (targetHeight > currentHeight) {
+                window.setLayout(window.attributes.width, targetHeight)
+            }
         }
     }
+
+    private fun streamingCommunityGenres(isMovie: Boolean): List<Pair<Int, String>> {
+        return if (isMovie) {
+            listOf(
+                4 to "Azione", 11 to "Avventura", 19 to "Animazione", 12 to "Commedia",
+                2 to "Crime", 24 to "Documentario", 1 to "Drama", 16 to "Famiglia",
+                8 to "Fantasy", 22 to "Storia", 7 to "Horror", 26 to "Korean drama",
+                14 to "Musica", 6 to "Mistero", 37 to "News", 15 to "Romance",
+                10 to "Fantascienza", 5 to "Thriller", 21 to "televisione film", 9 to "Guerra",
+                20 to "Western",
+            )
+        } else {
+            listOf(
+                13 to "Action & Adventure", 19 to "Animazione", 12 to "Commedia", 2 to "Crime",
+                24 to "Documentario", 1 to "Drama", 16 to "Famiglia", 25 to "Kids",
+                26 to "Korean drama", 6 to "Mistero", 37 to "News", 18 to "Reality",
+                15 to "Romance", 3 to "Sci-Fi & Fantasy", 23 to "Soap", 17 to "War & Politics",
+                20 to "Western",
+            )
+        }
+    }
+
+    private fun animeGenres(): List<Pair<Int, String>> = listOf(
+        51 to "Action", 21 to "Adventure", 43 to "Avant Garde", 59 to "Boys Love",
+        37 to "Comedy", 13 to "Demons", 22 to "Drama", 5 to "Ecchi", 9 to "Fantasy",
+        44 to "Game", 58 to "Girls Love", 52 to "Gore", 56 to "Gourmet", 15 to "Harem", 4 to "Hentai",
+        30 to "Historical", 3 to "Horror", 53 to "Isekai", 45 to "Josei", 14 to "Kids",
+        57 to "Mahou Shoujo", 31 to "Martial Arts", 38 to "Mecha", 46 to "Military",
+        16 to "Music", 24 to "Mystery", 32 to "Parody", 39 to "Police", 47 to "Psychological",
+        29 to "Racing", 54 to "Reincarnation", 17 to "Romance", 25 to "Samurai", 33 to "School",
+        40 to "Sci-fi", 49 to "Seinen", 18 to "Shoujo", 34 to "Shounen", 50 to "Slice of Life",
+        19 to "Space", 27 to "Sports", 35 to "Super Power", 42 to "Supernatural", 55 to "Survival",
+        48 to "Thriller", 20 to "Vampire",
+    )
 
     private fun normalizedCustomSectionName(value: String): String {
         return value.trim().replace(Regex("\\s+"), " ")
@@ -1001,6 +1066,176 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         ).any { it.equals(candidate, ignoreCase = true) }
     }
 
+    private fun promptCreateMultipleGenreSections(contentType: String) {
+        val ctx = context ?: return
+        val isAnime = contentType == "anime"
+        val isMovie = contentType == "movie"
+        if (!isAnime && !isMovie && contentType != "tv") return
+
+        val categoryKey = when {
+            isAnime -> "anime"
+            isMovie -> "movie"
+            else -> "tv"
+        }
+        val contentLabel = when {
+            isAnime -> "Anime"
+            isMovie -> "Film"
+            else -> "Serie TV"
+        }
+        val accent = categoryAccent(categoryKey)
+        val genres = if (isAnime) animeGenres() else streamingCommunityGenres(isMovie)
+        val selectedGenreIds = linkedSetOf<Int>()
+        val selectedSummary = bodyText("Nessun genere selezionato", 12).apply {
+            setTextColor(Color.parseColor(COLOR_MUTED))
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+        }
+        val searchInput = input("").apply {
+            hint = "Cerca genere"
+            contentDescription = "Cerca genere"
+            layoutParams = verticalParams()
+        }
+        val genreList = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val genreScroll = ScrollView(ctx).apply {
+            isVerticalScrollBarEnabled = false
+            addView(genreList)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(472),
+            ).apply { topMargin = dp(8) }
+        }
+        var dialog: AlertDialog? = null
+
+        fun updateSelectionSummary() {
+            val selectedCount = selectedGenreIds.size
+            selectedSummary.text = when (selectedCount) {
+                0 -> "Nessun genere selezionato"
+                1 -> "1 genere selezionato"
+                else -> "$selectedCount generi selezionati"
+            }
+            selectedSummary.setTextColor(Color.parseColor(if (selectedCount == 0) COLOR_MUTED else accent))
+            dialog?.getButton(DialogInterface.BUTTON_POSITIVE)?.text = when (selectedCount) {
+                0 -> "Crea"
+                else -> "Crea ($selectedCount)"
+            }
+        }
+
+        fun renderGenres(query: String = "") {
+            val shownGenres = genres.filter { it.second.contains(query, ignoreCase = true) }
+            genreList.removeAllViews()
+            if (shownGenres.isEmpty()) {
+                genreList.addView(bodyText("Nessun genere trovato", 13).apply {
+                    setTextColor(Color.parseColor(COLOR_MUTED))
+                    setPadding(dp(4), dp(14), dp(4), dp(14))
+                })
+                return
+            }
+            shownGenres.forEachIndexed { index, genre ->
+                val selected = genre.first in selectedGenreIds
+                val row = settingsRow(
+                    title = genre.second,
+                    icon = if (selected) "✓" else "+",
+                    accent = accent,
+                    fillColor = COLOR_CARD_ALT,
+                    strokeColor = if (selected) accent else tint(accent, "55"),
+                    topMargin = if (index == 0) 0 else 8,
+                ) {
+                    if (!selectedGenreIds.add(genre.first)) selectedGenreIds.remove(genre.first)
+                    updateSelectionSummary()
+                    renderGenres(searchInput.text?.toString().orEmpty())
+                }
+                if (selected) row.title.setTextColor(Color.parseColor(accent))
+                genreList.addView(row.view)
+            }
+        }
+
+        fun customSectionKeys(): List<String> = when {
+            isAnime -> StreamCenterPlugin.getAnimeCustomSectionKeys(sharedPref)
+            isMovie -> StreamCenterPlugin.getMovieCustomSectionKeys(sharedPref)
+            else -> StreamCenterPlugin.getTvCustomSectionKeys(sharedPref)
+        }
+
+        fun customSectionDefinition(sectionKey: String): StreamCenterHomeSectionDefinition = when {
+            isAnime -> StreamCenterPlugin.animeCustomSectionDefinition(sectionKey)
+            isMovie -> StreamCenterPlugin.movieCustomSectionDefinition(sectionKey)
+            else -> StreamCenterPlugin.tvCustomSectionDefinition(sectionKey)
+        }
+
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), dp(20))
+            addView(searchInput)
+            addView(selectedSummary)
+            addView(genreScroll)
+        }
+        val picker = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Crea più sezioni $contentLabel"))
+            .setView(content)
+            .setPositiveButton("Crea", null)
+            .setNegativeButton("Annulla", null)
+            .create()
+        dialog = picker
+        searchInput.doAfterTextChanged { renderGenres(it?.toString().orEmpty()) }
+        renderGenres()
+        applyDialogBackdrop(picker)
+        picker.show()
+        makeSectionCreationDialogSlightlyTaller(picker)
+        updateSelectionSummary()
+        picker.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+            val selectedGenres = genres.filter { it.first in selectedGenreIds }
+            if (selectedGenres.isEmpty()) {
+                selectedSummary.text = "Seleziona almeno un genere"
+                selectedSummary.setTextColor(Color.parseColor(COLOR_DANGER))
+                return@setOnClickListener
+            }
+
+            val createdCount = selectedGenres.count { genre ->
+                val sectionName = resolvedCustomSectionName(
+                    value = "",
+                    fallbackName = "$contentLabel: ${genre.second.lowercase(Locale.ITALIAN)}",
+                    keys = customSectionKeys(),
+                    definitionForKey = ::customSectionDefinition,
+                )
+                if (isAnime) {
+                    StreamCenterPlugin.createAnimeCustomSection(
+                        sharedPref,
+                        StreamCenterAnimeArchiveFilters(genreId = genre.first),
+                        StreamCenterPlugin.DEFAULT_HOME_COUNT,
+                        sectionName,
+                    ) != null
+                } else if (isMovie) {
+                    StreamCenterPlugin.createMovieCustomSection(
+                        sharedPref,
+                        StreamCenterMovieArchiveFilters(genreId = genre.first),
+                        StreamCenterPlugin.DEFAULT_HOME_COUNT,
+                        sectionName,
+                    ) != null
+                } else {
+                    StreamCenterPlugin.createTvCustomSection(
+                        sharedPref,
+                        StreamCenterTvArchiveFilters(genreId = genre.first),
+                        StreamCenterPlugin.DEFAULT_HOME_COUNT,
+                        sectionName,
+                    ) != null
+                }
+            }
+            if (createdCount == 0) {
+                saveToast("Impossibile creare le sezioni")
+                return@setOnClickListener
+            }
+            sharedPref?.edit {
+                putBoolean(StreamCenterPlugin.homeCategoryEnabledKey(categoryKey), true)
+            }
+            categoryEnabled[categoryKey] = true
+            loadRows()
+            renderRows()
+            saveToast(
+                if (createdCount == 1) "Sezione $contentLabel creata"
+                else "$createdCount sezioni $contentLabel create",
+            )
+            picker.dismiss()
+        }
+    }
+
     private fun promptCreateTvSeriesSection(sectionKey: String? = null) {
         promptCreateStreamingCommunitySection(sectionKey, contentType = "tv")
     }
@@ -1025,22 +1260,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         var minimumScore = existing?.minimumScore
         var sort = existing?.sort
 
-        val genres = if (isMovie) {
-            listOf(
-                4 to "Azione", 11 to "Avventura", 19 to "Animazione", 12 to "Commedia",
-                2 to "Crime", 24 to "Documentario", 1 to "Dramma", 16 to "Famiglia",
-                8 to "Fantasy", 10 to "Fantascienza", 9 to "Guerra", 7 to "Horror",
-                26 to "Korean drama", 6 to "Mistero", 14 to "Musica", 15 to "Romance",
-                22 to "Storia", 21 to "Film per la TV", 5 to "Thriller", 20 to "Western",
-            )
-        } else {
-            listOf(
-                13 to "Action & Adventure", 19 to "Animazione", 12 to "Commedia", 2 to "Crime",
-                24 to "Documentario", 1 to "Dramma", 16 to "Famiglia", 6 to "Mistero",
-                37 to "News", 18 to "Reality", 15 to "Romance", 3 to "Sci-Fi & Fantasy",
-                23 to "Soap", 17 to "War & Politics", 20 to "Western", 26 to "Korean drama",
-            )
-        }
+        val genres = streamingCommunityGenres(isMovie)
         val countries = listOf(
             107 to "Italia", 229 to "Stati Uniti", 76 to "Regno Unito", 67 to "Spagna",
             74 to "Francia", 56 to "Germania", 37 to "Canada", 110 to "Giappone",
@@ -1388,6 +1608,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
+        makeSectionCreationDialogSlightlyTaller(dialog)
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
             val year = yearInput.text?.toString()?.trim().orEmpty()
             if (year.isNotEmpty() && (year.length != 4 || year.toIntOrNull() == null)) {
@@ -1476,7 +1697,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
     private fun promptCreateAnimeSection(sectionKey: String? = null) {
         val ctx = context ?: return
         val existing = sectionKey?.let { StreamCenterPlugin.getAnimeCustomSectionFilters(sharedPref, it) }
-        var genreId: Int? = existing?.genreId
+        val selectedGenreIds = linkedSetOf<Int>().apply {
+            addAll(existing?.selectedGenreIds.orEmpty())
+        }
         var order: String? = existing?.order
         var status: String? = existing?.status
         var type: String? = existing?.type
@@ -1632,6 +1855,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         var yearValidationInProgress: Int? = null
 
         fun isAnimeUnityYearAvailable(year: Int): Boolean {
+            StreamCenterVpnGuard.requireInternetAccess(sharedPref)
             val baseUrl = StreamCenterPlugin.getSourceBaseUrl(
                 sharedPref,
                 StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY,
@@ -1737,26 +1961,17 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
 
         yearInput.doAfterTextChanged { validateAnimeUnityYear(it?.toString().orEmpty()) }
         yearInput.text?.toString()?.takeIf(String::isNotBlank)?.let(::validateAnimeUnityYear)
-        val genres = listOf(
-            51 to "Action", 21 to "Adventure", 43 to "Avant Garde", 59 to "Boys Love",
-            37 to "Comedy", 13 to "Demons", 22 to "Drama", 5 to "Ecchi", 9 to "Fantasy",
-            44 to "Game", 58 to "Girls Love", 52 to "Gore", 56 to "Gourmet", 15 to "Harem",
-            30 to "Historical", 3 to "Horror", 53 to "Isekai", 45 to "Josei", 14 to "Kids",
-            57 to "Mahou Shoujo", 31 to "Martial Arts", 38 to "Mecha", 46 to "Military",
-            16 to "Music", 24 to "Mystery", 32 to "Parody", 39 to "Police", 47 to "Psychological",
-            29 to "Racing", 54 to "Reincarnation", 17 to "Romance", 25 to "Samurai", 33 to "School",
-            40 to "Sci-fi", 49 to "Seinen", 18 to "Shoujo", 34 to "Shounen", 50 to "Slice of Life",
-            19 to "Space", 27 to "Sports", 35 to "Super Power", 42 to "Supernatural", 55 to "Survival",
-            48 to "Thriller", 20 to "Vampire",
-        )
-        val genreChoice = filterChoice("Genere", genres.map { it.second }, {
-            genres.firstOrNull { it.first == genreId }?.second
-        }, interactive = false) { selected ->
-            genreId = genres.firstOrNull { it.second == selected }?.first
+        val genres = animeGenres()
+        fun selectedGenreValue(): String = when (selectedGenreIds.size) {
+            0 -> "Qualsiasi"
+            1 -> genres.firstOrNull { it.first in selectedGenreIds }?.second ?: "Qualsiasi"
+            else -> "${selectedGenreIds.size} generi"
         }
+        val genreChoice = filterChoice("Genere", emptyList(), ::selectedGenreValue, interactive = false) { }
         genreChoice.setOnClickListener {
+            val pendingGenreIds = linkedSetOf<Int>().apply { addAll(selectedGenreIds) }
             val searchInput = input("").apply {
-                hint = "Cerca un genere"
+                hint = "Cerca genere"
                 layoutParams = verticalParams()
             }
             val genreList = LinearLayout(ctx).apply {
@@ -1767,30 +1982,45 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 addView(genreList)
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(360),
+                    dp(472),
                 ).apply { topMargin = dp(8) }
-            }
-            lateinit var picker: AlertDialog
-
-            fun selectGenre(selected: Pair<Int, String>?) {
-                genreId = selected?.first
-                genreChoice.text = filterText("Genere", selected?.second ?: "Qualsiasi")
-                picker.dismiss()
             }
 
             fun renderGenres(query: String = "") {
                 val shownGenres = genres.filter { it.second.contains(query, ignoreCase = true) }
                 genreList.removeAllViews()
-                val choices = listOf<Pair<Int, String>?>(null) + shownGenres
-                choices.forEachIndexed { index, choice ->
-                    val selected = choice?.first == genreId
+                val clearSelection = settingsRow(
+                    title = "Qualsiasi",
+                    icon = if (pendingGenreIds.isEmpty()) "✓" else "×",
+                    accent = accent,
+                    fillColor = COLOR_CARD_ALT,
+                    strokeColor = if (pendingGenreIds.isEmpty()) accent else tint(accent, "55"),
+                ) {
+                    pendingGenreIds.clear()
+                    renderGenres(searchInput.text?.toString().orEmpty())
+                }
+                if (pendingGenreIds.isEmpty()) clearSelection.title.setTextColor(Color.parseColor(accent))
+                genreList.addView(clearSelection.view)
+                if (shownGenres.isEmpty()) {
+                    genreList.addView(bodyText("Nessun genere trovato", 13).apply {
+                        setTextColor(Color.parseColor(COLOR_MUTED))
+                        setPadding(dp(4), dp(14), dp(4), dp(14))
+                    })
+                    return
+                }
+                shownGenres.forEach { genre ->
+                    val selected = genre.first in pendingGenreIds
                     val row = settingsRow(
-                        title = choice?.second ?: "Qualsiasi",
+                        title = genre.second,
+                        icon = if (selected) "✓" else "+",
                         accent = accent,
                         fillColor = COLOR_CARD_ALT,
                         strokeColor = if (selected) accent else tint(accent, "55"),
-                        topMargin = if (index == 0) 0 else 8,
-                    ) { selectGenre(choice) }
+                        topMargin = 8,
+                    ) {
+                        if (!pendingGenreIds.add(genre.first)) pendingGenreIds.remove(genre.first)
+                        renderGenres(searchInput.text?.toString().orEmpty())
+                    }
                     if (selected) row.title.setTextColor(Color.parseColor(accent))
                     genreList.addView(row.view)
                 }
@@ -1801,14 +2031,23 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 addView(searchInput)
                 addView(genreScroll)
             }
-            picker = AlertDialog.Builder(ctx)
+            val picker = AlertDialog.Builder(ctx)
                 .setCustomTitle(dialogTitle("Genere"))
                 .setView(pickerContent)
+                .setPositiveButton("Fatto", null)
+                .setNegativeButton("Annulla", null)
                 .create()
             searchInput.doAfterTextChanged { renderGenres(it?.toString().orEmpty()) }
             renderGenres()
             applyDialogBackdrop(picker)
             picker.show()
+            makeSectionCreationDialogSlightlyTaller(picker)
+            picker.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                selectedGenreIds.clear()
+                selectedGenreIds.addAll(pendingGenreIds)
+                genreChoice.text = filterText("Genere", selectedGenreValue())
+                picker.dismiss()
+            }
         }
         val orderChoice = filterChoice("Ordine", listOf("A-Z", "Z-A", "Popolarità", "Valutazione"), { order }) {
             order = it
@@ -1889,11 +2128,15 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
 
         fun saveAnimeSection(): Boolean {
             val requestedName = nameInput.text?.toString().orEmpty()
-            val fallbackName = genres.firstOrNull { it.first == genreId }
-                ?.second
-                ?.lowercase(Locale.ITALIAN)
-                ?.let { "Anime: $it" }
-                ?: "Anime: qualsiasi"
+            val fallbackName = when (selectedGenreIds.size) {
+                1 -> genres.firstOrNull { it.first in selectedGenreIds }
+                    ?.second
+                    ?.lowercase(Locale.ITALIAN)
+                    ?.let { "Anime: $it" }
+                    ?: "Anime: qualsiasi"
+                0 -> "Anime: qualsiasi"
+                else -> "Anime: generi"
+            }
             val sectionName = resolvedAnimeSectionName(requestedName, fallbackName)
             if (hasDuplicateAnimeSectionName(sectionName)) {
                 nameInput.error = "Esiste già una sezione Anime con questo nome"
@@ -1902,7 +2145,8 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             }
             if (!hasValidAnimeUnityYear()) return false
             val filters = StreamCenterAnimeArchiveFilters(
-                genreId = genreId,
+                genreId = selectedGenreIds.firstOrNull(),
+                genreIds = selectedGenreIds.toList(),
                 year = yearInput.text?.toString()?.toIntOrNull(),
                 order = order,
                 status = status,
@@ -1947,6 +2191,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
+        makeSectionCreationDialogSlightlyTaller(dialog)
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
             if (saveAnimeSection()) dialog.dismiss()
         }
@@ -2587,7 +2832,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             layoutParams = verticalParams(top = 8)
             addView(LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(actionButton("+ Crea sezione TV", accent) { promptCreateTvSection() }.apply {
+                addView(actionButton("Crea sezione TV", accent) { promptCreateTvSection() }.apply {
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                         marginEnd = dp(4)
                     }
@@ -2891,7 +3136,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
     private fun showIptvChannelPicker(sectionKey: String) {
         val currentKey = StreamCenterPlugin.getIptvRegion(sharedPref)
         val regions = StreamCenterIptv.regions.sortedWith(
-            compareBy<StreamCenterIptv.Region> { it.key != currentKey }.thenBy { it.name },
+            compareBy<StreamCenterIptv.Region> { it.key != currentKey }
+                .thenBy { it.isCategory }
+                .thenBy { it.name },
         )
         showIptvRegionList(regions, sectionKey)
     }
@@ -2900,8 +3147,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         val ctx = context ?: return
         val selected = StreamCenterPlugin.getIptvSectionChannelIds(sharedPref, sectionKey)
         var visible = regions
+        val channelsByRegion = mutableMapOf<String, List<StreamCenterIptv.Channel>>()
+        val unavailableRegions = mutableSetOf<String>()
 
-        val adapter = ArrayAdapter(ctx, android.R.layout.simple_list_item_1, mutableListOf<String>())
+        val adapter = ArrayAdapter<CharSequence>(ctx, android.R.layout.simple_list_item_1, mutableListOf())
         val listView = ListView(ctx).apply {
             this.adapter = adapter
             layoutParams = LinearLayout.LayoutParams(
@@ -2909,22 +3158,46 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 dp(330),
             ).apply { topMargin = dp(8) }
         }
+        val catalogProgress = bodyText(
+            "Caricamento dei conteggi e dell'indice canali...",
+            12,
+        ).apply { setPadding(0, dp(8), 0, 0) }
 
         fun renderList(query: String) {
             val terms = query.trim().lowercase().split(Regex("\\s+")).filter(String::isNotBlank)
             visible = if (terms.isEmpty()) regions else regions.filter { region ->
-                val text = "${region.name} ${region.key}".lowercase()
-                terms.all(text::contains)
+                val regionText = "${region.name} ${region.key}".lowercase()
+                val regionMatches = terms.all(regionText::contains)
+                val channelMatches = channelsByRegion[region.key]?.any { channel ->
+                    val channelName = channel.name.lowercase()
+                    terms.all(channelName::contains)
+                } == true
+                regionMatches || channelMatches
             }
             adapter.clear()
             adapter.addAll(visible.map { region ->
-                val count = selected.count { it.startsWith("${region.key}:") }
-                if (count > 0) "${region.name} · $count selezionati" else region.name
+                val channelCount = when {
+                    region.key in unavailableRegions -> "[—]"
+                    else -> channelsByRegion[region.key]?.size?.let { "[$it]" } ?: "[…]"
+                }
+                val selectedCount = selected.count { it.startsWith("${region.key}:") }
+                SpannableString("${region.name} $channelCount" + when {
+                    selectedCount > 0 -> " · $selectedCount selezionati"
+                    else -> ""
+                }).apply {
+                    val countStart = region.name.length + 1
+                    setSpan(
+                        RelativeSizeSpan(0.72f),
+                        countStart,
+                        countStart + channelCount.length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
             })
         }
 
         val searchInput = input("").apply {
-            hint = "Cerca regione..."
+            hint = "Cerca regione o canale..."
             layoutParams = verticalParams()
             doAfterTextChanged { renderList(it?.toString().orEmpty()) }
         }
@@ -2932,12 +3205,13 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(10), dp(20), 0)
             addView(searchInput)
+            addView(catalogProgress)
             addView(listView)
         }
         renderList("")
 
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Regione · ${tvSectionTitle(sectionKey)}"))
+            .setCustomTitle(dialogTitle("Regione o categoria · ${tvSectionTitle(sectionKey)}"))
             .setView(container)
             .setNegativeButton("Annulla", null)
             .create()
@@ -2948,6 +3222,26 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             loadIptvRegion(region, sectionKey)
         }
         showCompactActionDialog(dialog)
+
+        CoroutineScope(Dispatchers.IO).launch {
+            StreamCenterIptv.fetchRegionChannelCatalog { region, channels, loaded, total ->
+                withContext(Dispatchers.Main) {
+                    if (!dialog.isShowing) return@withContext
+                    if (channels == null) {
+                        unavailableRegions += region.key
+                    } else {
+                        channelsByRegion[region.key] = channels
+                    }
+                    catalogProgress.text = "Caricamento canali: $loaded/$total"
+                    renderList(searchInput.text?.toString().orEmpty())
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (!dialog.isShowing) return@withContext
+                catalogProgress.visibility = View.GONE
+                renderList(searchInput.text?.toString().orEmpty())
+            }
+        }
     }
 
     private fun loadIptvRegion(region: StreamCenterIptv.Region, sectionKey: String) {

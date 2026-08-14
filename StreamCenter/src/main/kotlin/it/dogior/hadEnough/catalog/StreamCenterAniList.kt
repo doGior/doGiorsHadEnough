@@ -2,7 +2,6 @@ package it.dogior.hadEnough.catalog
 
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.Score
-import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import it.dogior.hadEnough.StreamCenterPlugin

@@ -8,6 +8,7 @@ import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -45,6 +46,39 @@ internal object StreamCenterLocalSyncCrypto {
     )
 
     fun encodePublicKey(keyPair: KeyPair): String = encodeBase64(keyPair.public.encoded)
+
+    fun encodePrivateKey(keyPair: KeyPair): String = encodeBase64(keyPair.private.encoded)
+
+    fun keyPairFromEncoded(publicKeyBase64: String, privateKeyBase64: String): KeyPair {
+        val factory = KeyFactory.getInstance("EC")
+        val public = factory.generatePublic(X509EncodedKeySpec(decodeBase64(publicKeyBase64)))
+        val private = factory.generatePrivate(PKCS8EncodedKeySpec(decodeBase64(privateKeyBase64)))
+        return KeyPair(public, private)
+    }
+
+    fun fingerprint(publicKeyBase64: String): String = sha256(decodeBase64(publicKeyBase64)).copyOf(8).toHex()
+
+    fun deriveKeysFromIdentities(
+        keyPair: KeyPair,
+        peerPublicKey: String,
+        sessionId: String,
+    ): StreamCenterLocalSyncSessionKeys {
+        val agreement = KeyAgreement.getInstance("ECDH")
+        agreement.init(keyPair.private)
+        agreement.doPhase(publicKey(peerPublicKey), true)
+        val sharedSecret = agreement.generateSecret()
+        val salt = sha256("StreamCenterLocalSync-Identity|$sessionId".toByteArray(StandardCharsets.UTF_8))
+        val pseudoRandomKey = hmacSha256(salt, sharedSecret)
+        val keys = StreamCenterLocalSyncSessionKeys(
+            clientAuthenticationKey = expand(pseudoRandomKey, "client-auth", 32),
+            serverAuthenticationKey = expand(pseudoRandomKey, "server-auth", 32),
+            payloadEncryptionKey = expand(pseudoRandomKey, "payload", 32),
+            acknowledgementEncryptionKey = expand(pseudoRandomKey, "acknowledgement", 32),
+        )
+        sharedSecret.fill(0)
+        pseudoRandomKey.fill(0)
+        return keys
+    }
 
     fun deriveKeys(
         keyPair: KeyPair,
