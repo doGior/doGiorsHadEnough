@@ -14,6 +14,7 @@ import android.content.Context
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputFilter
@@ -26,9 +27,11 @@ import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
@@ -38,6 +41,7 @@ import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.syncproviders.AccountManager
+import com.lagradost.cloudstream3.utils.ImageLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -49,6 +53,22 @@ import java.util.Calendar
 import java.util.Locale
 
 private const val CATALOG_ICON_SIZE_DP = 42
+
+private data class StreamingServiceOption(
+    val key: String,
+    val title: String,
+    val websiteUrl: String,
+    val fallbackBadge: String,
+)
+
+private val STREAMING_COMMUNITY_SERVICE_OPTIONS = listOf(
+    StreamingServiceOption("netflix", "Netflix", "https://www.netflix.com", "N"),
+    StreamingServiceOption("prime", "PrimeVideo", "https://www.primevideo.com", "P"),
+    StreamingServiceOption("disney", "Disney+", "https://www.disneyplus.com", "D"),
+    StreamingServiceOption("apple", "AppleTV+", "https://tv.apple.com", "A"),
+    StreamingServiceOption("now", "NowTV", "https://www.nowtv.it", "N"),
+    StreamingServiceOption("hbo", "HBOMax", "https://www.max.com", "H"),
+)
 
 private data class HomeRowState(
     val section: StreamCenterHomeSectionDefinition,
@@ -113,6 +133,12 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         rowsContainer = rowsView
         content.addView(rowsView)
         renderRows()
+
+        FrameLayout(requireContext()).apply {
+            visibility = View.INVISIBLE
+            layoutParams = LinearLayout.LayoutParams(dp(1), dp(1))
+            preloadStreamingServiceIcons(this)
+        }.also(content::addView)
 
         return scroll(content, fixedSubmenuHeight = true)
     }
@@ -363,9 +389,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
                     expandedContent.addView(catalogsContent())
                 }
-                categoryRows.forEach { indexedRow ->
-                    expandedContent.addView(homeRow(indexedRow.index, indexedRow.value))
-                }
+                addAdaptiveCardGrid(
+                    expandedContent,
+                    categoryRows.map { homeRow(it.index, it.value) },
+                )
                 if (categoryKey == "live") {
                     expandedContent.addView(tvCategoryFooter())
                 }
@@ -976,10 +1003,105 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             if (currentHeight <= 0) return@post
             val maximumHeight = (resources.displayMetrics.heightPixels * 0.9f).toInt()
             val targetHeight = minOf(currentHeight + dp(32), maximumHeight)
-            if (targetHeight > currentHeight) {
-                window.setLayout(window.attributes.width, targetHeight)
+            val targetWidth = if (isTvLikeDevice()) {
+                (resources.displayMetrics.widthPixels * 0.9f).toInt()
+            } else {
+                window.attributes.width
+            }
+            if (targetHeight > currentHeight || targetWidth != window.attributes.width) {
+                window.setLayout(targetWidth, targetHeight)
             }
         }
+    }
+
+    private fun ScrollView.enableTvFocusScrolling() {
+        val scroll = this
+        descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        val listener = ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
+            val focused = newFocus ?: return@OnGlobalFocusChangeListener
+            if (focused.isDescendantOf(scroll)) scroll.scrollFocusableIntoView(focused)
+        }
+        addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {
+                v.viewTreeObserver.addOnGlobalFocusChangeListener(listener)
+            }
+
+            override fun onViewDetachedFromWindow(v: View) {
+                runCatching { v.viewTreeObserver.removeOnGlobalFocusChangeListener(listener) }
+            }
+        })
+        if (isAttachedToWindow) viewTreeObserver.addOnGlobalFocusChangeListener(listener)
+    }
+
+    private fun ScrollView.scrollFocusableIntoView(target: View) {
+        val scroll = this
+        scroll.post {
+            if (!target.isAttachedToWindow || !target.isDescendantOf(scroll)) return@post
+            if (scroll.height <= 0) return@post
+            val rect = Rect(0, 0, target.width, target.height)
+            scroll.offsetDescendantRectToMyCoords(target, rect)
+            val margin = dp(8)
+            val to = when {
+                rect.top < scroll.scrollY + margin -> rect.top - margin
+                rect.bottom > scroll.scrollY + scroll.height - margin ->
+                    rect.bottom - scroll.height + margin
+                else -> return@post
+            }
+            val target = to.coerceAtLeast(0)
+            if (isTvLikeDevice()) scroll.scrollTo(0, target) else scroll.smoothScrollTo(0, target)
+        }
+    }
+
+    private fun View.isDescendantOf(ancestor: View): Boolean {
+        var parent = this.parent
+        while (parent is View) {
+            if (parent === ancestor) return true
+            parent = parent.parent
+        }
+        return false
+    }
+
+    private fun submenuListHeightPx(preferredDp: Int): Int {
+        val screenHeight = resources.displayMetrics.heightPixels
+        val cap = (screenHeight - dp(240)).coerceAtLeast(dp(160))
+        return minOf(dp(preferredDp), cap)
+    }
+
+    private fun preloadStreamingServiceIcons(container: FrameLayout) {
+        if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
+        CoroutineScope(Dispatchers.IO).launch {
+            val iconUrls = STREAMING_COMMUNITY_SERVICE_OPTIONS
+                .mapNotNull { service ->
+                    StreamCenterSiteIcons.cached(service.websiteUrl)
+                        ?: runCatching { StreamCenterSiteIcons.resolve(service.websiteUrl) }.getOrNull()
+                }
+                .distinct()
+            withContext(Dispatchers.Main) {
+                if (!isAdded || container.parent == null) return@withContext
+                iconUrls.forEach { iconUrl ->
+                    container.addView(ImageView(container.context).apply {
+                        layoutParams = FrameLayout.LayoutParams(dp(42), dp(42))
+                        ImageLoader.run { loadImage(iconUrl) }
+                    })
+                }
+            }
+        }
+    }
+
+    private fun streamingServiceSiteBadge(
+        service: StreamingServiceOption,
+        accent: String,
+        size: Int = 42,
+        marginEnd: Int = 12,
+    ): FrameLayout {
+        return siteIconBadge(
+            fallback = service.fallbackBadge,
+            accent = accent,
+            contentDescription = "Icona di ${service.title}",
+            websiteUrl = service.websiteUrl,
+            size = size,
+            marginEnd = marginEnd,
+        )
     }
 
     private fun streamingCommunityGenres(isMovie: Boolean): List<Pair<Int, String>> {
@@ -1098,9 +1220,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         val genreScroll = ScrollView(ctx).apply {
             isVerticalScrollBarEnabled = false
             addView(genreList)
+            enableTvFocusScrolling()
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(472),
+                submenuListHeightPx(472),
             ).apply { topMargin = dp(8) }
         }
         var dialog: AlertDialog? = null
@@ -1119,9 +1242,14 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             }
         }
 
-        fun renderGenres(query: String = "") {
+        fun renderGenres(
+            query: String = "",
+            focusedGenreId: Int? = null,
+        ) {
             val shownGenres = genres.filter { it.second.contains(query, ignoreCase = true) }
             genreList.removeAllViews()
+            var restoredFocusRow: View? = null
+            val rowViews = mutableListOf<View>()
             if (shownGenres.isEmpty()) {
                 genreList.addView(bodyText("Nessun genere trovato", 13).apply {
                     setTextColor(Color.parseColor(COLOR_MUTED))
@@ -1141,11 +1269,20 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 ) {
                     if (!selectedGenreIds.add(genre.first)) selectedGenreIds.remove(genre.first)
                     updateSelectionSummary()
-                    renderGenres(searchInput.text?.toString().orEmpty())
+                    renderGenres(
+                        query = searchInput.text?.toString().orEmpty(),
+                        focusedGenreId = genre.first,
+                    )
                 }
                 if (selected) row.title.setTextColor(Color.parseColor(accent))
-                genreList.addView(row.view)
+                row.view.setOnFocusChangeListener { v, hasFocus ->
+                    if (hasFocus) genreScroll.scrollFocusableIntoView(v)
+                }
+                if (genre.first == focusedGenreId) restoredFocusRow = row.view
+                rowViews.add(row.view)
             }
+            addAdaptiveCardGrid(genreList, rowViews)
+            restoredFocusRow?.let { row -> genreScroll.post { row.requestFocus() } }
         }
 
         fun customSectionKeys(): List<String> = when {
@@ -1176,8 +1313,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         dialog = picker
         searchInput.doAfterTextChanged { renderGenres(it?.toString().orEmpty()) }
         renderGenres()
-        applyDialogBackdrop(picker)
-        picker.show()
+        showCompactActionDialog(picker)
         makeSectionCreationDialogSlightlyTaller(picker)
         updateSelectionSummary()
         picker.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
@@ -1255,9 +1391,13 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         val accent = categoryAccent(categoryKey)
         val filterRowHeight = dp(60)
+        val services = STREAMING_COMMUNITY_SERVICE_OPTIONS
         var genreId = existing?.genreId
         var countryId = existing?.countryId
         var minimumScore = existing?.minimumScore
+        var service = existing?.service?.takeIf { selectedKey ->
+            services.any { it.key == selectedKey }
+        }
         var sort = existing?.sort
 
         val genres = streamingCommunityGenres(isMovie)
@@ -1327,7 +1467,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 setTextColor(Color.parseColor(COLOR_TEXT))
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = cardBackground(COLOR_INPUT_FILL, COLOR_STROKE, 12)
+                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
                 layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 setOnClickListener {
                     val searchInput = input("").apply {
@@ -1338,7 +1478,8 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                     val scroll = ScrollView(ctx).apply {
                         isVerticalScrollBarEnabled = false
                         addView(rows)
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(360)).apply {
+                        enableTvFocusScrolling()
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, submenuListHeightPx(360)).apply {
                             topMargin = dp(8)
                         }
                     }
@@ -1399,13 +1540,15 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                     val scroll = ScrollView(ctx).apply {
                         isVerticalScrollBarEnabled = false
                         addView(rows)
-                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(360)).apply {
+                        enableTvFocusScrolling()
+                        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, submenuListHeightPx(360)).apply {
                             topMargin = dp(8)
                         }
                     }
                     lateinit var picker: AlertDialog
                     fun render(query: String = "") {
                         rows.removeAllViews()
+                        val rowViews = mutableListOf<View>()
                         (listOf<Pair<Int, String>?>(null) + entries.filter { it.second.contains(query, ignoreCase = true) })
                             .forEachIndexed { index, entry ->
                                 val selected = entry?.first == currentId()
@@ -1422,8 +1565,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                                     picker.dismiss()
                                 }
                                 if (selected) row.title.setTextColor(Color.parseColor(accent))
-                                rows.addView(row.view)
+                                rowViews.add(row.view)
                             }
+                        addAdaptiveCardGrid(rows, rowViews)
                     }
                     picker = AlertDialog.Builder(ctx)
                         .setCustomTitle(dialogTitle(label))
@@ -1451,7 +1595,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 setTextColor(Color.parseColor(COLOR_TEXT))
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = cardBackground(COLOR_INPUT_FILL, COLOR_STROKE, 12)
+                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
                 layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 setOnClickListener {
                     lateinit var picker: AlertDialog
@@ -1497,8 +1641,66 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                         .setView(keypad)
                         .setNegativeButton("Annulla", null)
                         .create()
-                    applyDialogBackdrop(picker)
-                    picker.show()
+                    showCompactActionDialog(picker)
+                }
+            }
+        }
+
+        fun serviceChoice(): TextView {
+            val label = "Servizio"
+            val any = "Qualsiasi"
+            fun selectedService(): StreamingServiceOption? = service?.let { selectedKey ->
+                services.firstOrNull { it.key == selectedKey }
+            }
+            return TextView(ctx).apply {
+                text = filterText(label, selectedService()?.title ?: any)
+                textSize = 13f
+                setTextColor(Color.parseColor(COLOR_TEXT))
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
+                layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
+                setOnClickListener {
+                    val rows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+                    val scroll = ScrollView(ctx).apply {
+                        isVerticalScrollBarEnabled = false
+                        addView(rows)
+                        enableTvFocusScrolling()
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            submenuListHeightPx(360),
+                        ).apply { topMargin = dp(8) }
+                    }
+                    lateinit var picker: AlertDialog
+                    (listOf<StreamingServiceOption?>(null) + services).forEachIndexed { index, option ->
+                        val selected = option?.key == service
+                        val row = settingsRow(
+                            title = option?.title ?: any,
+                            accent = accent,
+                            fillColor = COLOR_CARD_ALT,
+                            strokeColor = if (selected) accent else tint(accent, "55"),
+                            leadingView = option?.let {
+                                streamingServiceSiteBadge(it, accent, size = 42, marginEnd = 12)
+                            } ?: iconBadge("•", accent, size = 42, marginEnd = 12),
+                            topMargin = if (index == 0) 0 else 8,
+                        ) {
+                            service = option?.key
+                            text = filterText(label, selectedService()?.title ?: any)
+                            picker.dismiss()
+                        }
+                        if (selected) row.title.setTextColor(Color.parseColor(accent))
+                        rows.addView(row.view)
+                    }
+                    picker = AlertDialog.Builder(ctx)
+                        .setCustomTitle(dialogTitle(label))
+                        .setView(LinearLayout(ctx).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(20), dp(20), dp(20), dp(20))
+                            addView(scroll)
+                        })
+                        .setNegativeButton("Annulla", null)
+                        .create()
+                    showCompactActionDialog(picker)
                 }
             }
         }
@@ -1557,6 +1759,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         val genreChoice = searchableChoice("Genere", genres, { genreId }) { genreId = it }
         val countryChoice = searchableChoice("Paese", countries, { countryId }) { countryId = it }
+        val serviceChoiceRow = serviceChoice()
         val scoreChoice = scoreChoice()
         val sortChoice = filterChoice("Ordine", sortOptions.map { it.second }, {
             sortOptions.firstOrNull { it.first == sort }?.second
@@ -1592,22 +1795,31 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(4), dp(20), dp(12))
             background = cardBackground(COLOR_CARD_ALT, tint(accent, "66"), 20)
-            addView(formInput("Nome della sezione", nameInput, "Inserisci un nome"))
-            addView(genreChoice)
-            addView(formInput("Anno", yearInput, "Qualsiasi"))
-            addView(countryChoice)
-            addView(scoreChoice)
-            addView(sortChoice)
-            addView(countRow)
         }
+        addAdaptiveCardGrid(
+            content,
+            listOf(
+                formInput("Nome della sezione", nameInput, "Inserisci un nome"),
+                genreChoice,
+                formInput("Anno", yearInput, "Qualsiasi"),
+                countryChoice,
+                serviceChoiceRow,
+                scoreChoice,
+                sortChoice,
+                countRow,
+            ),
+        )
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle(if (sectionKey == null) "Nuova sezione $contentLabel" else "Modifica sezione $contentLabel"))
-            .setView(ScrollView(ctx).apply { addView(content); setPadding(dp(4), dp(4), dp(4), dp(4)) })
+            .setView(ScrollView(ctx).apply {
+                addView(content)
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+                enableTvFocusScrolling()
+            })
             .setPositiveButton(if (sectionKey == null) "Crea" else "Salva", null)
             .setNegativeButton("Annulla", null)
             .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
+        showCompactActionDialog(dialog)
         makeSectionCreationDialogSlightlyTaller(dialog)
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
             val year = yearInput.text?.toString()?.trim().orEmpty()
@@ -1617,8 +1829,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 return@setOnClickListener
             }
             val fallbackName = genres.firstOrNull { it.first == genreId }
-                ?.second?.lowercase(Locale.ITALIAN)?.let { "$contentLabel: $it" } ?: "$contentLabel: qualsiasi"
-            val sectionName = resolvedStreamingCommunitySectionName(nameInput.text?.toString().orEmpty(), fallbackName)
+                ?.second?.lowercase(Locale.ITALIAN)
+                ?: services.firstOrNull { it.key == service }?.title?.lowercase(Locale.ITALIAN)
+                ?: "qualsiasi"
+            val resolvedFallbackName = "$contentLabel: $fallbackName"
+            val sectionName = resolvedStreamingCommunitySectionName(nameInput.text?.toString().orEmpty(), resolvedFallbackName)
             if (hasDuplicateStreamingCommunitySectionName(sectionName)) {
                 nameInput.error = "Esiste già una sezione $contentLabel con questo nome"
                 nameInput.requestFocus()
@@ -1629,6 +1844,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 year = year.toIntOrNull(),
                 minimumScore = minimumScore,
                 countryId = countryId,
+                service = service,
                 sort = sort,
             )
             val count = normalizedCount(countInput.text?.toString(), StreamCenterPlugin.MAX_HOME_COUNT)
@@ -1770,7 +1986,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 setTextColor(Color.parseColor(COLOR_TEXT))
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = cardBackground(COLOR_INPUT_FILL, COLOR_STROKE, 12)
+                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
                 layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 if (interactive) {
                     setOnClickListener {
@@ -1980,9 +2196,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             val genreScroll = ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = false
                 addView(genreList)
+                enableTvFocusScrolling()
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(472),
+                    submenuListHeightPx(472),
                 ).apply { topMargin = dp(8) }
             }
 
@@ -2001,6 +2218,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 }
                 if (pendingGenreIds.isEmpty()) clearSelection.title.setTextColor(Color.parseColor(accent))
                 genreList.addView(clearSelection.view)
+                val rowViews = mutableListOf<View>()
                 if (shownGenres.isEmpty()) {
                     genreList.addView(bodyText("Nessun genere trovato", 13).apply {
                         setTextColor(Color.parseColor(COLOR_MUTED))
@@ -2022,8 +2240,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                         renderGenres(searchInput.text?.toString().orEmpty())
                     }
                     if (selected) row.title.setTextColor(Color.parseColor(accent))
-                    genreList.addView(row.view)
+                    rowViews.add(row.view)
                 }
+                addAdaptiveCardGrid(genreList, rowViews)
             }
             val pickerContent = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
@@ -2039,8 +2258,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
                 .create()
             searchInput.doAfterTextChanged { renderGenres(it?.toString().orEmpty()) }
             renderGenres()
-            applyDialogBackdrop(picker)
-            picker.show()
+            showCompactActionDialog(picker)
             makeSectionCreationDialogSlightlyTaller(picker)
             picker.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
                 selectedGenreIds.clear()
@@ -2108,19 +2326,25 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(4), dp(20), dp(12))
             background = cardBackground(COLOR_CARD_ALT, tint(categoryAccent("anime"), "66"), 20)
-            addView(nameField)
-            addView(genreChoice)
-            addView(yearField)
-            addView(orderChoice)
-            addView(statusChoice)
-            addView(typeChoice)
-            addView(seasonChoice)
-            addView(dubRow)
-            addView(countRow)
         }
+        addAdaptiveCardGrid(
+            content,
+            listOf(
+                nameField,
+                genreChoice,
+                yearField,
+                orderChoice,
+                statusChoice,
+                typeChoice,
+                seasonChoice,
+                dubRow,
+                countRow,
+            ),
+        )
         val scroll = ScrollView(ctx).apply {
             addView(content)
             setPadding(dp(4), dp(4), dp(4), dp(4))
+            enableTvFocusScrolling()
         }
         val animeDialogTitle = dialogTitle(
             if (sectionKey == null) "Nuova sezione Anime" else "Modifica sezione Anime",
@@ -2189,8 +2413,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             .setPositiveButton(if (sectionKey == null) "Crea" else "Salva", null)
             .setNegativeButton("Annulla", null)
             .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
+        showCompactActionDialog(dialog)
         makeSectionCreationDialogSlightlyTaller(dialog)
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
             if (saveAnimeSection()) dialog.dismiss()
@@ -2288,7 +2511,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Servizio di tracciamento"))
-            .setView(list)
+            .setView(scrollableDialogView(list))
             .setNegativeButton("Annulla", null)
             .create()
         applyDialogBackdrop(dialog)
@@ -2545,7 +2768,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterBaseSettingsFragment() {
             }.view)
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Fonte del Catalogo"))
-            .setView(list)
+            .setView(scrollableDialogView(list))
             .setNegativeButton("Annulla", null)
             .create()
         applyDialogBackdrop(dialog)

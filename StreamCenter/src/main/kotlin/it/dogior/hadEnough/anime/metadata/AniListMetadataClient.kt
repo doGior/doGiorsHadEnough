@@ -21,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 internal class AniListMetadataClient(
     private val performanceMode: () -> Boolean,
@@ -56,6 +57,7 @@ internal class AniListMetadataClient(
             variables = variables,
             operation = "Metadati anime AniList",
             requestDetails = requestDetails,
+            interactive = true,
         )?.optJSONObject("Media") ?: run {
             MetadataLog.warning(SOURCE, "Metadati anime non disponibili", requestDetails)
             return null
@@ -214,6 +216,7 @@ internal class AniListMetadataClient(
         variables: JSONObject,
         operation: String,
         requestDetails: Map<String, Any?>,
+        interactive: Boolean = false,
     ): JSONObject? {
         val body = JSONObject().put("query", query).put("variables", variables).toString()
         repeat(REQUEST_ATTEMPTS) { attempt ->
@@ -230,7 +233,7 @@ internal class AniListMetadataClient(
                 )
                 delay(RETRY_DELAY_MS * attempt)
             }
-            throttle(operation)
+            throttle(operation, interactive)
             val attemptDetails = requestDetails + mapOf(
                 "operazione" to operation,
                 "tentativo" to attemptNumber,
@@ -326,7 +329,7 @@ internal class AniListMetadataClient(
             details + mapOf("tentativi_massimi" to 1),
         )
         val requestResult = runCatching {
-            throttle("Punteggi AniList")
+            throttle("Punteggi AniList", interactive = false)
             val text = app.post(
                 API_URL,
                 headers = JSON_HEADERS,
@@ -384,7 +387,7 @@ internal class AniListMetadataClient(
             details + mapOf("tentativi_massimi" to 1),
         )
         val requestResult = runCatching {
-            throttle("Titoli alternativi AniList")
+            throttle("Titoli alternativi AniList", interactive = false)
             val text = app.post(
                 API_URL,
                 headers = JSON_HEADERS,
@@ -430,24 +433,35 @@ internal class AniListMetadataClient(
         return result
     }
 
-    private suspend fun throttle(operation: String) {
-        requestMutex.withLock {
-            val now = System.currentTimeMillis()
-            val minIntervalMs = minRequestIntervalMs()
-            val wait = minIntervalMs - (now - lastRequestAtMs)
-            if (wait > 0) {
-                MetadataLog.info(
-                    SOURCE,
-                    "Attesa rate limit",
-                    mapOf(
-                        "operazione" to operation,
-                        "attesa_ms" to wait,
-                        "intervallo_minimo_ms" to minIntervalMs,
-                    ),
-                )
-                delay(wait)
+    private suspend fun throttle(operation: String, interactive: Boolean) {
+        if (interactive) interactiveWaiting.incrementAndGet()
+        try {
+            if (!interactive) {
+                while (interactiveWaiting.get() > 0) {
+                    delay(BACKGROUND_YIELD_MS)
+                }
             }
-            lastRequestAtMs = System.currentTimeMillis()
+            requestMutex.withLock {
+                val now = System.currentTimeMillis()
+                val minIntervalMs = minRequestIntervalMs()
+                val wait = minIntervalMs - (now - lastRequestAtMs)
+                if (wait > 0) {
+                    MetadataLog.info(
+                        SOURCE,
+                        "Attesa rate limit",
+                        mapOf(
+                            "operazione" to operation,
+                            "attesa_ms" to wait,
+                            "intervallo_minimo_ms" to minIntervalMs,
+                            "interattiva" to interactive,
+                        ),
+                    )
+                    delay(wait)
+                }
+                lastRequestAtMs = System.currentTimeMillis()
+            }
+        } finally {
+            if (interactive) interactiveWaiting.decrementAndGet()
         }
     }
 
@@ -669,10 +683,15 @@ internal class AniListMetadataClient(
         val JSON_HEADERS = mapOf(
             "Accept" to "application/json",
             "Content-Type" to "application/json",
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+            "Origin" to "https://anilist.co",
+            "Referer" to "https://anilist.co/",
         )
         val requestMutex = Mutex()
         val titleAliasCache = ConcurrentHashMap<Int, List<String>>()
         var lastRequestAtMs = 0L
+        val interactiveWaiting = AtomicInteger(0)
+        const val BACKGROUND_YIELD_MS = 50L
 
         val SCORES_QUERY = """
             query (${'$'}ids: [Int]) {

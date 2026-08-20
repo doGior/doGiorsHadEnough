@@ -37,6 +37,11 @@ internal enum class StreamCenterTorrentLanguageFilter(
     }
 }
 
+internal data class StreamCenterTorrentKeywordGroup(
+    val label: String,
+    val words: List<String>,
+)
+
 internal enum class StreamCenterTorrentLanguageEvidence(
     val priority: Int,
     val confirmsItalian: Boolean,
@@ -62,11 +67,18 @@ internal data class StreamCenterTorrentFilterSettings(
     val minimumResolution: Int = 1080,
     val excludeCinemaCopies: Boolean = true,
     val excludedTerms: String = "",
+    val customItalianTerms: String = "",
     val blockedVideoCodecs: Set<StreamCenterTorrentVideoCodec> = emptySet(),
 ) {
     fun hasValidBounds(): Boolean =
         (minimumSizeBytes == null || maximumSizeBytes == null || minimumSizeBytes <= maximumSizeBytes) &&
             (minimumSeeders == null || maximumSeeders == null || minimumSeeders <= maximumSeeders)
+
+    fun customItalianTermSet(): Set<String> = customItalianTerms
+        .split(',', ';', '\n')
+        .map(::cleanDisplayText)
+        .filter(String::isNotBlank)
+        .toSet()
 }
 
 internal object StreamCenterTorrentPreferences {
@@ -80,6 +92,7 @@ internal object StreamCenterTorrentPreferences {
     const val MINIMUM_RESOLUTION_KEY = "torrentExtMinimumResolution"
     const val EXCLUDE_CINEMA_COPIES_KEY = "torrentExtExcludeCinemaCopies"
     const val EXCLUDED_TERMS_KEY = "torrentExtExcludedTerms"
+    const val CUSTOM_ITALIAN_TERMS_KEY = "torrentExtCustomItalianTerms"
     const val BLOCKED_VIDEO_CODECS_KEY = "torrentExtBlockedVideoCodecs"
     const val PRIMARY_ENABLED_KEY = "torrentExtPrimaryEnabled"
     const val SECONDARY_ENABLED_KEY = "torrentExtSecondaryEnabled"
@@ -116,6 +129,9 @@ internal object StreamCenterTorrentPreferences {
             excludedTerms = preferences.safeString(EXCLUDED_TERMS_KEY)
                 ?.trim()
                 .orEmpty(),
+            customItalianTerms = preferences.safeString(CUSTOM_ITALIAN_TERMS_KEY)
+                ?.trim()
+                .orEmpty(),
             blockedVideoCodecs = blockedVideoCodecs(preferences),
         ).takeIf(StreamCenterTorrentFilterSettings::hasValidBounds)
             ?: StreamCenterTorrentFilterSettings(
@@ -134,6 +150,7 @@ internal object StreamCenterTorrentPreferences {
                 excludeCinemaCopies = preferences.safeBoolean(EXCLUDE_CINEMA_COPIES_KEY)
                     ?: DEFAULT_EXCLUDE_CINEMA_COPIES,
                 excludedTerms = preferences.safeString(EXCLUDED_TERMS_KEY)?.trim().orEmpty(),
+                customItalianTerms = preferences.safeString(CUSTOM_ITALIAN_TERMS_KEY)?.trim().orEmpty(),
                 blockedVideoCodecs = blockedVideoCodecs(preferences),
             )
     }
@@ -272,6 +289,21 @@ internal object StreamCenterTorrentPreferences {
         }?.apply()
     }
 
+    fun setCustomItalianTerms(preferences: SharedPreferences?, value: String) {
+        val normalized = value
+            .split(',', ';', '\n')
+            .map(::cleanDisplayText)
+            .filter(String::isNotBlank)
+            .distinctBy { term -> term.lowercase(Locale.ROOT) }
+            .joinToString(", ")
+            .take(MAX_EXCLUDED_TERMS_LENGTH)
+            .trimEnd(',', ' ')
+        preferences?.edit()?.apply {
+            if (normalized.isBlank()) remove(CUSTOM_ITALIAN_TERMS_KEY)
+            else putString(CUSTOM_ITALIAN_TERMS_KEY, normalized)
+        }?.apply()
+    }
+
     fun setVideoCodecAllowed(
         preferences: SharedPreferences?,
         codec: StreamCenterTorrentVideoCodec,
@@ -307,6 +339,7 @@ internal object StreamCenterTorrentPreferences {
         MINIMUM_RESOLUTION_KEY -> value == DEFAULT_MINIMUM_RESOLUTION
         EXCLUDE_CINEMA_COPIES_KEY -> value == DEFAULT_EXCLUDE_CINEMA_COPIES
         EXCLUDED_TERMS_KEY -> value is String && value.isBlank()
+        CUSTOM_ITALIAN_TERMS_KEY -> value is String && value.isBlank()
         BLOCKED_VIDEO_CODECS_KEY -> value is String && parseVideoCodecs(value).isEmpty()
         PRIMARY_ENABLED_KEY -> value == true
         SECONDARY_ENABLED_KEY -> value == true
@@ -437,6 +470,7 @@ internal object StreamCenterTorrentPreferences {
         MINIMUM_RESOLUTION_KEY,
         EXCLUDE_CINEMA_COPIES_KEY,
         EXCLUDED_TERMS_KEY,
+        CUSTOM_ITALIAN_TERMS_KEY,
         BLOCKED_VIDEO_CODECS_KEY,
         PRIMARY_ENABLED_KEY,
         SECONDARY_ENABLED_KEY,
@@ -460,7 +494,10 @@ internal object StreamCenterTorrentFilterEngine {
             listOfNotNull(candidate.title, candidate.selectedFileName).joinToString(" "),
             context.titles + listOfNotNull(context.englishTitle, context.japaneseTitle),
         )
-        val languageEvidence = StreamCenterTorrentMetadata.languageEvidence(metadataText)
+        val languageEvidence = StreamCenterTorrentMetadata.languageEvidence(
+            metadataText,
+            filters.customItalianTermSet(),
+        )
         if (
             filters.language == StreamCenterTorrentLanguageFilter.ONLY_ITALIAN &&
             !languageEvidence.confirmsItalian
@@ -525,7 +562,7 @@ internal object StreamCenterTorrentFilterEngine {
             context.titles + listOfNotNull(context.englishTitle, context.japaneseTitle),
         )
         val relevanceScore = StreamCenterTorrentMatchPolicy.relevanceScore(candidate.title, context)
-        val languagePriority = languagePriority(languageMetadata, filters.language)
+        val languagePriority = languagePriority(languageMetadata, filters.language, filters.customItalianTermSet())
         val qualityScore = when (StreamCenterTorrentMetadata.resolution(rawMetadata) ?: 0) {
             in 2160..Int.MAX_VALUE -> 60
             in 1080..2159 -> 45
@@ -608,8 +645,9 @@ internal object StreamCenterTorrentFilterEngine {
     private fun languagePriority(
         metadataText: String,
         language: StreamCenterTorrentLanguageFilter,
+        customItalianTerms: Set<String>,
     ): Int = if (language == StreamCenterTorrentLanguageFilter.PREFER_ITALIAN) {
-        StreamCenterTorrentMetadata.languageEvidence(metadataText).priority
+        StreamCenterTorrentMetadata.languageEvidence(metadataText, customItalianTerms).priority
     } else {
         0
     }
@@ -695,7 +733,33 @@ internal object StreamCenterTorrentMetadata {
     private val sizeRegex = Regex("""(?i)(\d[\d.,]*)\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)\b""")
     private val likelyThousandsUnits = setOf("b", "kb", "kib", "mb", "mib")
 
-    fun languageEvidence(metadataText: String): StreamCenterTorrentLanguageEvidence {
+    fun discriminationKeywords(
+        filter: StreamCenterTorrentLanguageFilter,
+    ): List<StreamCenterTorrentKeywordGroup> {
+        if (filter == StreamCenterTorrentLanguageFilter.ANY) return emptyList()
+        val base = listOf(
+            StreamCenterTorrentKeywordGroup("Italiano", italianTokens.toList()),
+            StreamCenterTorrentKeywordGroup("Audio", audioTokens.toList()),
+            StreamCenterTorrentKeywordGroup("Sottotitoli", subtitleTokens.toList()),
+            StreamCenterTorrentKeywordGroup(
+                "Multi / Dual",
+                (multiAudioTokens + dualAudioTokens + multiSubtitleTokens + setOf("multi", "dual")).toList(),
+            ),
+        )
+        return if (filter == StreamCenterTorrentLanguageFilter.PREFER_ITALIAN) {
+            base + StreamCenterTorrentKeywordGroup(
+                "Indizi release",
+                (italianReleaseHintTokens + muxTokens).toList(),
+            )
+        } else {
+            base
+        }
+    }
+
+    fun languageEvidence(
+        metadataText: String,
+        customItalianTerms: Set<String> = emptySet(),
+    ): StreamCenterTorrentLanguageEvidence {
         val tokens = metadataText
             .lowercase(Locale.ROOT)
             .replace(languageSeparatorRegex, " ")
@@ -704,13 +768,22 @@ internal object StreamCenterTorrentMetadata {
         return when {
             hasItalianSubtitles(tokens) -> StreamCenterTorrentLanguageEvidence.ITALIAN_SUBTITLES_EXPLICIT
             hasItalianAudio(tokens) -> StreamCenterTorrentLanguageEvidence.ITALIAN_AUDIO_EXPLICIT
-            tokens.any { token -> token in italianTokens } ->
+            tokens.any { token -> token in italianTokens } || hasCustomItalian(tokens, customItalianTerms) ->
                 StreamCenterTorrentLanguageEvidence.ITALIAN_EXPLICIT_UNSPECIFIED
             hasMultiSubtitles(tokens) -> StreamCenterTorrentLanguageEvidence.MULTI_SUBTITLES_GENERIC
             hasMultiAudio(tokens) -> StreamCenterTorrentLanguageEvidence.MULTI_AUDIO_GENERIC
             hasDualAudio(tokens) -> StreamCenterTorrentLanguageEvidence.DUAL_AUDIO_GENERIC
             hasItalianReleaseHint(tokens) -> StreamCenterTorrentLanguageEvidence.ITALIAN_RELEASE_HINT
             else -> StreamCenterTorrentLanguageEvidence.NONE
+        }
+    }
+
+    private fun hasCustomItalian(tokens: List<String>, customItalianTerms: Set<String>): Boolean {
+        if (customItalianTerms.isEmpty()) return false
+        val padded = " ${tokens.joinToString(" ")} "
+        return customItalianTerms.any { term ->
+            val normalized = term.lowercase(Locale.ROOT).replace(languageSeparatorRegex, " ").trim()
+            normalized.isNotBlank() && padded.contains(" $normalized ")
         }
     }
 

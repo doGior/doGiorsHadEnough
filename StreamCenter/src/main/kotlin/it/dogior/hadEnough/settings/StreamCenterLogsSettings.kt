@@ -94,8 +94,6 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 )
             }
         }
-        content.addView(enabledRow)
-
         val retentionLabel = bodyText(logRetentionLabel(), 12)
         val retentionRow = settingsRow(
             title = "Conservazione Log",
@@ -108,7 +106,6 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         ) {
             showLogRetentionDialog(retentionLabel)
         }.view
-        content.addView(retentionRow)
 
         val archiveLogRow = settingsRow(
             title = "Archivio Log",
@@ -121,7 +118,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         ) {
             showLogArchive()
         }.view
-        content.addView(archiveLogRow)
+        addAdaptiveCardGrid(content, listOf(enabledRow, retentionRow, archiveLogRow))
 
         return scroll(content, fixedSubmenuHeight = true)
     }

@@ -31,7 +31,7 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 8
+version = 9
 val pluginVersion = version.toString()
 
 cloudstream {

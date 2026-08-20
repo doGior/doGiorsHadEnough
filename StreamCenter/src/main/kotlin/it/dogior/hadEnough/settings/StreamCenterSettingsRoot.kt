@@ -527,43 +527,40 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
         (performanceCard.layoutParams as? LinearLayout.LayoutParams)?.topMargin = 0
         content.addView(performanceCard)
-        content.addView(
-            settingsMenuCard(
-                title = "Preferenze",
-                icon = "🖼️",
-                accent = COLOR_DISPLAY,
-            ) {
-                showSubmenu(StreamCenterDisplaySettingsFragment(), "StreamCenterDisplaySettings")
-            },
-        )
-        content.addView(
-            settingsMenuCard(
-                title = "Home",
-                icon = "🏠",
-                accent = COLOR_HOME,
-            ) {
-                showSubmenu(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
-            },
-        )
-        content.addView(
-            settingsMenuCard(
-                title = "Fonti",
-                icon = "📡",
-                accent = COLOR_SOURCES,
-                status = "",
-                onStatusReady = { sourcesStatus = it },
-            ) {
-                showSubmenu(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
-            },
-        )
-        content.addView(
-            settingsMenuCard(
-                title = "Supporto",
-                icon = "❓",
-                accent = COLOR_SUPPORT,
-            ) {
-                showSubmenu(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
-            },
+        addAdaptiveCardGrid(
+            content,
+            listOf(
+                settingsMenuCard(
+                    title = "Preferenze",
+                    icon = "🖼️",
+                    accent = COLOR_DISPLAY,
+                ) {
+                    showSubmenu(StreamCenterDisplaySettingsFragment(), "StreamCenterDisplaySettings")
+                },
+                settingsMenuCard(
+                    title = "Home",
+                    icon = "🏠",
+                    accent = COLOR_HOME,
+                ) {
+                    showSubmenu(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
+                },
+                settingsMenuCard(
+                    title = "Fonti",
+                    icon = "📡",
+                    accent = COLOR_SOURCES,
+                    status = "",
+                    onStatusReady = { sourcesStatus = it },
+                ) {
+                    showSubmenu(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
+                },
+                settingsMenuCard(
+                    title = "Supporto",
+                    icon = "❓",
+                    accent = COLOR_SUPPORT,
+                ) {
+                    showSubmenu(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
+                },
+            ),
         )
         supportAurora = SettingsAuroraDecoration(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(

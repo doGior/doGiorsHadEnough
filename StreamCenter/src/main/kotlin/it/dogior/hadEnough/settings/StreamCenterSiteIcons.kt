@@ -38,18 +38,37 @@ internal object StreamCenterSiteIcons {
                 .select("link[href]")
                 .asSequence()
                 .filter { element -> element.attr("rel").lowercase(Locale.ROOT).contains("icon") }
-                .sortedByDescending { element ->
-                    val href = element.attr("href").lowercase(Locale.ROOT)
-                    when {
-                        href.endsWith(".png") || href.endsWith(".webp") -> 3
-                        element.attr("rel").lowercase(Locale.ROOT).contains("apple-touch-icon") -> 2
-                        href.endsWith(".jpg") || href.endsWith(".jpeg") -> 1
-                        else -> 0
-                    }
-                }
-                .map { element -> element.absUrl("href").trim() }
-                .firstOrNull(::isWebUrl)
+                .filter { element -> isWebUrl(element.absUrl("href").trim()) }
+                .filterNot(::isSvgIcon)
+                .maxByOrNull(::iconResolutionScore)
+                ?.absUrl("href")
+                ?.trim()
+                ?.takeIf(::isWebUrl)
         }.getOrNull() ?: "$origin/favicon.ico"
+    }
+
+    private fun iconResolutionScore(element: org.jsoup.nodes.Element): Int {
+        val rel = element.attr("rel").lowercase(Locale.ROOT)
+        val href = element.absUrl("href").lowercase(Locale.ROOT)
+        if (rel.contains("mask-icon")) return Int.MIN_VALUE
+        val declaredSize = element.attr("sizes").lowercase(Locale.ROOT)
+            .split(Regex("[\\s,]+"))
+            .mapNotNull { token -> token.substringBefore('x').toIntOrNull() }
+            .maxOrNull() ?: 0
+        var score = declaredSize
+        when {
+            href.endsWith(".png") || href.endsWith(".webp") -> score += 64
+            href.endsWith(".jpg") || href.endsWith(".jpeg") -> score += 16
+            href.endsWith(".ico") -> score -= 64
+        }
+        if (rel.contains("apple-touch-icon")) score += 180
+        return score
+    }
+
+    private fun isSvgIcon(element: org.jsoup.nodes.Element): Boolean {
+        val href = element.absUrl("href").lowercase(Locale.ROOT).substringBefore('?').substringBefore('#')
+        val type = element.attr("type").lowercase(Locale.ROOT)
+        return href.endsWith(".svg") || type.contains("svg")
     }
 
     private fun origin(siteUrl: String): String? = runCatching {

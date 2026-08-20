@@ -75,6 +75,7 @@ data class StreamCenterTvArchiveFilters(
     val year: Int? = null,
     val minimumScore: Int? = null,
     val countryId: Int? = null,
+    val service: String? = null,
     val sort: String? = null,
 )
 
@@ -119,6 +120,7 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_VISUAL_EFFECTS_PARTICLES = "visualEffectsParticles"
         const val PREF_VISUAL_EFFECTS_PUBLIC_IP = "visualEffectsPublicIp"
         const val PREF_REQUIRE_VPN = "requireVpn"
+        const val PREF_FORCE_TV_MODE = "forceTvMode"
         const val PREF_GROUP_ANIME_DUB_SUB = "groupAnimeDubSub"
         const val PREF_HOME_ORDER = "homeOrder"
         const val PREF_HOME_CATEGORY_ORDER = "homeCategoryOrder"
@@ -161,7 +163,7 @@ class StreamCenterPlugin : Plugin() {
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.miami"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.partners"
         const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
@@ -427,6 +429,10 @@ class StreamCenterPlugin : Plugin() {
 
         fun isVpnRequired(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_REQUIRE_VPN, false) ?: false
+        }
+
+        fun isForceTvModeEnabled(sharedPref: SharedPreferences?): Boolean {
+            return sharedPref?.getBoolean(PREF_FORCE_TV_MODE, false) ?: false
         }
 
         internal fun isDefaultVpnRequirementPreference(key: String, value: Any?): Boolean {
@@ -1565,6 +1571,7 @@ class StreamCenterPlugin : Plugin() {
                     year = json.optInt("year").takeIf { it > 0 },
                     minimumScore = json.optInt("minimumScore").takeIf { it in 1..10 },
                     countryId = json.optInt("countryId").takeIf { it > 0 },
+                    service = json.optString("service").trim().takeIf { it.isNotBlank() },
                     sort = json.optString("sort").takeIf { it.isNotBlank() },
                 )
             }.getOrNull()
@@ -1595,6 +1602,7 @@ class StreamCenterPlugin : Plugin() {
             filters.year?.let { put("year", it) }
             filters.minimumScore?.let { put("minimumScore", it) }
             filters.countryId?.let { put("countryId", it) }
+            filters.service?.let { put("service", it) }
             filters.sort?.let { put("sort", it) }
         }.toString()
 
@@ -1672,6 +1680,7 @@ class StreamCenterPlugin : Plugin() {
                     year = json.optInt("year").takeIf { it > 0 },
                     minimumScore = json.optInt("minimumScore").takeIf { it in 1..10 },
                     countryId = json.optInt("countryId").takeIf { it > 0 },
+                    service = json.optString("service").trim().takeIf { it.isNotBlank() },
                     sort = json.optString("sort").takeIf { it.isNotBlank() },
                 )
             }.getOrNull()

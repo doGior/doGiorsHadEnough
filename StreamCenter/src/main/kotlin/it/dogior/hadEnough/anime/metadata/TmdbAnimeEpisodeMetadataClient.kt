@@ -76,6 +76,13 @@ internal class TmdbAnimeEpisodeMetadataClient(
         fallbackMetadata
     }
 
+    suspend fun resolveTmdbShowId(anilistId: Int, episodeNumbers: Set<Int>): Int? {
+        if (anilistId <= 0) return null
+        val episodes = episodeNumbers.filter { it > 0 }.toSet().ifEmpty { setOf(1) }
+        val references = mappingClient.fetch(anilistId, episodes)
+        return references.values.firstNotNullOfOrNull { it.tmdbId.takeIf { id -> id > 0 } }
+    }
+
     private suspend fun resolveMappedEpisodes(
         references: Map<Int, TmdbAnimeEpisodeReference>,
     ): Map<Int, TmdbAnimeEpisodeMetadata> {

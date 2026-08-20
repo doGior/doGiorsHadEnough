@@ -109,7 +109,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             ),
         )
 
-        content.addView(supportCard(
+        val supportCards = mutableListOf<View>()
+        supportCards.add(supportCard(
             icon = "\uD83D\uDCCB",
             title = "Log",
             summary = "",
@@ -120,7 +121,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 StreamCenterLogsSettingsFragment().show(parentFragmentManager, tag)
             }
         })
-        content.addView(supportCard(
+        supportCards.add(supportCard(
             icon = "💬",
             title = "Invia feedback",
             summary = "",
@@ -128,7 +129,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         ) {
             showFeedbackChoiceDialog()
         })
-        content.addView(supportCard(
+        supportCards.add(supportCard(
             icon = "\uD83D\uDCDD",
             title = "Cambiamenti",
             summary = "",
@@ -136,7 +137,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         ) {
             showChangelogDialog()
         })
-        content.addView(supportCard(
+        supportCards.add(supportCard(
             icon = "\uD83D\uDCBE",
             title = "Esporta/Importa",
             summary = "",
@@ -144,7 +145,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         ) {
             showBackupChoiceDialog()
         })
-        content.addView(supportCard(
+        supportCards.add(supportCard(
             icon = "🔐",
             title = "Sync Locale",
             summary = "",
@@ -152,7 +153,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         ) {
             showLocalSyncWarningDialog()
         })
-        content.addView(supportCard(
+        supportCards.add(supportCard(
             icon = "♻️",
             title = "Ripristina tutte le impostazioni",
             summary = "",
@@ -183,6 +184,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             (layoutParams as LinearLayout.LayoutParams).topMargin = dp(18)
         })
 
+        addAdaptiveCardGrid(content, supportCards)
         return scroll(content, fixedSubmenuHeight = true)
     }
 
@@ -402,6 +404,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             setPadding(dp(20), dp(6), dp(20), dp(14))
         }
         lateinit var dialog: AlertDialog
+        val rowViews = mutableListOf<View>()
         versions.forEach { version ->
             val status = changelogVersionStatus(version)
             val accent = status?.second ?: COLOR_SUPPORT
@@ -430,8 +433,9 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 showChangelogVersion(version, versions)
             }
             styleChangelogVersionTitle(versionRow.title, version)
-            list.addView(versionRow.view)
+            rowViews.add(versionRow.view)
         }
+        addAdaptiveCardGrid(list, rowViews)
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogBrandTitle(
                 "Scegli una versione",

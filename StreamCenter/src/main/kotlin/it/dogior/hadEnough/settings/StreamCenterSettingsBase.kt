@@ -616,17 +616,19 @@ private class SettingsInteractionFrame(
         val layoutParams = scrollContent.layoutParams as ViewGroup.MarginLayoutParams
         val contentWidth = (MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight -
             layoutParams.leftMargin - layoutParams.rightMargin).coerceAtLeast(0)
+        val verticalChrome = paddingTop + paddingBottom +
+            layoutParams.topMargin + layoutParams.bottomMargin
+        val resolvedHeight = resolveSize(lockedHeight + verticalChrome, heightMeasureSpec)
+        val innerHeight = (resolvedHeight - verticalChrome).coerceAtLeast(0)
         scrollContent.measure(
             MeasureSpec.makeMeasureSpec(contentWidth, MeasureSpec.EXACTLY),
-            MeasureSpec.makeMeasureSpec(lockedHeight.coerceAtLeast(0), MeasureSpec.EXACTLY),
+            MeasureSpec.makeMeasureSpec(innerHeight, MeasureSpec.EXACTLY),
         )
         val desiredWidth = scrollContent.measuredWidth + paddingLeft + paddingRight +
             layoutParams.leftMargin + layoutParams.rightMargin
-        val desiredHeight = lockedHeight + paddingTop + paddingBottom +
-            layoutParams.topMargin + layoutParams.bottomMargin
         setMeasuredDimension(
             resolveSizeAndState(desiredWidth, widthMeasureSpec, 0),
-            resolveSizeAndState(desiredHeight, heightMeasureSpec, 0),
+            resolvedHeight,
         )
         particleBackground.measure(
             MeasureSpec.makeMeasureSpec(
@@ -654,6 +656,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         private const val SETTINGS_ROW_RADIUS_DP = 16
         private const val SETTINGS_ROW_ICON_DP = 42
         private const val SETTINGS_ROW_SPACING_DP = 10
+        private const val GRID_CARD_SPACING_DP = 10
+        private const val TV_SHEET_WIDTH_FRACTION = 0.94f
+        private const val TV_DIALOG_WIDTH_FRACTION = 0.86f
         private const val SETTINGS_CATEGORY_HEIGHT_DP = 64
         private const val SETTINGS_CATEGORY_RADIUS_DP = 14
         private const val SETTINGS_CATEGORY_ICON_DP = 40
@@ -755,16 +760,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         get() = StreamCenterPlugin.activeSharedPref
 
     protected val visualAnimationsEnabled: Boolean
-        get() = StreamCenterPlugin.areVisualAnimationsEnabled(sharedPref)
+        get() = !isTvLikeDevice() && StreamCenterPlugin.areVisualAnimationsEnabled(sharedPref)
 
     protected val visualBlurEnabled: Boolean
-        get() = StreamCenterPlugin.areVisualBlursEnabled(sharedPref)
+        get() = !isTvLikeDevice() && StreamCenterPlugin.areVisualBlursEnabled(sharedPref)
 
     protected val visualTitleEffectsEnabled: Boolean
-        get() = StreamCenterPlugin.areVisualTitleEffectsEnabled(sharedPref)
+        get() = !isTvLikeDevice() && StreamCenterPlugin.areVisualTitleEffectsEnabled(sharedPref)
 
     protected val visualParticlesEnabled: Boolean
-        get() = StreamCenterPlugin.areVisualParticlesEnabled(sharedPref)
+        get() = !isTvLikeDevice() && StreamCenterPlugin.areVisualParticlesEnabled(sharedPref)
 
     protected val visualPublicIpEnabled: Boolean
         get() = StreamCenterPlugin.shouldShowPublicIp(sharedPref)
@@ -1082,7 +1087,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                     )
                 }
             }
+            styleDialogActionButtons(alertDialog)
             onShow?.invoke()
+            if (isTvLikeDevice()) {
+                alertDialog.window?.let { window ->
+                    window.setLayout(
+                        (resources.displayMetrics.widthPixels * TV_DIALOG_WIDTH_FRACTION).toInt(),
+                        window.attributes.height,
+                    )
+                }
+            }
         }
         alertDialog.setOnDismissListener {
             layer?.let { dismissedLayer ->
@@ -1095,6 +1109,62 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             layer = null
             onDismiss?.invoke()
         }
+    }
+
+    private fun styleDialogActionButtons(alertDialog: AlertDialog) {
+        alertDialog.getButton(DialogInterface.BUTTON_POSITIVE)?.let { button ->
+            val destructive = isDestructiveActionLabel(button.text?.toString())
+            styleDialogActionButton(button, if (destructive) COLOR_DANGER else COLOR_ACCENT, filled = true)
+        }
+        alertDialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.let { button ->
+            styleDialogActionButton(button, COLOR_ACCENT, filled = false)
+        }
+        alertDialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { button ->
+            styleDialogActionButton(button, COLOR_MUTED, filled = false)
+        }
+        (alertDialog.getButton(DialogInterface.BUTTON_POSITIVE)?.parent as? androidx.appcompat.widget.ButtonBarLayout)
+            ?.setAllowStacking(false)
+    }
+
+    private fun styleDialogActionButton(button: android.widget.Button, accent: String, filled: Boolean) {
+        button.setAllCaps(false)
+        button.typeface = Typeface.DEFAULT_BOLD
+        button.textSize = 14f
+        button.minWidth = dp(96)
+        button.minimumWidth = dp(96)
+        button.minHeight = dp(44)
+        button.minimumHeight = dp(44)
+        button.setPadding(dp(20), dp(9), dp(20), dp(9))
+        button.stateListAnimator = null
+        button.setTextColor(ColorStateList(
+            arrayOf(
+                intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed),
+                intArrayOf(android.R.attr.state_focused),
+                intArrayOf(android.R.attr.state_pressed),
+                intArrayOf(),
+            ),
+            intArrayOf(
+                Color.parseColor(COLOR_TEXT),
+                Color.parseColor(COLOR_TEXT),
+                Color.parseColor(COLOR_TEXT),
+                Color.parseColor(accent),
+            ),
+        ))
+        button.background = interactiveBackground(
+            fill = tint(accent, if (filled) "26" else "10"),
+            accent = accent,
+            radius = 999,
+            strokeColor = if (filled) tint(accent, "AA") else COLOR_STROKE,
+        )
+        (button.layoutParams as? ViewGroup.MarginLayoutParams)?.apply {
+            marginStart = dp(8)
+            button.layoutParams = this
+        }
+    }
+
+    private fun isDestructiveActionLabel(label: String?): Boolean {
+        val normalized = label?.trim()?.lowercase(java.util.Locale.ROOT).orEmpty()
+        return normalized.startsWith("elimina") || normalized.startsWith("rimuovi")
     }
 
     protected fun showCompactActionDialog(
@@ -1111,7 +1181,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 ).forEach { buttonId ->
                     alertDialog.getButton(buttonId)?.apply {
                         minWidth = 0
-                        setPadding(dp(6), 0, dp(6), 0)
+                        minHeight = 0
+                        minimumHeight = dp(40)
+                        setPadding(dp(10), dp(4), dp(10), dp(4))
                         textSize = 12f
                         setAllCaps(false)
                     }
@@ -1121,6 +1193,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                         setAllowStacking(false)
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.END
+                        minimumHeight = 0
+                        setPadding(paddingLeft, dp(2), paddingRight, dp(2))
                         requestLayout()
                     }
             },
@@ -1140,6 +1214,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             }
             findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
                 ?.setBackgroundColor(Color.TRANSPARENT)
+            if (isTvLikeDevice()) {
+                behavior.maxWidth = (resources.displayMetrics.widthPixels * TV_SHEET_WIDTH_FRACTION).toInt()
+            }
         }
         if (!playedEnterAnimation) {
             playedEnterAnimation = true
@@ -1194,6 +1271,48 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return (value * resources.displayMetrics.density).toInt()
     }
 
+    protected fun isTvLikeDevice(): Boolean {
+        if (StreamCenterPlugin.isForceTvModeEnabled(sharedPref)) return true
+        val ctx = context ?: return false
+        val pm = ctx.packageManager
+        val uiMode = ctx.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_TYPE_MASK
+        return uiMode == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
+            pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+            !pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TOUCHSCREEN)
+    }
+
+    protected fun settingsRowHeightDp(): Int {
+        return if (isTvLikeDevice()) 80 else SETTINGS_ROW_HEIGHT_DP
+    }
+
+    protected fun addAdaptiveCardGrid(container: LinearLayout, cards: List<View>) {
+        if (!isTvLikeDevice() || cards.size < 2) {
+            cards.forEach(container::addView)
+            return
+        }
+        cards.chunked(2).forEach { rowCards ->
+            val row = LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.HORIZONTAL
+                clipChildren = false
+                clipToPadding = false
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(GRID_CARD_SPACING_DP) }
+            }
+            rowCards.forEachIndexed { colIndex, card ->
+                card.layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f,
+                ).apply { if (colIndex > 0) marginStart = dp(GRID_CARD_SPACING_DP) }
+                row.addView(card)
+            }
+            container.addView(row)
+        }
+    }
+
     protected fun standardSubmenuMinimumHeight(): Int {
         return minOf(
             dp(SUBMENU_HEIGHT_DP),
@@ -1204,7 +1323,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     protected fun rootContainer(): LinearLayout {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(18))
+            clipChildren = false
+            clipToPadding = false
+            if (isTvLikeDevice()) {
+                setPadding(dp(30), dp(20), dp(30), dp(26))
+            } else {
+                setPadding(dp(16), dp(14), dp(16), dp(18))
+            }
         }
     }
 
@@ -1277,6 +1402,19 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             )
             particleBackgrounds += particleBackground
             particleBackground.setActive(visualParticlesEnabled)
+        }
+    }
+
+    protected fun scrollableDialogView(content: View): ScrollView {
+        return ScrollView(requireContext()).apply {
+            isVerticalScrollBarEnabled = false
+            addView(
+                content,
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
         }
     }
 
@@ -1409,10 +1547,14 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
     }
 
+    private fun tvScaledTextSize(size: Int): Float {
+        return size * if (isTvLikeDevice()) 1.08f else 1f
+    }
+
     protected fun titleText(value: String, size: Int = 18, bold: Boolean = true): TextView {
         return TextView(requireContext()).apply {
             text = value
-            textSize = size.toFloat()
+            textSize = tvScaledTextSize(size)
             setTextColor(Color.parseColor(COLOR_TEXT))
             if (bold) typeface = Typeface.DEFAULT_BOLD
         }
@@ -1421,7 +1563,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     protected fun bodyText(value: String, size: Int = 13): TextView {
         return TextView(requireContext()).apply {
             text = value
-            textSize = size.toFloat()
+            textSize = tvScaledTextSize(size)
             setTextColor(Color.parseColor(COLOR_MUTED))
             setLineSpacing(dp(1).toFloat(), 1.0f)
         }
@@ -1612,6 +1754,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     ) {
         card.clipChildren = false
         card.clipToPadding = false
+        attachTvFocusHighlight(card, icon)
 
         fun animateState(pressed: Boolean) {
             chevron?.isPressed = pressed
@@ -1638,6 +1781,26 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> animateState(pressed = false)
             }
             false
+        }
+    }
+
+    private fun attachTvFocusHighlight(card: View, icon: View?) {
+        if (!isTvLikeDevice()) return
+        card.setOnFocusChangeListener { view, hasFocus ->
+            icon?.scaleX = if (hasFocus) 1.08f else 1f
+            icon?.scaleY = if (hasFocus) 1.08f else 1f
+            if (hasFocus) bringFocusIntoView(view)
+        }
+    }
+
+    private fun bringFocusIntoView(target: View) {
+        val margin = dp(28)
+        target.post {
+            if (!target.isAttachedToWindow) return@post
+            target.requestRectangleOnScreen(
+                Rect(-margin, -margin, target.width + margin, target.height + margin),
+                true,
+            )
         }
     }
 
@@ -1733,15 +1896,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         accessibilityState: (() -> String?)? = null,
         onClick: (() -> Unit)? = null,
     ): SettingsRowViews {
+        val rowHeight = settingsRowHeightDp()
         val row = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(SETTINGS_ROW_HEIGHT_DP)
+            minimumHeight = dp(rowHeight)
             val verticalPadding = if (fixedHeight) 9 else 12
             setPadding(dp(14), dp(verticalPadding), dp(10), dp(verticalPadding))
             background = interactiveBackground(fillColor, accent, SETTINGS_ROW_RADIUS_DP, strokeColor)
             layoutParams = verticalParams(top = topMargin).apply {
-                if (fixedHeight) height = dp(SETTINGS_ROW_HEIGHT_DP)
+                if (fixedHeight) height = dp(rowHeight)
             }
             clipChildren = false
             clipToPadding = false
@@ -1823,6 +1987,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             setPadding(dp(20), dp(12), dp(20), dp(20))
         }
         lateinit var dialog: AlertDialog
+        val rowViews = mutableListOf<View>()
         options.forEach { option ->
             val selected = option.value == selectedValue
             val selectedBadge = iconBadge("✓", accent, size = 30, marginEnd = 0).apply {
@@ -1858,11 +2023,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 dialog.dismiss()
             }
             row.view.isSelected = selected
-            content.addView(row.view)
+            rowViews.add(row.view)
         }
+        addAdaptiveCardGrid(content, rowViews)
         dialog = AlertDialog.Builder(requireContext())
             .setCustomTitle(dialogTitle(title))
-            .setView(content)
+            .setView(scrollableDialogView(content))
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
@@ -2381,21 +2547,28 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return cardBackground(fillColor, strokeColor, radius, strokeColor)
     }
 
+    private fun blendColorHex(base: String, overlay: String, ratio: Float): String {
+        val blended = ColorUtils.blendARGB(Color.parseColor(base), Color.parseColor(overlay), ratio)
+        return String.format(java.util.Locale.ROOT, "#%08X", blended)
+    }
+
     protected fun interactiveBackground(
         fill: String,
         accent: String,
         radius: Int,
         strokeColor: String = COLOR_STROKE,
     ): Drawable {
+        val focusStroke = if (isTvLikeDevice()) 5 else 3
+        val focusFill = if (isTvLikeDevice()) blendColorHex(fill, accent, 0.18f) else fill
         if (radius >= 100) {
             val states = StateListDrawable().apply {
                 addState(
                     intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed),
-                    outlined(accent, fill, radius, strokeWidth = 3),
+                    outlined(accent, focusFill, radius, strokeWidth = focusStroke),
                 )
                 addState(
                     intArrayOf(android.R.attr.state_focused),
-                    outlined(accent, fill, radius, strokeWidth = 3),
+                    outlined(accent, focusFill, radius, strokeWidth = focusStroke),
                 )
                 addState(
                     intArrayOf(android.R.attr.state_pressed),
@@ -2403,6 +2576,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 )
                 addState(intArrayOf(), outlined(strokeColor, fill, radius))
             }
+            if (isTvLikeDevice()) return states
             return RippleDrawable(
                 ColorStateList.valueOf(Color.parseColor(tint(accent, "1F"))),
                 states,
@@ -2412,11 +2586,11 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         val states = StateListDrawable().apply {
             addState(
                 intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed),
-                cardBackground(fill, accent, radius, accent, strokeWidth = 3),
+                cardBackground(focusFill, accent, radius, accent, strokeWidth = focusStroke),
             )
             addState(
                 intArrayOf(android.R.attr.state_focused),
-                cardBackground(fill, accent, radius, accent, strokeWidth = 3),
+                cardBackground(focusFill, accent, radius, accent, strokeWidth = focusStroke),
             )
             addState(
                 intArrayOf(android.R.attr.state_pressed),
@@ -2424,6 +2598,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             )
             addState(intArrayOf(), cardBackground(fill, strokeColor, radius, accent))
         }
+        if (isTvLikeDevice()) return states
         return RippleDrawable(
             ColorStateList.valueOf(Color.parseColor(tint(accent, "1F"))),
             states,

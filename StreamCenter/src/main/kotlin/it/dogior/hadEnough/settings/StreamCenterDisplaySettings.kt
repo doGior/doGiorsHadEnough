@@ -27,7 +27,8 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 accent = COLOR_DISPLAY,
             ),
         )
-        content.addView(
+        val displayRows = mutableListOf<View>()
+        displayRows.add(
             switchRow(
                 title = "Valutazione",
                 summary = "Mostra il voto sulle schede di\nAnime, Serie TV e Film.",
@@ -39,7 +40,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_HOME_SCORE, enabled) }
             },
         )
-        content.addView(
+        displayRows.add(
             switchRow(
                 title = "SUB/DUB",
                 summary = "Mostra se l'Anime è SUB, DUB o entrambe le versioni.",
@@ -51,7 +52,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_ANIME_HOME_DUB_STATUS, enabled) }
             },
         )
-        content.addView(
+        displayRows.add(
             switchRow(
                 title = "Unifica SUB e DUB",
                 summary = "Raggruppa le versioni sottotitolata e doppiata in un’unica scheda.",
@@ -63,7 +64,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_GROUP_ANIME_DUB_SUB, enabled) }
             },
         )
-        content.addView(
+        displayRows.add(
             switchRow(
                 title = "Numero episodi",
                 summary = "Mostra sulle schede Anime l'ultimo episodio disponibile.",
@@ -75,7 +76,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_ANIME_HOME_EPISODE_NUMBER, enabled) }
             },
         )
-        content.addView(
+        displayRows.add(
             switchRow(
                 title = "ID di tracciamento",
                 summary = "Mostra gli ID MAL, AniList, Kitsu, Simkl e IMDb nelle schede del Catalogo Base.",
@@ -87,7 +88,7 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_TRACKING_IDS, enabled) }
             },
         )
-        content.addView(
+        displayRows.add(
             switchRow(
                 title = "Protezione VPN",
                 summary = "Blocca tutte le richieste Internet di StreamCenter finch\u00E9 la VPN non \u00E8 attiva.",
@@ -99,8 +100,22 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_REQUIRE_VPN, enabled) }
             },
         )
-        content.addView(animeCardTitleRow())
-        content.addView(visualEffectsRow())
+        displayRows.add(
+            switchRow(
+                title = "Modalità TV",
+                summary = "UI pensata per la TV.",
+                checked = isTvLikeDevice(),
+                accent = COLOR_DISPLAY,
+                icon = "📺",
+                fixedHeight = true,
+            ) { enabled ->
+                sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_FORCE_TV_MODE, enabled) }
+                saveToast("Riapri le impostazioni per applicare la modalità TV")
+            },
+        )
+        displayRows.add(animeCardTitleRow())
+        displayRows.add(visualEffectsRow())
+        addAdaptiveCardGrid(content, displayRows)
         return scroll(content, fixedSubmenuHeight = true)
     }
 
@@ -197,34 +212,35 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
             }
         }
 
+        val effectRows = mutableListOf<View>()
         val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(10), dp(20), dp(4))
-            addView(effectOptionRow(
+            effectRows.add(effectOptionRow(
                 icon = "\uD83C\uDF9E\uFE0F",
                 title = "Animazioni",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_ANIMATIONS,
                 optionAccent = COLOR_VISUAL_EFFECTS,
             ))
-            addView(effectOptionRow(
+            effectRows.add(effectOptionRow(
                 icon = "\uD83C\uDF2B\uFE0F",
                 title = "Sfocatura finestre",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_BLUR,
                 optionAccent = COLOR_VISUAL_BLUR,
             ))
-            addView(effectOptionRow(
+            effectRows.add(effectOptionRow(
                 icon = "\u2728",
                 title = "Intestazione StreamCenter",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_TITLE,
                 optionAccent = COLOR_VISUAL_HEADER,
             ))
-            addView(effectOptionRow(
+            effectRows.add(effectOptionRow(
                 icon = "\uD83C\uDF0C",
                 title = "Universo animato",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PARTICLES,
                 optionAccent = COLOR_PARTICLES,
             ))
-            addView(effectOptionRow(
+            effectRows.add(effectOptionRow(
                 icon = "\uD83C\uDF10",
                 title = "Mostra IP pubblico",
                 preferenceKey = StreamCenterPlugin.PREF_VISUAL_EFFECTS_PUBLIC_IP,
@@ -232,10 +248,11 @@ class StreamCenterDisplaySettingsFragment : StreamCenterBaseSettingsFragment() {
                 defaultValue = true,
             ))
         }
+        addAdaptiveCardGrid(content, effectRows)
 
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Effetti visivi"))
-            .setView(content)
+            .setView(scrollableDialogView(content))
             .setPositiveButton("Chiudi", null)
             .create()
         applyDialogBackdrop(dialog)
