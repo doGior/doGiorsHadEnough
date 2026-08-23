@@ -1,6 +1,7 @@
 package it.dogior.hadEnough
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.exc.MismatchedInputException
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -24,17 +25,29 @@ class CalcioStreaming : MainAPI() {
     override val supportedTypes = setOf(TvType.Live)
     override var sequentialMainPage = true
     override val hasDownloadSupport = false
+    private val theSportsDB = "https://www.thesportsdb.com/api/v1/json/123"
     val cfKiller = CloudflareKiller()
+
+    companion object {
+        val eventsData =
+            mutableMapOf<String, SportsDbEvent>() // La string è l'id dell'evento su direttecommunity
+    }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val resp = app.get("$mainUrl/api/events.php").body.string()
         val events = parseJson<JSONResponse>(resp).events
         val searchResponses = events.mapNotNull { event ->
+            val eventData = getEventData(event)
             if (event.status == "live") {
                 newLiveSearchResponse(
                     name = event.title,
                     url = event.toJson()
-                )
+                ) {
+                    eventData?.let {
+                        Log.d("CalcioStreaming - Thumb", it.strThumb)
+                        this.posterUrl = it.strThumb
+                    }
+                }
             } else {
                 null
             }
@@ -49,13 +62,37 @@ class CalcioStreaming : MainAPI() {
         )
     }
 
+    suspend fun getEventData(event: Event): SportsDbEvent? {
+        if (eventsData.keys.contains(event.id)) {
+                return eventsData[event.id]
+        } else {
+            val resp =
+                app.get("$theSportsDB/searchevents.php?e=${event.homeTeam}_vs_${event.awayTeam}").body.string()
+            try {
+                val parsedEvent = parseJson<SportsDbResponse>(resp).events.first()
+                eventsData[event.id] = parsedEvent
+                return parsedEvent
+            } catch (e: MismatchedInputException){
+                Log.e("CalcioStreaming - Data Error", e.toString())
+                return null
+            } catch (e: com.fasterxml.jackson.core.JsonParseException){
+                Log.e("CalcioStreaming - Data Error", e.toString())
+                return null
+            }
+        }
+    }
+
 
     override suspend fun load(url: String): LoadResponse {
-        val data = url
-        val event = parseJson<Event>(data)
-//        val posterUrl = ""
+        val event = parseJson<Event>(url)
+        val data = getEventData(event)
+        val posterUrl = data?.strPoster
+        val bannerUrl = data?.strBanner
         val title = event.title
-        return newLiveStreamLoadResponse(title, url = url, dataUrl = event.streams.toJson())
+        return newLiveStreamLoadResponse(title, url = url, dataUrl = event.streams.toJson()){
+            this.posterUrl = posterUrl
+            this.backgroundPosterUrl = bannerUrl
+        }
     }
 
     fun getStreamUrl(html: String): String? {
@@ -111,7 +148,7 @@ class CalcioStreaming : MainAPI() {
 
         val doc = app.get(url).document
         val link = doc.selectFirst("iframe")?.attr("src") ?: return null
-        val referer = "https://"+url.toHttpUrl().host
+        val referer = "https://" + url.toHttpUrl().host
         val resp2 = app.get(
             fixUrl(link), referer = referer, headers = mapOf(
                 "Sec-Fetch-Dest" to "iframe"
@@ -134,12 +171,10 @@ class CalcioStreaming : MainAPI() {
     ): Boolean {
         val streams = parseJson<List<Stream>>(data)
         val links = streams.mapNotNull { stream ->
-            Log.d("CalcioStreaming", stream.toJson())
-            val link = extractVideoStream(url=stream.url,n=0)
-            Log.d("CalcioStreaming", "Link finale: $link\n")
-            if(link != null){
-                Link(name="${stream.label} ${stream.lang}", ref=link.second, url = link.first)
-            }else{
+            val link = extractVideoStream(url = stream.url, n = 0)
+            if (link != null) {
+                Link(name = "${stream.label} ${stream.lang}", ref = link.second, url = link.first)
+            } else {
                 null
             }
         }
@@ -174,20 +209,21 @@ data class Link(
     val url: String,
     val ref: String
 )
+
 data class JSONResponse(
     @JsonProperty("events")
     val events: List<Event>
 )
 
 data class Event(
-//    @JsonProperty("away_team")
-//    val awayTeam: String,
+    @JsonProperty("away_team")
+    val awayTeam: String,
 //    @JsonProperty("away_team_badge")
 //    val awayTeamBadge: String,
 //    @JsonProperty("heat_tier")
 //    val heatTier: String,
-//    @JsonProperty("home_team")
-//    val homeTeam: String,
+    @JsonProperty("home_team")
+    val homeTeam: String,
 //    @JsonProperty("home_team_badge")
 //    val homeTeamBadge: String,
     @JsonProperty("id")
@@ -219,4 +255,24 @@ data class Stream(
     val source: String,
     @JsonProperty("url")
     val url: String
+)
+
+data class SportsDbResponse(
+    @JsonProperty("event")
+    val events: List<SportsDbEvent>,
+)
+
+data class SportsDbEvent(
+    @JsonProperty("strEvent")
+    val strTitle: String,
+    @JsonProperty("strLeague")
+    val strLeague: String?,
+    @JsonProperty("strSeason")
+    val strSeason: String?,
+    @JsonProperty("strThumb")
+    val strThumb: String,
+    @JsonProperty("strPoster")
+    val strPoster: String,
+    @JsonProperty("strBanner")
+    val strBanner: String,
 )
