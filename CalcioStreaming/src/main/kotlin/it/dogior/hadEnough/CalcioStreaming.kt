@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -33,9 +34,10 @@ class CalcioStreaming : MainAPI() {
             mutableMapOf<String, SportsDbEvent>() // La string è l'id dell'evento su direttecommunity
     }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val resp = app.get("$mainUrl/api/events.php").body.string()
-        val events = parseJson<JSONResponse>(resp).events
+        val respEvents = tryParseJson<JSONResponse>(resp) ?: return null
+        val events = respEvents.events
         val searchResponses = events.mapNotNull { event ->
             val eventData = getEventData(event)
             if (event.status == "live") {
@@ -139,7 +141,21 @@ class CalcioStreaming : MainAPI() {
         }
     }
 
-    private suspend fun extractVideoStream(
+    /*private suspend fun extractVideoStream(url: String): Pair<String, String>? {
+        return if(url.contains("sportsonlinee")){
+            extractSportsOnline(url, 0)
+        } else if(url.contains("zicotv")) {
+            extractZicoTv(url)
+        }else {
+            null
+        }
+    }
+
+    private suspend fun extractZicoTv(url: String): Pair<String, String>?{
+        val resp = app.get(url)
+    }*/
+
+    private suspend fun extractSportsOnline(
         url: String,
         n: Int
     ): Pair<String, String>? {
@@ -159,7 +175,7 @@ class CalcioStreaming : MainAPI() {
         return if (newPage.select("script").size >= 6 && !streamUrl.isNullOrEmpty()) {
             streamUrl to fixUrl(link)
         } else {
-            extractVideoStream(url = link, n = n + 1)
+            extractSportsOnline(url = link, n = n + 1)
         }
     }
 
@@ -171,15 +187,22 @@ class CalcioStreaming : MainAPI() {
     ): Boolean {
         val streams = parseJson<List<Stream>>(data)
         val links = streams.mapNotNull { stream ->
-            val link = extractVideoStream(url = stream.url, n = 0)
-            if (link != null) {
-                Link(name = "${stream.label} ${stream.lang}", ref = link.second, url = link.first)
-            } else {
+            Log.d("BANANA", stream.toJson())
+            try {
+                val link = extractSportsOnline(url = stream.url, n = 0)
+//            Log.d("CalcioStreaming", "Extracted - $link")
+                if (link != null) {
+                    Link(name = "${stream.label} ${stream.lang}", ref = link.second, url = link.first)
+                } else {
+                    null
+                }
+            } catch (_: Exception){
                 null
             }
+
         }
         links.forEach {
-            Log.d("CalcioStreaming", it.toJson())
+            Log.d("BANANA", it.toJson())
             callback(
                 newExtractorLink(
                     source = this.name,
