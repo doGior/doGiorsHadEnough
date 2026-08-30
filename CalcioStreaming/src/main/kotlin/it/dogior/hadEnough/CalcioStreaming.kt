@@ -32,64 +32,95 @@ class CalcioStreaming : MainAPI() {
     companion object {
         val eventsData =
             mutableMapOf<String, SportsDbEvent>() // La string è l'id dell'evento su direttecommunity
-    }
-
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        val resp = app.get("$mainUrl/api/events.php").body.string()
-        val respEvents = tryParseJson<JSONResponse>(resp) ?: return null
-        val events = respEvents.events
-        val searchResponses = events.mapNotNull { event ->
-            val eventData = getEventData(event)
-            if (event.status == "live") {
-                newLiveSearchResponse(
-                    name = event.title,
-                    url = event.toJson()
-                ) {
-                    eventData?.let {
-                        Log.d("CalcioStreaming - Thumb", it.strThumb)
-                        this.posterUrl = it.strThumb
-                    }
-                }
-            } else {
-                null
-            }
-        }
-
-        return newHomePageResponse(
-            listOf(
-                HomePageList(
-                    "Live", searchResponses, true
-                )
-            ), false
-        )
+        val events = mutableListOf<SearchResponse>()
     }
 
     suspend fun getEventData(event: Event): SportsDbEvent? {
         if (eventsData.keys.contains(event.id)) {
-                return eventsData[event.id]
+            return eventsData[event.id]
         } else {
-            val resp =
-                app.get("$theSportsDB/searchevents.php?e=${event.homeTeam}_vs_${event.awayTeam}").body.string()
-            try {
-                val parsedEvent = parseJson<SportsDbResponse>(resp).events.first()
-                eventsData[event.id] = parsedEvent
-                return parsedEvent
-            } catch (e: MismatchedInputException){
-                Log.e("CalcioStreaming - Data Error", e.toString())
-                return null
-            } catch (e: com.fasterxml.jackson.core.JsonParseException){
-                Log.e("CalcioStreaming - Data Error", e.toString())
-                return null
-            }
+            val url = "$theSportsDB/searchevents.php?e=${event.homeTeam}_vs_${event.awayTeam}"
+            val resp = app.get(url).body.string()
+            val parsedEvent = tryParseJson<SportsDbResponse>(resp)?.events?.first() ?: return null
+            eventsData[event.id] = parsedEvent
+            return parsedEvent
         }
     }
 
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+        if (events.isNotEmpty()){
+            return newHomePageResponse(
+                listOf(
+                    HomePageList(
+                        "Live", events, true
+                    )
+                ), false
+            )
+        }else {
+            val resp = app.get("$mainUrl/api/events.php").body.string()
+            val respEvents = tryParseJson<JSONResponse>(resp) ?: return null
+            val events = respEvents.events
+            val searchResponses = events.mapNotNull { event ->
+                if (event.status == "live") {
+                    val eventData = getEventData(event)
+                    newLiveSearchResponse(
+                        name = event.title,
+                        url = event.toJson()
+                    ) {
+                        eventData?.let {
+//                            Log.d("CalcioStreaming - Thumb", it.strThumb)
+                            this.posterUrl = it.strThumb
+                        }
+                    }
+                } else {
+                    null
+                }
+            }
+            Companion.events.addAll(searchResponses)
+
+            return newHomePageResponse(
+                listOf(
+                    HomePageList(
+                        "Live", searchResponses, true
+                    )
+                ), false
+            )
+        }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse>? {
+        if (events.isNotEmpty()){
+            return events.filter { it.name.lowercase().contains(query.lowercase().trim()) }
+        }else{
+            val resp = app.get("$mainUrl/api/events.php").body.string()
+            val respEvents = tryParseJson<JSONResponse>(resp) ?: return null
+            val events = respEvents.events
+            val searchResponses = events.mapNotNull { event ->
+                if (event.status == "live") {
+                    val eventData = getEventData(event)
+                    newLiveSearchResponse(
+                        name = event.title,
+                        url = event.toJson()
+                    ) {
+                        eventData?.let {
+//                            Log.d("CalcioStreaming - Thumb", it.strThumb)
+                            this.posterUrl = it.strThumb
+                        }
+                    }
+                } else {
+                    null
+                }
+            }
+            Companion.events.addAll(searchResponses)
+            return searchResponses.filter { it.name.lowercase().contains(query.lowercase().trim()) }
+        }
+    }
 
     override suspend fun load(url: String): LoadResponse {
         val event = parseJson<Event>(url)
         val data = getEventData(event)
-        val posterUrl = data?.strPoster
-        val bannerUrl = data?.strBanner
+        val bannerUrl = data?.strThumb
+        val posterUrl = data?.strPoster ?: bannerUrl
         val title = event.title
         return newLiveStreamLoadResponse(title, url = url, dataUrl = event.streams.toJson()){
             this.posterUrl = posterUrl
@@ -97,10 +128,54 @@ class CalcioStreaming : MainAPI() {
         }
     }
 
+    private suspend fun extractVideoStream(url: String, name: String): Link? {
+        return if(url.contains("sportsonlinee")){
+            extractSportsOnline(name, url, 0)
+        } else if(url.contains("zicotv")) {
+            extractZicoTv(name, url)
+        }else {
+            null
+        }
+    }
+
+    private suspend fun extractZicoTv(name: String, url: String): Link?{
+        val resp = app.get(url).document
+        val script = resp.body().selectFirst("script") ?: return null
+        val variable = "ZT_SOURCES ?= ?(.*);".toRegex().find(script.toString())?.groupValues?.firstOrNull() ?: return null
+        val sourceListNormalized = variable.replaceBefore("[{", "").replaceAfterLast("}]", "").replace("\\/", "/")
+        val sourceList = tryParseJson<List<ZicoTvSources>>(sourceListNormalized) ?: return null
+        val ref = url.split("/").subList(0,3).joinToString("/") + "/"
+       return Link(name=name, url = sourceList[0].url, ref = ref)
+    }
+
+    private suspend fun extractSportsOnline(
+        name: String,
+        url: String,
+        n: Int
+    ): Link? {
+        if (url.toHttpUrlOrNull() == null) return null
+        if (n > 10) return null
+
+        val doc = app.get(url).document
+        val link = doc.selectFirst("iframe")?.attr("src") ?: return null
+        val referer = "https://" + url.toHttpUrl().host
+        val resp2 = app.get(
+            fixUrl(link), referer = referer, headers = mapOf(
+                "Sec-Fetch-Dest" to "iframe"
+            )
+        )
+        val newPage = resp2.document
+        val streamUrl = getStreamUrl(newPage.toString())
+        return if (newPage.select("script").size >= 6 && !streamUrl.isNullOrEmpty()) {
+            Link(name = name, ref = fixUrl(link), url = streamUrl)
+        } else {
+            extractSportsOnline(name = name, url = link, n = n + 1)
+        }
+    }
+
     fun getStreamUrl(html: String): String? {
         val configMatch = Regex("""window\._econfig\s*=\s*['"]([^'"]+)['"]""").find(html)
             ?: return null
-
         try {
             val encodedConfig = configMatch.groupValues[1]
             val decodedConfig =
@@ -141,44 +216,6 @@ class CalcioStreaming : MainAPI() {
         }
     }
 
-    /*private suspend fun extractVideoStream(url: String): Pair<String, String>? {
-        return if(url.contains("sportsonlinee")){
-            extractSportsOnline(url, 0)
-        } else if(url.contains("zicotv")) {
-            extractZicoTv(url)
-        }else {
-            null
-        }
-    }
-
-    private suspend fun extractZicoTv(url: String): Pair<String, String>?{
-        val resp = app.get(url)
-    }*/
-
-    private suspend fun extractSportsOnline(
-        url: String,
-        n: Int
-    ): Pair<String, String>? {
-        if (url.toHttpUrlOrNull() == null) return null
-        if (n > 10) return null
-
-        val doc = app.get(url).document
-        val link = doc.selectFirst("iframe")?.attr("src") ?: return null
-        val referer = "https://" + url.toHttpUrl().host
-        val resp2 = app.get(
-            fixUrl(link), referer = referer, headers = mapOf(
-                "Sec-Fetch-Dest" to "iframe"
-            )
-        )
-        val newPage = resp2.document
-        val streamUrl = getStreamUrl(newPage.toString())
-        return if (newPage.select("script").size >= 6 && !streamUrl.isNullOrEmpty()) {
-            streamUrl to fixUrl(link)
-        } else {
-            extractSportsOnline(url = link, n = n + 1)
-        }
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -187,22 +224,17 @@ class CalcioStreaming : MainAPI() {
     ): Boolean {
         val streams = parseJson<List<Stream>>(data)
         val links = streams.mapNotNull { stream ->
-            Log.d("BANANA", stream.toJson())
+            Log.d("CalcioStreaming", "Fetched source: " + stream.toJson())
             try {
-                val link = extractSportsOnline(url = stream.url, n = 0)
-//            Log.d("CalcioStreaming", "Extracted - $link")
-                if (link != null) {
-                    Link(name = "${stream.label} ${stream.lang}", ref = link.second, url = link.first)
-                } else {
-                    null
-                }
-            } catch (_: Exception){
+                extractVideoStream(url = stream.url, name = "${stream.label} ${stream.lang}")
+            } catch (e: Exception){
+                Log.e("CalcioStreaming", e.toString())
                 null
             }
 
         }
         links.forEach {
-            Log.d("BANANA", it.toJson())
+            Log.d("CalcioStreaming", it.toJson())
             callback(
                 newExtractorLink(
                     source = this.name,
@@ -295,7 +327,14 @@ data class SportsDbEvent(
     @JsonProperty("strThumb")
     val strThumb: String,
     @JsonProperty("strPoster")
-    val strPoster: String,
+    val strPoster: String?,
     @JsonProperty("strBanner")
-    val strBanner: String,
+    val strBanner: String?,
+)
+
+data class ZicoTvSources(
+    @JsonProperty("label")
+    val label: String,
+    @JsonProperty("url")
+    val url: String
 )
