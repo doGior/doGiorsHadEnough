@@ -1,7 +1,6 @@
 package it.dogior.hadEnough
 
 import android.content.SharedPreferences
-import com.lagradost.api.Log
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.HomePageList
@@ -23,19 +22,22 @@ import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
 import org.schabi.newpipe.extractor.InfoItem
 import org.schabi.newpipe.extractor.InfoItem.InfoType
+import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 import org.schabi.newpipe.extractor.kiosk.KioskInfo
 import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
+import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.services.youtube.YoutubeService
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
-open class YouTubeProvider(language: String, private val sharedPrefs: SharedPreferences?) : MainAPI() {
+open class YouTubeProvider(val country: String = "IT", val language: String = "it", private val sharedPrefs: SharedPreferences?) : MainAPI() {
     override var mainUrl = MAIN_URL
     override var name = "YouTube"
     override val supportedTypes = setOf(TvType.Others)
@@ -93,7 +95,14 @@ open class YouTubeProvider(language: String, private val sharedPrefs: SharedPref
     }
 
     fun playlistToSearchResponseList(url: String, page: Int): HomePageList? {
-        val playlistInfo = PlaylistInfo.getInfo(url)
+        val extractor = service.getPlaylistExtractor(url)
+
+        extractor.forceLocalization(Localization(language))
+        extractor.forceContentCountry(ContentCountry(country))
+        extractor.fetchPage()
+
+        val playlistInfo = PlaylistInfo.getInfo(extractor)
+
         val videos = if (page == 1) {
             playlistInfo.relatedItems.toMutableList()
         } else {
@@ -129,7 +138,14 @@ open class YouTubeProvider(language: String, private val sharedPrefs: SharedPref
     }
 
     fun channelToSearchResponseList(url: String, page: Int): HomePageList? {
-        val channelInfo = ChannelInfo.getInfo(url)
+        val extractor = service.getChannelExtractor(url)
+
+        extractor.forceLocalization(Localization(language))
+        extractor.forceContentCountry(ContentCountry(country))
+        extractor.fetchPage()
+
+        val channelInfo = ChannelInfo.getInfo(extractor)
+
         val tabsLinkHandlers = channelInfo.tabs
         val tabs = tabsLinkHandlers.map { ChannelTabInfo.getInfo(service, it) }
         val videoTab = tabs.first { it.name == "videos" }
@@ -172,6 +188,7 @@ open class YouTubeProvider(language: String, private val sharedPrefs: SharedPref
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        NewPipe.setupLocalization(Localization(language), ContentCountry(country))
         val isTrendingEnabled = sharedPrefs?.getBoolean("trending", true) ?: true
         val sections = mutableListOf<HomePageList>()
         if (isTrendingEnabled) {
@@ -226,7 +243,15 @@ open class YouTubeProvider(language: String, private val sharedPrefs: SharedPref
                 listOf(SEARCH_CONTENT_FILTER),
                 null
             )
-            val searchInfo = SearchInfo.getInfo(service, SearchQueryHandler(SEARCH_HANDLER))
+
+            val extractor = service.getSearchExtractor(SearchQueryHandler(SEARCH_HANDLER))
+
+            extractor.forceLocalization(Localization(language))
+            extractor.forceContentCountry(ContentCountry(country))
+            extractor.fetchPage()
+
+            val searchInfo = SearchInfo.getInfo(extractor)
+
             pageResults.addAll(searchInfo.relatedItems.toMutableList())
             SEARCH_PAGE = searchInfo.nextPage
             hasNextPage = searchInfo.hasNextPage()

@@ -7,7 +7,7 @@
     <string name="localization_tw">Change localization</string>
     <string name="language_tw">Language</string>
     <string name="country_tw">Country</string>
-    <string name="country_hint">UK</string>
+    <string name="country_hint">GB</string>
     <string name="language_hint">en</string>
     <string name="trending_text">Trending</string>
     <string name="addPlaylist_tw">Add playlist or channel</string>

@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
 
-class YouTubeChannelProvider(language: String) : YouTubeProvider(language, null) {
+class YouTubeChannelProvider(language: String) : YouTubeProvider(language = language, sharedPrefs = null) {
     override var name = "YouTube Channels"
     override val hasMainPage = false
     override val SEARCH_CONTENT_FILTER = "channels"

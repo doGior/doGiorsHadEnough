@@ -10,7 +10,7 @@ import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
-class YouTubePlaylistsProvider(language: String) : YouTubeProvider(language, null) {
+class YouTubePlaylistsProvider(language: String) : YouTubeProvider(language = language, sharedPrefs = null) {
     override var name = "YouTube Playlists"
     override val hasMainPage = false
     override val SEARCH_CONTENT_FILTER = "playlists"

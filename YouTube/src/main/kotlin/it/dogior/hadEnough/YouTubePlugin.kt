@@ -23,7 +23,7 @@ class YouTubePlugin : Plugin() {
         NewPipe.setupLocalization(Localization(language), ContentCountry(country))
 
         // All providers should be added in this manner
-        registerMainAPI(YouTubeProvider(language, sharedPref))
+        registerMainAPI(YouTubeProvider(country = country, language = language, sharedPrefs = sharedPref))
         registerMainAPI(YouTubePlaylistsProvider(language))
         registerMainAPI(YouTubeChannelProvider(language))
 
