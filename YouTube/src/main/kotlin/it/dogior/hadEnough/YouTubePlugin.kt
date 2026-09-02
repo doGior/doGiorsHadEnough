@@ -20,12 +20,11 @@ class YouTubePlugin : Plugin() {
 
         if (language.isNullOrEmpty()) {language = "it"}
         if (country.isNullOrEmpty()) {country = "IT"}
-        NewPipe.setupLocalization(Localization(language), ContentCountry(country))
 
         // All providers should be added in this manner
-        registerMainAPI(YouTubeProvider(country = country, language = language, sharedPrefs = sharedPref))
-        registerMainAPI(YouTubePlaylistsProvider(language))
-        registerMainAPI(YouTubeChannelProvider(language))
+        registerMainAPI(YouTubeProvider(sharedPrefs = sharedPref))
+        registerMainAPI(YouTubePlaylistsProvider(sharedPrefs = sharedPref))
+        registerMainAPI(YouTubeChannelProvider(sharedPrefs = sharedPref))
 
         openSettings = {context ->
             val activity = context as AppCompatActivity

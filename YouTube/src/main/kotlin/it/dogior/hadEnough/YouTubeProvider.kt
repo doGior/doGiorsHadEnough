@@ -20,6 +20,8 @@ import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.loadExtractor
+import it.dogior.hadEnough.settings.HomepageSettings.HomeSection
+import it.dogior.hadEnough.settings.HomepageSettings.Companion.migrateFromSetPreferences
 import org.schabi.newpipe.extractor.InfoItem
 import org.schabi.newpipe.extractor.InfoItem.InfoType
 import org.schabi.newpipe.extractor.NewPipe
@@ -37,18 +39,29 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeService
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
-open class YouTubeProvider(val country: String = "IT", val language: String = "it", private val sharedPrefs: SharedPreferences?) : MainAPI() {
+open class YouTubeProvider(private val sharedPrefs: SharedPreferences?) : MainAPI() {
     override var mainUrl = MAIN_URL
     override var name = "YouTube"
     override val supportedTypes = setOf(TvType.Others)
     override val hasMainPage = true
-    override var lang = language
+    override var lang = "it"
+    var country = "IT"
     open val SEARCH_CONTENT_FILTER = "videos"
     override var sequentialMainPage = true
 
     val service: YoutubeService = ServiceList.YouTube
 
 
+    init {
+        var language = sharedPrefs?.getString("language", "it")
+        var c = sharedPrefs?.getString("country", "IT")
+
+        if (language.isNullOrEmpty()) {language = "it"}
+        if (c.isNullOrEmpty()) {c = "IT"}
+        lang = language
+        country = c
+        NewPipe.setupLocalization(Localization(lang), ContentCountry(country))
+    }
     companion object {
         const val MAIN_URL = "https://www.youtube.com"
         var SEARCH_PAGE: Page? = null
@@ -97,7 +110,7 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
     fun playlistToSearchResponseList(url: String, page: Int): HomePageList? {
         val extractor = service.getPlaylistExtractor(url)
 
-        extractor.forceLocalization(Localization(language))
+        extractor.forceLocalization(Localization(lang))
         extractor.forceContentCountry(ContentCountry(country))
         extractor.fetchPage()
 
@@ -140,7 +153,7 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
     fun channelToSearchResponseList(url: String, page: Int): HomePageList? {
         val extractor = service.getChannelExtractor(url)
 
-        extractor.forceLocalization(Localization(language))
+        extractor.forceLocalization(Localization(lang))
         extractor.forceContentCountry(ContentCountry(country))
         extractor.fetchPage()
 
@@ -188,18 +201,22 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        NewPipe.setupLocalization(Localization(language), ContentCountry(country))
         val isTrendingEnabled = sharedPrefs?.getBoolean("trending", true) ?: true
         val sections = mutableListOf<HomePageList>()
         if (isTrendingEnabled) {
             val videos = getTrendingVideoUrls(page)
             videos?.let { sections.add(it) }
         }
-        val playlistsData = sharedPrefs?.getStringSet("playlists", emptySet()) ?: emptySet()
-        if (playlistsData.isNotEmpty()) {
-            val triples = playlistsData.map { parseJson<Triple<String, String, Long>>(it) }
-            val list = triples.amap { data ->
-                val playlistUrl = data.first
+        val savedPlaylistsJson = sharedPrefs?.getString("savedLists", null)
+        val savedPlaylists = if (savedPlaylistsJson.isNullOrEmpty()){
+            val playlistsData = sharedPrefs?.getStringSet("playlists", emptySet()) ?: emptySet()
+            migrateFromSetPreferences(playlistsData)
+        }else{
+            parseJson<List<HomeSection>>(savedPlaylistsJson)
+        }
+        if (savedPlaylists.isNotEmpty()) {
+            val list = savedPlaylists.amap { data ->
+                val playlistUrl = data.url
                 val urlPath = playlistUrl.substringAfter("youtu").substringAfter("/")
                 val isPlaylist = urlPath.startsWith("playlist?list=")
                 val isChannel = urlPath.startsWith("@") || urlPath.startsWith("channel")
@@ -210,7 +227,7 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
                 } else {
                     null
                 }
-                customSections to data.third
+                customSections to data.position
             }
             list.sortedBy { it.second }.forEach {
                 val homepageSection = it.first
@@ -223,7 +240,7 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
         if (sections.isEmpty()) {
             sections.add(
                 HomePageList(
-                    "All sections are disabled. Go to the settings to enable them",
+                    "There are no sections to load. Go to the settings to add them",
                     emptyList()
                 )
             )
@@ -246,7 +263,7 @@ open class YouTubeProvider(val country: String = "IT", val language: String = "i
 
             val extractor = service.getSearchExtractor(SearchQueryHandler(SEARCH_HANDLER))
 
-            extractor.forceLocalization(Localization(language))
+            extractor.forceLocalization(Localization(lang))
             extractor.forceContentCountry(ContentCountry(country))
             extractor.fetchPage()
 

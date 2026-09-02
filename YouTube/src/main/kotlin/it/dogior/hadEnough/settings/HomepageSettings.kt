@@ -19,10 +19,12 @@ import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import it.dogior.hadEnough.YouTubePlugin
 import android.widget.LinearLayout
 import android.widget.RelativeLayout
+import androidx.core.view.isInvisible
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.CommonActivity.showToast
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import it.dogior.hadEnough.BuildConfig
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +34,7 @@ import kotlinx.coroutines.withContext
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
-import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
+import kotlin.collections.forEach
 
 /**
  * A simple [Fragment] subclass.
@@ -45,13 +47,30 @@ class HomepageSettings(
 ) :
     BottomSheetDialogFragment() {
 
+    companion object{
+        fun migrateFromSetPreferences(playlistsSet: Set<String>): List<HomeSection> {
+            val homeSections = mutableListOf<HomeSection>()
+            val oldList = playlistsSet.mapNotNull { tryParseJson<Triple<String, String, Long>>(it) }
+            oldList.sortedBy { it.third }.forEachIndexed { index, triple ->
+                homeSections.add(
+                    HomeSection(name = triple.second, url = triple.first, position = index)
+                )
+            }
+            return homeSections
+        }
+    }
     private fun <T : View> View.findView(name: String): T {
         val id = plugin.resources!!.getIdentifier(name, "id", BuildConfig.LIBRARY_PACKAGE_NAME)
         return this.findViewById(id)
     }
 
     private fun View.makeTvCompatible() {
-        this.setPadding(this.paddingLeft + 10,this.paddingTop + 10,this.paddingRight + 10,this.paddingBottom + 10)
+        this.setPadding(
+            this.paddingLeft + 10,
+            this.paddingTop + 10,
+            this.paddingRight + 10,
+            this.paddingBottom + 10
+        )
         this.background = getDrawable("outline")
     }
 
@@ -97,21 +116,25 @@ class HomepageSettings(
         val youtubeUrlEt = view.findView<TextView>("youtubeUrl_editText")
         youtubeUrlEt.hint = getString("add_playlist_hint")
 
-        var playlistsSet = mutableSetOf<String>()
-        sharedPref?.getStringSet("playlists", emptySet())?.let {
-            playlistsSet.addAll(it)
-            Log.d("YoutubeSettings", "Playlists: $playlistsSet")
+        val savedList = mutableListOf<HomeSection>()
+        sharedPref?.getString("savedLists", null)?.let {
+            Log.d("YoutubeSettings", "Playlists: $it")
+            val saves = parseJson<List<HomeSection>>(it)
+            savedList.removeAll { true }
+            savedList.addAll(saves)
+            savedList.sortBy { item -> item.position }
+
+        } ?: sharedPref?.getStringSet("playlists", emptySet())?.let {
+            Log.d("YoutubeSettings", "Playlists set: $it")
+            savedList.addAll(migrateFromSetPreferences(it))
+
+            with(sharedPref?.edit()) {
+                this?.putString("savedLists", savedList.toJson())
+                this?.apply()
+            }
         }
         val playlistsList = view.findView<LinearLayout>("playlists_list")
-
-        val tripleList = playlistsSet.map {
-            parseJson<Triple<String, String, Long>>(it)
-        }.sortedBy { it.third }
-        tripleList.forEach {
-            playlistsList.addView(
-                playlistsRow(it, sharedPref, playlistsSet, playlistsList)
-            )
-        }
+        renderList(savedList, playlistsList)
 
 
         val addSectionButton = view.findView<ImageButton>("addSection_button")
@@ -122,43 +145,33 @@ class HomepageSettings(
             override fun onClick(v: View?) {
                 addSectionButton.isClickable = false
                 GlobalScope.launch {
-                    val now = System.currentTimeMillis()
                     val item = try {
-                        withContext(Dispatchers.IO) {
-                            Triple(
-                                youtubeUrlEt.text.toString(),
-                                getName(youtubeUrlEt.text.toString()),
-                                now
-                            )
-                                .toJson()
-                        }
-                    } catch (e: NoSuchMethodError) {
+                        HomeSection(
+                            name = getName(youtubeUrlEt.text.toString()) ?: "Unknown",
+                            url = youtubeUrlEt.text.toString(),
+                            position = savedList.maxOf { it.position } + 1
+                        )
+                    } catch (_: NoSuchMethodError) {
                         addSectionButton.isClickable = true
                         showToast("Error")
                         return@launch
                     }
 
-                    Log.d("YoutubeProvider", item)
-                    sharedPref?.getStringSet("playlists", emptySet())?.let {
-                        playlistsSet = mutableSetOf()
-                        playlistsSet.addAll(it)
-                        playlistsSet.add(item)
+                    Log.d("YoutubeProvider", item.toJson())
+                    sharedPref?.getString("savedLists", null)?.let {
+                        val saves = parseJson<List<HomeSection>>(it)
+                        savedList.removeAll { true }
+                        savedList.addAll(saves)
+                        savedList.add(item)
                     }
                     with(sharedPref?.edit()) {
-                        this?.putStringSet("playlists", playlistsSet)
+                        this?.putString("savedLists", savedList.toJson())
                         this?.apply()
                     }
                     withContext(Dispatchers.Main) {
                         youtubeUrlEt.text = ""
                         addSectionButton.isClickable = true
-                        playlistsList.addView(
-                            playlistsRow(
-                                item,
-                                sharedPref,
-                                playlistsSet,
-                                playlistsList
-                            )
-                        )
+                        renderList(savedList, playlistsList)
                     }
                 }
             }
@@ -173,8 +186,10 @@ class HomepageSettings(
             override fun onClick(v: View?) {
                 with(sharedPref?.edit()) {
                     this?.putBoolean("trending", trendingSwitch.isChecked)
+                    this?.putString("savedLists", savedList.toJson())
                     this?.apply()
                 }
+                showToast("Saved")
                 dismiss()
             }
         })
@@ -182,22 +197,13 @@ class HomepageSettings(
     }
 
     private fun playlistsRow(
-        itemjson: String,
+        item: HomeSection,
         sharedPref: SharedPreferences?,
-        playlistsSet: MutableSet<String>,
+        saves: MutableList<HomeSection>,
         playlistList: LinearLayout,
     ): RelativeLayout {
-        val item = parseJson<Triple<String, String, Long>>(itemjson)
-        return playlistsRow(item, sharedPref, playlistsSet, playlistList)
-    }
-
-    private fun playlistsRow(
-        item: Triple<String, String, Long>,
-        sharedPref: SharedPreferences?,
-        playlistsSet: MutableSet<String>,
-        playlistList: LinearLayout,
-    ): RelativeLayout {
-        val title = item.second
+        val title = item.name
+        val maxIndex = saves.maxOf { it.position }
         // Create the RelativeLayout
         val relativeLayout = RelativeLayout(this@HomepageSettings.requireContext()).apply {
             layoutParams = RelativeLayout.LayoutParams(
@@ -219,17 +225,22 @@ class HomepageSettings(
             textSize = 15f
         }
 
-        val labelParams = RelativeLayout.LayoutParams(
-            RelativeLayout.LayoutParams.WRAP_CONTENT,
-            RelativeLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
-            addRule(RelativeLayout.ALIGN_PARENT_START)
-            marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8)
+        val moveUpButton = ImageButton(this.context).apply {
+            id = generateViewId()
+            setImageDrawable(getDrawable("triangle"))
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isClickable = true
+            isFocusable = true
         }
 
+        val moveDownButton = ImageButton(this.context).apply {
+            id = generateViewId()
+            setImageDrawable(getDrawable("triangle_down"))
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isClickable = true
+            isFocusable = true
+        }
 
-        // Create the ImageButton
         val deleteButton = ImageButton(this.context).apply {
             id = generateViewId()
             setImageDrawable(getDrawable("delete_icon"))
@@ -238,32 +249,99 @@ class HomepageSettings(
             isFocusable = true
         }
 
-        val buttonParams = RelativeLayout.LayoutParams(
+        val labelParams = RelativeLayout.LayoutParams(
             RelativeLayout.LayoutParams.WRAP_CONTENT,
             RelativeLayout.LayoutParams.WRAP_CONTENT
-        ).apply {
-            addRule(RelativeLayout.ALIGN_PARENT_END)
-            addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
-            marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8) // Convert dp to px
-        }
+        )
+            .apply {
+                addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
+                addRule(RelativeLayout.ALIGN_PARENT_START)
+                addRule(RelativeLayout.LEFT_OF, moveUpButton.id)
+                marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8)
+            }
 
-        relativeLayout.addView(label, labelParams)
-        relativeLayout.addView(deleteButton, buttonParams)
 
-        val delete = relativeLayout.findViewById<ImageButton>(deleteButton.id)
-        delete.setOnClickListener(object : View.OnClickListener {
+        val moveUpButtonParams = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.WRAP_CONTENT,
+            RelativeLayout.LayoutParams.WRAP_CONTENT
+        )
+            .apply {
+                if (item.position == maxIndex){
+                    addRule(RelativeLayout.LEFT_OF, deleteButton.id)
+                }else{
+                    addRule(RelativeLayout.LEFT_OF, moveDownButton.id)
+                }
+
+                addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
+                marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8) // Convert dp to px
+            }
+        moveUpButton.setOnClickListener(object : View.OnClickListener {
             override fun onClick(v: View?) {
-                val deleteSuccessfull = playlistsSet.remove(item.toJson())
+//                Log.d("YoutubeSettings", item.toJson())
+                moveRow(item, -1, saves)?.let{ updatedList ->
+                    renderList(updatedList, playlistList)
+//                    Log.d("YoutubeSettings", updatedList.toJson())
+                }
+            }
+        })
+
+        val moveDownButtonParams = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.WRAP_CONTENT,
+            RelativeLayout.LayoutParams.WRAP_CONTENT
+        )
+            .apply {
+                addRule(RelativeLayout.LEFT_OF, deleteButton.id)
+                addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
+                marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8) // Convert dp to px
+            }
+        moveDownButton.setOnClickListener(object : View.OnClickListener {
+            override fun onClick(v: View?) {
+//                Log.d("YoutubeSettings", item.toJson())
+                moveRow(item, 1, saves)?.let{ updatedList ->
+                    renderList(updatedList, playlistList)
+//                    Log.d("YoutubeSettings", updatedList.toJson())
+                }
+            }
+        })
+
+
+        val deleteButtonParams = RelativeLayout.LayoutParams(
+            RelativeLayout.LayoutParams.WRAP_CONTENT,
+            RelativeLayout.LayoutParams.WRAP_CONTENT
+        )
+            .apply {
+                addRule(RelativeLayout.ALIGN_PARENT_END)
+                addRule(RelativeLayout.CENTER_VERTICAL) // Vertically center in parent
+                marginEnd = dpToPx(this@HomepageSettings.requireContext(), 8) // Convert dp to px
+                marginStart = dpToPx(this@HomepageSettings.requireContext(), 2)
+            }
+        deleteButton.setOnClickListener(object : View.OnClickListener {
+            override fun onClick(v: View?) {
+                val deleteSuccessfull = saves.remove(item)
                 if (deleteSuccessfull) {
                     with(sharedPref?.edit()) {
-                        this?.putStringSet("playlists", playlistsSet)
+                        this?.putString("savedLists", saves.toJson())
                         this?.apply()
                     }
                     playlistList.removeView(relativeLayout)
                     showToast("$title removed")
+                } else {
+                    showToast("Error removing $title")
                 }
             }
         })
+        if (item.position == 0){
+            moveUpButton.isInvisible = true
+        }
+        if (item.position == maxIndex){
+            moveDownButton.isInvisible = true
+        }
+
+        relativeLayout.addView(label, labelParams)
+        relativeLayout.addView(moveUpButton, moveUpButtonParams)
+        relativeLayout.addView(moveDownButton, moveDownButtonParams)
+        relativeLayout.addView(deleteButton, deleteButtonParams)
+
         return relativeLayout
     }
 
@@ -288,4 +366,41 @@ class HomepageSettings(
         val density = context.resources.displayMetrics.density
         return (dp * density).toInt()
     }
+
+    /* direction HAS TO BE either 1 (to move down) or -1 (to move up) */
+    private fun moveRow(
+        item: HomeSection,
+        direction: Int,
+        savedList: MutableList<HomeSection>
+    ): MutableList<HomeSection>? {
+        savedList.remove(item)
+
+        val targetPosition = item.position + direction
+
+//        Log.d("YoutubeSettings", "Item: ${item.name}\nStarting Position: ${item.position}\nTarget Position: $targetPosition")
+        if (targetPosition < 0 || targetPosition > savedList.maxOf { it.position }){
+            return null
+        }
+        val itemToSwap = savedList.firstOrNull { it.position == targetPosition }
+        itemToSwap?.position = item.position
+        item.position = targetPosition
+        savedList.add(item)
+//        Log.d("YoutubeSettings",savedList.sortedBy{it.position}.toJson())
+        return savedList
+    }
+
+    private fun renderList(savedList: MutableList<HomeSection>, playlistsList: LinearLayout) {
+        playlistsList.removeAllViews()
+        savedList.sortedBy { it.position }.forEach {
+            playlistsList.addView(
+                playlistsRow(it, sharedPref, savedList, playlistsList)
+            )
+        }
+    }
+
+    data class HomeSection(
+        val name: String,
+        val url: String,
+        var position: Int
+    )
 }

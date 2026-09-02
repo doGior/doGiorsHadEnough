@@ -1,5 +1,6 @@
 package it.dogior.hadEnough
 
+import android.content.SharedPreferences
 import com.lagradost.cloudstream3.Episode
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.TvType
@@ -7,14 +8,22 @@ import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import org.schabi.newpipe.extractor.channel.ChannelInfo
 import org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.Localization
 
-class YouTubeChannelProvider(language: String) : YouTubeProvider(language = language, sharedPrefs = null) {
+class YouTubeChannelProvider(sharedPrefs: SharedPreferences?) : YouTubeProvider(sharedPrefs = sharedPrefs) {
     override var name = "YouTube Channels"
     override val hasMainPage = false
     override val SEARCH_CONTENT_FILTER = "channels"
 
     override suspend fun load(url: String): LoadResponse {
-        val channelInfo = ChannelInfo.getInfo(url)
+        val extractor = service.getChannelExtractor(url)
+
+        extractor.forceLocalization(Localization(lang))
+        extractor.forceContentCountry(ContentCountry(country))
+        extractor.fetchPage()
+
+        val channelInfo = ChannelInfo.getInfo(extractor)
         val avatars = try {
             channelInfo.avatars.last().url
         } catch (_: Exception){

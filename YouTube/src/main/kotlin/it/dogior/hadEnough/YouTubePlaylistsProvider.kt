@@ -1,5 +1,6 @@
 package it.dogior.hadEnough
 
+import android.content.SharedPreferences
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.Episode
@@ -7,10 +8,12 @@ import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
+import org.schabi.newpipe.extractor.localization.ContentCountry
+import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 
-class YouTubePlaylistsProvider(language: String) : YouTubeProvider(language = language, sharedPrefs = null) {
+class YouTubePlaylistsProvider(sharedPrefs: SharedPreferences?) : YouTubeProvider(sharedPrefs = sharedPrefs) {
     override var name = "YouTube Playlists"
     override val hasMainPage = false
     override val SEARCH_CONTENT_FILTER = "playlists"
@@ -28,7 +31,13 @@ class YouTubePlaylistsProvider(language: String) : YouTubeProvider(language = la
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val playlistInfo = PlaylistInfo.getInfo(url)
+        val extractor = service.getPlaylistExtractor(url)
+
+        extractor.forceLocalization(Localization(lang))
+        extractor.forceContentCountry(ContentCountry(country))
+        extractor.fetchPage()
+
+        val playlistInfo = PlaylistInfo.getInfo(extractor)
         val banner =
             if (playlistInfo.banners.isNotEmpty()) playlistInfo.banners.last().url else playlistInfo.thumbnails.last().url
         val eps = playlistInfo.relatedItems.toMutableList()
