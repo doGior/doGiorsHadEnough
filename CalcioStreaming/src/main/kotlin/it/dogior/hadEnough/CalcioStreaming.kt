@@ -139,12 +139,14 @@ class CalcioStreaming : MainAPI() {
 
     private suspend fun extractZicoTv(name: String, url: String): Link?{
         val resp = app.get(url).document
-        val script = resp.body().selectFirst("script") ?: return null
+        val script = resp.body().selectFirst("script")
+        Log.d("SOURCE-ZICOTV", script?.data() ?: "null")
+        if (script == null) return null
         val variable = "ZT_SOURCES ?= ?(.*);".toRegex().find(script.toString())?.groupValues?.firstOrNull() ?: return null
         val sourceListNormalized = variable.replaceBefore("[{", "").replaceAfterLast("}]", "").replace("\\/", "/")
         val sourceList = tryParseJson<List<ZicoTvSources>>(sourceListNormalized) ?: return null
         val ref = url.split("/").subList(0,3).joinToString("/") + "/"
-       return Link(name=name, url = sourceList[0].url, ref = ref)
+       return Link(name=name, url = sourceList.first{it.url != null}.url!!, ref = ref)
     }
 
     private suspend fun extractSportsOnline(
@@ -335,5 +337,5 @@ data class ZicoTvSources(
     @JsonProperty("label")
     val label: String,
     @JsonProperty("url")
-    val url: String
+    val url: String?
 )
