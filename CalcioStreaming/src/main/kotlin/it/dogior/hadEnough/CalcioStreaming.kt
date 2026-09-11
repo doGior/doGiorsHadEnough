@@ -1,7 +1,6 @@
 package it.dogior.hadEnough
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.fasterxml.jackson.databind.exc.MismatchedInputException
 import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.network.CloudflareKiller
@@ -19,7 +18,7 @@ import kotlin.io.encoding.Base64
 
 class CalcioStreaming : MainAPI() {
     override var lang = "it"
-    override var mainUrl = "https://corner.direttecommunity.online/"
+    override var mainUrl = "https://angolo.direttecommunity.online/"
     override var name = "CalcioStreaming"
     override val hasMainPage = true
     override val hasChromecastSupport = true
@@ -129,7 +128,7 @@ class CalcioStreaming : MainAPI() {
     }
 
     private suspend fun extractVideoStream(url: String, name: String): Link? {
-        return if(url.contains("sportsonlinee")){
+        return if(url.contains("sportsonlinee") || url.contains("sportsonliine")){
             extractSportsOnline(name, url, 0)
         } else if(url.contains("zicotv")) {
             extractZicoTv(name, url)
