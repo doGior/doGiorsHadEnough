@@ -56,7 +56,9 @@ class CalcioStreaming : MainAPI() {
                 ), false
             )
         }else {
-            val resp = app.get("$mainUrl/api/events.php").body.string()
+            val urlCheck = app.get(mainUrl)
+            val actualUrl = urlCheck.okhttpResponse.request.url.toString()
+            val resp = app.get(actualUrl + "api/events.php").body.string()
             val respEvents = tryParseJson<JSONResponse>(resp) ?: return null
             val events = respEvents.events
             val searchResponses = events.mapNotNull { event ->
