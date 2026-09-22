@@ -4,11 +4,9 @@ import it.dogior.hadEnough.*
 import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
-import it.dogior.hadEnough.util.StreamCenterLogger
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
 import android.content.Context
-import android.content.DialogInterface
 import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
@@ -18,7 +16,6 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PointF
 import android.graphics.RadialGradient
-import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.net.ConnectivityManager
@@ -39,7 +36,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ImageLoader
@@ -55,7 +51,6 @@ import java.util.Locale
 import kotlin.math.sin
 import kotlin.random.Random
 
-private const val MAIN_MENU_SUBMENU_REVEAL_DP = 116
 private const val VPN_COUNTRY_ENDPOINT = "https://speed.cloudflare.com/meta"
 private const val VPN_COUNTRY_FALLBACK_ENDPOINT = "https://www.cloudflare.com/cdn-cgi/trace"
 private val publicIpPattern = Regex("[0-9A-Fa-f:.]{3,45}")
@@ -83,8 +78,8 @@ private class SettingsAuroraDecoration(context: Context) : View(context) {
     private val pathTangent = FloatArray(2)
     private val publicIpColor = Color.parseColor(COLOR_PUBLIC_IP)
     private val auroraColors = intArrayOf(
-        Color.parseColor("#60DFF5"),
-        Color.parseColor("#A78BFA"),
+        Color.parseColor("#F2C066"),
+        Color.parseColor("#E39B63"),
         Color.parseColor(COLOR_SUPPORT),
     )
     private val stars = listOf(
@@ -302,8 +297,8 @@ private class SettingsAuroraDecoration(context: Context) : View(context) {
             height * 0.59f,
             radius,
             intArrayOf(
-                Color.argb(42, 165, 130, 255),
-                Color.argb(10, 98, 83, 198),
+                Color.argb(40, 244, 196, 108),
+                Color.argb(12, 214, 150, 84),
                 Color.TRANSPARENT,
             ),
             floatArrayOf(0f, 0.4f, 0.7f),
@@ -372,15 +367,17 @@ internal object StreamCenterStremioManifestRefreshNotice {
     }
 }
 
-class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
+class StreamCenterMenuFragment : StreamCenterBaseSettingsFragment() {
+    override val screenTitle: String = "StreamCenter"
+
     private var sourcesStatus: TextView? = null
+    private var homeStatus: TextView? = null
     private var vpnStatus: TextView? = null
     private var vpnCountryFlag: TextView? = null
     private var vpnCountryFlagPlaceholder: TextView? = null
     private var vpnCountryCodeText: TextView? = null
     private var vpnDnsText: TextView? = null
     private var mainContent: View? = null
-    private var openSubmenus = 0
     private var stremioManifestRefreshStarted = false
     private var iconPreloadContainer: FrameLayout? = null
     private var iconPreloadGeneration = 0
@@ -400,7 +397,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var connectivityManager: ConnectivityManager? = null
     private var vpnNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
-        markRestartNeeded()
         refreshStatusStrip()
     }
 
@@ -409,45 +405,86 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?,
     ): View {
-        resetRestartNeeded()
         refreshStremioManifestsOnSettingsOpen()
         val content = rootContainer().apply {
             clipToPadding = false
-            minimumHeight = minOf(
-                standardSubmenuMinimumHeight() + dp(MAIN_MENU_SUBMENU_REVEAL_DP),
-                (resources.displayMetrics.heightPixels * 0.9f).toInt(),
-            )
+            setPadding(paddingLeft, 0, paddingRight, paddingBottom)
         }
         mainContent = content
-        content.addView(
-            header(
-                title = "StreamCenter",
-                metadata = buildInfoBadges(),
-                centered = true,
-                titleEffect = true,
+
+        addAdaptiveCardGrid(
+            content,
+            listOf(
+                settingsMenuCard(
+                    title = "Home",
+                    summary = homeSummary(),
+                    icon = "🏠",
+                    accent = COLOR_HOME,
+                    onSummaryReady = { homeStatus = it },
+                ) {
+                    openScreen(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
+                },
+                settingsMenuCard(
+                    title = "Fonti",
+                    summary = sourcesSummary(),
+                    icon = "📡",
+                    accent = COLOR_SOURCES,
+                    onSummaryReady = { sourcesStatus = it },
+                ) {
+                    openScreen(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
+                },
+                settingsMenuCard(
+                    title = "Interfaccia",
+                    summary = "Prestazioni, effetti e modalità TV",
+                    icon = "✨",
+                    accent = COLOR_PERFORMANCE,
+                ) {
+                    openScreen(StreamCenterInterfaceSettingsFragment(), "StreamCenterInterfaceSettings")
+                },
+                settingsMenuCard(
+                    title = "Sistema",
+                    summary = "Dati, rete e diagnostica",
+                    icon = "⚙️",
+                    accent = COLOR_SUPPORT,
+                ) {
+                    openScreen(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
+                },
             ),
         )
-        val vpnInfo = LinearLayout(requireContext()).apply {
+
+        content.addView(buildNetworkStatusRow())
+
+        supportAurora = SettingsAuroraDecoration(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(112),
+            ).apply {
+                topMargin = dp(6)
+                leftMargin = -dp(16)
+                rightMargin = -dp(16)
+            }
+            setEffects(visualParticlesEnabled, visualPublicIpEnabled)
+        }.also(content::addView)
+        refreshAuroraEffects()
+
+        iconPreloadContainer = FrameLayout(requireContext()).apply {
+            visibility = View.INVISIBLE
+            layoutParams = LinearLayout.LayoutParams(1, 1)
+        }.also(content::addView)
+        preloadSettingsIcons()
+
+        return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    private fun buildNetworkStatusRow(): View {
+        val networkRow = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(4), dp(4), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                marginStart = dp(2)
-                bottomMargin = dp(2)
-            }
-        }
-        fun vpnSeparator(): TextView = counterText("•", 9).apply {
-            alpha = 0.42f
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                marginStart = dp(6)
-                marginEnd = dp(6)
-            }
+            ).apply { topMargin = dp(12) }
         }
         vpnStatus = counterText("VPN: OFF", 10).apply {
             text = vpnStatusText(isActive = false)
@@ -455,11 +492,17 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             alpha = 0.62f
             letterSpacing = 0.04f
             layoutParams = LinearLayout.LayoutParams(
-                dp(46),
+                0,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f,
             )
-        }.also(vpnInfo::addView)
-        vpnInfo.addView(vpnSeparator())
+        }.also(networkRow::addView)
+        val location = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            contentDescription = "Localizzazione della connessione"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }.also(networkRow::addView)
         FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(dp(19), dp(13))
             vpnCountryFlag = TextView(requireContext()).apply {
@@ -486,24 +529,24 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
             }.also(::addView)
-        }.also(vpnInfo::addView)
+        }.also(location::addView)
         vpnCountryCodeText = counterText("??", 9).apply {
             alpha = 0.62f
             setTextColor(Color.parseColor(COLOR_VPN_ON))
             letterSpacing = 0.06f
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
-                dp(18),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply {
                 marginStart = dp(4)
             }
-        }.also(vpnInfo::addView)
-        vpnInfo.addView(vpnSeparator())
+        }.also(location::addView)
         vpnDnsText = counterText("DNS: —", 9).apply {
             text = vpnDnsStatusText(null)
             alpha = 0.62f
             letterSpacing = 0.03f
+            gravity = Gravity.END
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
@@ -511,77 +554,9 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 1f,
             )
-        }.also(vpnInfo::addView)
-        content.addView(vpnInfo)
-        content.addView(headerConnector())
+        }.also(networkRow::addView)
 
-        val performanceCard = switchRow(
-            title = "Modalità Prestazioni",
-            checked = StreamCenterPlugin.isPerformanceModeEnabled(sharedPref),
-            accent = COLOR_PERFORMANCE,
-            icon = "⚡",
-        ) { enabled ->
-            sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_PERFORMANCE_MODE, enabled) }
-            refreshVisibleSettingsEffects()
-            saveToast(if (enabled) "Modalità Prestazioni ON" else "Modalità Prestazioni OFF")
-        }
-        (performanceCard.layoutParams as? LinearLayout.LayoutParams)?.topMargin = 0
-        content.addView(performanceCard)
-        addAdaptiveCardGrid(
-            content,
-            listOf(
-                settingsMenuCard(
-                    title = "Preferenze",
-                    icon = "🖼️",
-                    accent = COLOR_DISPLAY,
-                ) {
-                    showSubmenu(StreamCenterDisplaySettingsFragment(), "StreamCenterDisplaySettings")
-                },
-                settingsMenuCard(
-                    title = "Home",
-                    icon = "🏠",
-                    accent = COLOR_HOME,
-                ) {
-                    showSubmenu(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
-                },
-                settingsMenuCard(
-                    title = "Fonti",
-                    icon = "📡",
-                    accent = COLOR_SOURCES,
-                    status = "",
-                    onStatusReady = { sourcesStatus = it },
-                ) {
-                    showSubmenu(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
-                },
-                settingsMenuCard(
-                    title = "Supporto",
-                    icon = "❓",
-                    accent = COLOR_SUPPORT,
-                ) {
-                    showSubmenu(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
-                },
-            ),
-        )
-        supportAurora = SettingsAuroraDecoration(requireContext()).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(126),
-            ).apply {
-                topMargin = dp(4)
-                leftMargin = -dp(16)
-                rightMargin = -dp(16)
-            }
-            setEffects(visualParticlesEnabled, visualPublicIpEnabled)
-        }.also(content::addView)
-        refreshAuroraEffects()
-
-        iconPreloadContainer = FrameLayout(requireContext()).apply {
-            visibility = View.INVISIBLE
-            layoutParams = LinearLayout.LayoutParams(1, 1)
-        }.also(content::addView)
-        preloadSettingsIcons()
-
-        return scroll(content)
+        return networkRow
     }
 
     private fun refreshStremioManifestsOnSettingsOpen() {
@@ -622,6 +597,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         iconPreloadGeneration += 1
         iconPreloadContainer?.removeAllViews()
         sourcesStatus = null
+        homeStatus = null
         mainContent = null
         iconPreloadContainer = null
         supportAurora = null
@@ -687,27 +663,37 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         ImageLoader.run { imageView.loadImage(iconUrl) }
     }
 
-    override fun onDismiss(dialog: DialogInterface) {
-        if (consumeRestartNeeded()) {
-            offerRestartPrompt(
-                "Per applicare le modifiche è necessario riavviare l'app.\nVuoi riavviarla adesso?",
-            )
-        }
-        super.onDismiss(dialog)
+    private fun refreshStatusStrip() {
+        sourcesStatus?.text = sourcesSummary()
+        homeStatus?.text = homeSummary()
     }
 
-    private fun refreshStatusStrip() {
-        val activeStreamingSourceCount = StreamCenterPlugin.streamingSources.count { source ->
+    private fun sourcesSummary(): String {
+        val activeSources = StreamCenterPlugin.streamingSources.count { source ->
             StreamCenterPlugin.isStreamingSourceEnabled(sharedPref, source.key)
-        } + StreamCenterPlugin.getStremioAddons(sharedPref).count { addon ->
+        }
+        val activeAddons = StreamCenterPlugin.getStremioAddons(sharedPref).count { addon ->
             StreamCenterPlugin.isStremioAddonEnabled(sharedPref, addon.key)
         }
-        val torrentSummary = if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) {
-            " · Torrent On"
-        } else {
-            " · Torrent Off"
+        val parts = mutableListOf("$activeSources fonti attive")
+        if (activeAddons > 0) parts += "$activeAddons add-on"
+        if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) parts += "torrent"
+        return parts.joinToString(" · ")
+    }
+
+    private fun homeSummary(): String {
+        val sections = StreamCenterPlugin.getAllHomeSections(sharedPref)
+        val activeSections = sections.count { section ->
+            StreamCenterPlugin.isHomeSectionEnabled(sharedPref, section) &&
+                StreamCenterPlugin.isHomeCategoryEnabled(
+                    sharedPref,
+                    StreamCenterPlugin.homeSectionCategoryKey(section),
+                )
         }
-        sourcesStatus?.text = "$activeStreamingSourceCount fonti$torrentSummary"
+        val activeCategories = StreamCenterPlugin.homeCategories.count { categoryKey ->
+            StreamCenterPlugin.isHomeCategoryEnabled(sharedPref, categoryKey)
+        }
+        return "$activeSections sezioni attive · $activeCategories categorie"
     }
 
     private fun registerVpnStatusUpdates() {
@@ -947,131 +933,31 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
     }
 
-    private fun buildInfoBadges(): List<View> {
-        val infoLines = StreamCenterPlugin.getBuildInfoText().lines()
-        val badges = mutableListOf<View>()
-        infoLines.firstOrNull { it.startsWith("Commit ") }?.let { line ->
-            badges += headerInfoBadge(
-                label = "Commit",
-                value = line.removePrefix("Commit "),
-                style = HeaderInfoEffectStyle.COMMIT,
-            )
-        }
-        infoLines.firstOrNull { it.startsWith("Build ") }?.let { line ->
-            badges += headerInfoBadge(
-                label = "Build",
-                value = formatBuildValue(line.removePrefix("Build ")),
-                style = HeaderInfoEffectStyle.BUILD,
-            )
-        }
-        if (badges.size > 1) {
-            return listOf(LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    topMargin = dp(6)
-                }
-                badges.forEachIndexed { index, badge ->
-                    addView(
-                        badge,
-                        LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ).apply {
-                            if (index < badges.lastIndex) marginEnd = dp(6)
-                        },
-                    )
-                }
-            })
-        }
-        if (badges.isEmpty()) {
-            badges += bodyText(infoLines.firstOrNull() ?: "???", 12).apply {
-                gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    topMargin = dp(6)
-                }
-            }
-        }
-        return badges
-    }
-
-    private fun formatBuildValue(value: String): String {
-        val match = Regex("(\\d{2}/\\d{2}/\\d{4})\\s+(\\d{2}:\\d{2}:\\d{2})").find(value) ?: return value
-        return "${match.groupValues[1]} · ${match.groupValues[2]}"
-    }
-
     private fun settingsMenuCard(
         title: String,
-        summary: String? = null,
+        summary: String,
         icon: String,
         accent: String,
-        status: String? = null,
-        onStatusReady: ((TextView) -> Unit)? = null,
+        onSummaryReady: ((TextView) -> Unit)? = null,
         onClick: () -> Unit,
     ): LinearLayout {
-        val statusView = status?.let { chip(it, accent) }
         val arrow = chevron(accent)
-        val card = settingsRow(
+        val row = settingsRow(
             title = title,
             summary = summary,
             icon = icon,
             accent = accent,
             fillColor = COLOR_CARD,
-            statusView = statusView,
             trailingViews = listOf(arrow),
             touchTarget = arrow,
             onClick = onClick,
-        ).view
-        statusView?.let { onStatusReady?.invoke(it) }
-        return card
-    }
-
-    private fun showSubmenu(fragment: StreamCenterBaseSettingsFragment, tag: String) {
-        StreamCenterLogger.logMenu(
-            action = "Apertura sottomenu impostazioni",
-            metadata = mapOf(
-                "sottomenu" to tag,
-                "schermata" to fragment.javaClass.simpleName,
-            ),
         )
-        openSubmenus += 1
-        updateMainBackdrop()
-        fragment.onDismissed {
-            openSubmenus = (openSubmenus - 1).coerceAtLeast(0)
-            updateMainBackdrop()
-        }.show(parentFragmentManager, tag)
-    }
-
-    override fun shouldAnimateChevrons(): Boolean {
-        return super.shouldAnimateChevrons() && openSubmenus == 0
-    }
-
-    private fun updateMainBackdrop() {
-        val content = mainContent ?: return
-        val hasSubmenu = openSubmenus > 0
-        content.animate().cancel()
-        content.alpha = 1f
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            content.setRenderEffect(
-                if (hasSubmenu && visualBlurEnabled) {
-                    RenderEffect.createBlurEffect(dp(5).toFloat(), dp(5).toFloat(), Shader.TileMode.CLAMP)
-                } else {
-                    null
-                },
-            )
-        }
-        refreshChevronAnimations()
+        row.summary?.let { onSummaryReady?.invoke(it) }
+        return row.view
     }
 
     override fun refreshVisualEffectBackdrops() {
         refreshAuroraEffects()
-        updateMainBackdrop()
     }
 
     private fun refreshAuroraEffects(forcePublicIpRefresh: Boolean = false) {

@@ -1,5 +1,7 @@
 package it.dogior.hadEnough.catalog
 
+import it.dogior.hadEnough.util.youtubeTrailerUrl
+
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ActorRole
@@ -21,13 +23,6 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-
-internal data class StreamCenterKitsuRecommendation(
-    val id: Int,
-    val title: String,
-    val subtype: String?,
-    val posterUrl: String?,
-)
 
 internal data class StreamCenterKitsuMedia(
     val id: Int,
@@ -54,7 +49,6 @@ internal data class StreamCenterKitsuMedia(
     val trailerUrl: String?,
     val categories: List<String>,
     val characters: List<ActorData>,
-    val recommendations: List<StreamCenterKitsuRecommendation>,
     val anilistId: Int?,
     val malId: Int?,
 ) {
@@ -142,11 +136,6 @@ internal class StreamCenterKitsuCatalog(
         val charactersDeferred = async(Dispatchers.IO) {
             client.request("anime/$id/characters?include=character&page%5Blimit%5D=$PAGE_SIZE")
         }
-        val recommendationsDeferred = async(Dispatchers.IO) {
-            client.request(
-                "anime/$id/media-relationships?include=destination&page%5Blimit%5D=$PAGE_SIZE",
-            )
-        }
         val mappingsDeferred = async(Dispatchers.IO) {
             client.request("anime/$id/mappings?page%5Blimit%5D=$PAGE_SIZE")
         }
@@ -185,11 +174,9 @@ internal class StreamCenterKitsuCatalog(
             synopsis = cleanText(
                 attributes.optNullableString("synopsis") ?: attributes.optNullableString("description"),
             ),
-            trailerUrl = attributes.optNullableString("youtubeVideoId")
-                ?.let { "https://www.youtube.com/watch?v=$it" },
+            trailerUrl = youtubeTrailerUrl(attributes.optNullableString("youtubeVideoId")),
             categories = categories(root),
             characters = characters(charactersDeferred.await()),
-            recommendations = recommendations(recommendationsDeferred.await()),
             anilistId = mappings[ANILIST_SITE],
             malId = mappings[MAL_SITE],
         )
@@ -220,7 +207,6 @@ internal class StreamCenterKitsuCatalog(
                 val entry = data.optJSONObject(index) ?: continue
                 val id = entry.optNullableString("id")?.toIntOrNull() ?: continue
                 val attributes = entry.optJSONObject("attributes") ?: continue
-                if (attributes.optBoolean("nsfw", false)) continue
                 val titles = attributes.optJSONObject("titles")
                 val canonical = attributes.optNullableString("canonicalTitle") ?: continue
                 val title = preferredTitle(
@@ -315,41 +301,6 @@ internal class StreamCenterKitsuCatalog(
                 )
             }
         }.distinctBy { it.actor.name.lowercase(Locale.ROOT) }
-    }
-
-    private fun recommendations(root: JSONObject?): List<StreamCenterKitsuRecommendation> {
-        root ?: return emptyList()
-        val included = includedById(root, "anime")
-        val data = root.optJSONArray("data") ?: return emptyList()
-        return buildList {
-            for (index in 0 until data.length()) {
-                val relation = data.optJSONObject(index) ?: continue
-                val destinationId = relation.optJSONObject("relationships")
-                    ?.optJSONObject("destination")
-                    ?.optJSONObject("data")
-                    ?.optNullableString("id")
-                    ?: continue
-                val destination = included[destinationId] ?: continue
-                val id = destinationId.toIntOrNull() ?: continue
-                val attributes = destination.optJSONObject("attributes") ?: continue
-                val titles = attributes.optJSONObject("titles")
-                val canonical = attributes.optNullableString("canonicalTitle") ?: continue
-                val title = preferredTitle(
-                    canonical = canonical,
-                    english = titles?.optNullableString("en") ?: titles?.optNullableString("en_us"),
-                    romaji = titles?.optNullableString("en_jp"),
-                    native = titles?.optNullableString("ja_jp"),
-                ) ?: continue
-                add(
-                    StreamCenterKitsuRecommendation(
-                        id = id,
-                        title = title,
-                        subtype = attributes.optNullableString("subtype"),
-                        posterUrl = image(attributes.optJSONObject("posterImage")),
-                    ),
-                )
-            }
-        }.distinctBy(StreamCenterKitsuRecommendation::id)
     }
 
     private fun externalIds(root: JSONObject): Map<String, Int> {

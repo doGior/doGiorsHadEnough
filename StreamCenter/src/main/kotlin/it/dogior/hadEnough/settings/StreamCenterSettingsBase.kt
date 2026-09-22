@@ -3,6 +3,10 @@ package it.dogior.hadEnough.settings
 import it.dogior.hadEnough.*
 import it.dogior.hadEnough.util.StreamCenterLogger
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
+import it.dogior.hadEnough.util.runCatchingCancellable
+import it.dogior.hadEnough.extensions.InstalledExtension
+import it.dogior.hadEnough.extensions.InstalledExtensionLogos
+import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 
 import android.animation.ArgbEvaluator
 import android.animation.AnimatorListenerAdapter
@@ -36,6 +40,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.Animation
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -46,6 +51,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.graphics.ColorUtils
+import androidx.core.view.doOnAttach
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -113,7 +120,7 @@ private class SettingsCardBackgroundDrawable(
             card.centerY(),
             card.right,
             card.centerY(),
-            intArrayOf(withAlpha(accent, 34), withAlpha(accent, 16), Color.TRANSPARENT),
+            intArrayOf(withAlpha(accent, 14), withAlpha(accent, 6), Color.TRANSPARENT),
             floatArrayOf(0f, 0.5f, 1f),
             Shader.TileMode.CLAMP,
         )
@@ -307,45 +314,68 @@ private class SettingsIconBadgeDrawable(
     }
 }
 
-private class HeaderConnectorView(context: Context, private val accentColor: Int) : View(context) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+private class HeroScreenPanelDrawable(
+    private val glowColor: Int,
+    private val frameColor: Int,
+    private val radius: Float,
+    private val strokeWidth: Float,
+) : Drawable() {
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val panelColor = Color.parseColor("#150E0B")
+    private var drawableAlpha = 255
+    private var drawableColorFilter: ColorFilter? = null
 
-    init {
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-    }
+    override fun draw(canvas: Canvas) {
+        val panel = RectF(bounds)
+        if (panel.isEmpty) return
+        fillPaint.color = ColorUtils.setAlphaComponent(panelColor, drawableAlpha)
+        fillPaint.colorFilter = drawableColorFilter
+        canvas.drawRoundRect(panel, radius, radius, fillPaint)
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        if (width <= 0 || height <= 0) return
-        val centerX = width / 2f
-        val density = resources.displayMetrics.density
-        paint.shader = LinearGradient(
-            centerX,
-            0f,
-            centerX,
-            height.toFloat(),
-            intArrayOf(
-                Color.TRANSPARENT,
-                ColorUtils.setAlphaComponent(accentColor, 68),
-                ColorUtils.setAlphaComponent(accentColor, 150),
-            ),
-            floatArrayOf(0f, 0.34f, 1f),
+        val glowRadius = maxOf(panel.width(), panel.height()) * 0.64f
+        glowPaint.shader = RadialGradient(
+            panel.centerX(),
+            panel.top + panel.height() * 0.30f,
+            glowRadius,
+            intArrayOf(withAlpha(glowColor, 58), withAlpha(glowColor, 18), Color.TRANSPARENT),
+            floatArrayOf(0f, 0.55f, 1f),
             Shader.TileMode.CLAMP,
         )
+        glowPaint.colorFilter = drawableColorFilter
+        canvas.drawRoundRect(panel, radius, radius, glowPaint)
+        glowPaint.shader = null
+
+        strokePaint.strokeWidth = strokeWidth
+        strokePaint.color = withAlpha(frameColor, 150)
+        strokePaint.colorFilter = drawableColorFilter
         canvas.drawRoundRect(
-            centerX - density,
-            0f,
-            centerX + density,
-            height.toFloat(),
-            density,
-            density,
-            paint,
+            panel.left + strokeWidth / 2f,
+            panel.top + strokeWidth / 2f,
+            panel.right - strokeWidth / 2f,
+            panel.bottom - strokeWidth / 2f,
+            (radius - strokeWidth / 2f).coerceAtLeast(0f),
+            (radius - strokeWidth / 2f).coerceAtLeast(0f),
+            strokePaint,
         )
-        paint.shader = null
-        paint.color = ColorUtils.setAlphaComponent(accentColor, 112)
-        canvas.drawCircle(centerX, height - density * 1.5f, density * 2.1f, paint)
-        paint.color = ColorUtils.setAlphaComponent(accentColor, 228)
-        canvas.drawCircle(centerX, height - density * 1.5f, density * 0.9f, paint)
+    }
+
+    override fun setAlpha(alpha: Int) {
+        drawableAlpha = alpha
+        invalidateSelf()
+    }
+
+    override fun setColorFilter(colorFilter: ColorFilter?) {
+        drawableColorFilter = colorFilter
+        invalidateSelf()
+    }
+
+    @Deprecated("Deprecated in Android SDK")
+    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+    private fun withAlpha(color: Int, alpha: Int): Int {
+        return ColorUtils.setAlphaComponent(color, (alpha * drawableAlpha / 255f).toInt())
     }
 }
 
@@ -367,16 +397,12 @@ private class SettingsParticleBackground(
 
     private val random = Random(481516)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val orbitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = resources.displayMetrics.density * 0.9f
-    }
     private val colors = intArrayOf(
-        Color.parseColor("#9CC8FF"),
-        Color.parseColor("#D0B2FF"),
-        Color.parseColor("#8DEBFF"),
+        Color.parseColor("#F2C066"),
+        Color.parseColor("#E7B285"),
+        Color.parseColor("#F6E2B4"),
     )
-    private val particles = MutableList(72) { newParticle() }
+    private val particles = MutableList(46) { newParticle() }
     private var active = false
     private var motionPhase = 0f
     private var blueNebula: Shader? = null
@@ -428,28 +454,6 @@ private class SettingsParticleBackground(
         if (!active) return
         drawNebulae(canvas)
         if (showOrbitalDecoration) {
-            drawOrbit(
-                canvas,
-                width * 0.82f,
-                height * 0.22f,
-                width * 0.24f,
-                height * 0.075f,
-                22f,
-                2.7f,
-                colors[0],
-                34,
-            )
-            drawOrbit(
-                canvas,
-                width * 0.82f,
-                height * 0.22f,
-                width * 0.16f,
-                height * 0.13f,
-                -34f,
-                -1.9f,
-                colors[1],
-                28,
-            )
             drawPlanet(canvas)
         }
         particles.forEach { particle ->
@@ -469,37 +473,37 @@ private class SettingsParticleBackground(
         if (width <= 0 || height <= 0) return
         val scale = minOf(width, height).toFloat()
         blueNebula = RadialGradient(
-            width * 0.14f,
-            height * 0.20f,
-            scale * 0.76f,
+            width * 0.80f,
+            height * 0.10f,
+            scale * 0.86f,
             intArrayOf(
-                Color.argb(72, 46, 109, 255),
-                Color.argb(24, 41, 86, 201),
+                Color.argb(60, 244, 196, 108),
+                Color.argb(20, 206, 150, 82),
                 Color.TRANSPARENT,
             ),
             floatArrayOf(0f, 0.52f, 1f),
             Shader.TileMode.CLAMP,
         )
         violetNebula = RadialGradient(
-            width * 0.76f,
-            height * 0.74f,
-            scale * 0.70f,
+            width * 0.24f,
+            height * 0.78f,
+            scale * 0.72f,
             intArrayOf(
-                Color.argb(66, 139, 69, 214),
-                Color.argb(20, 90, 53, 155),
+                Color.argb(46, 214, 132, 84),
+                Color.argb(16, 150, 92, 62),
                 Color.TRANSPARENT,
             ),
             floatArrayOf(0f, 0.54f, 1f),
             Shader.TileMode.CLAMP,
         )
         planetShader = RadialGradient(
-            width * 0.78f,
-            height * 0.18f,
-            scale * 0.16f,
+            width * 0.82f,
+            height * 0.12f,
+            scale * 0.17f,
             intArrayOf(
-                Color.argb(118, 186, 221, 255),
-                Color.argb(82, 89, 115, 214),
-                Color.argb(0, 16, 20, 46),
+                Color.argb(122, 250, 216, 150),
+                Color.argb(80, 216, 150, 88),
+                Color.argb(0, 40, 26, 16),
             ),
             floatArrayOf(0f, 0.45f, 1f),
             Shader.TileMode.CLAMP,
@@ -530,36 +534,11 @@ private class SettingsParticleBackground(
         paint.shader = null
     }
 
-    private fun drawOrbit(
-        canvas: Canvas,
-        centerX: Float,
-        centerY: Float,
-        radiusX: Float,
-        radiusY: Float,
-        rotation: Float,
-        angularVelocity: Float,
-        color: Int,
-        alpha: Int,
-    ) {
-        orbitPaint.color = color
-        orbitPaint.alpha = alpha
-        canvas.save()
-        canvas.rotate(rotation + motionPhase * angularVelocity, centerX, centerY)
-        canvas.drawOval(
-            centerX - radiusX,
-            centerY - radiusY,
-            centerX + radiusX,
-            centerY + radiusY,
-            orbitPaint,
-        )
-        canvas.restore()
-    }
-
     private fun drawPlanet(canvas: Canvas) {
         val scale = minOf(width, height).toFloat()
         paint.shader = planetShader
         paint.alpha = 255
-        canvas.drawCircle(width * 0.78f, height * 0.18f, scale * 0.16f, paint)
+        canvas.drawCircle(width * 0.82f, height * 0.12f, scale * 0.17f, paint)
         paint.shader = null
     }
 
@@ -648,14 +627,21 @@ private class SettingsInteractionFrame(
     }
 }
 
+data class SettingsScreenAction(
+    val label: String,
+    val description: String,
+    val onInvoke: () -> Unit,
+)
+
 abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     companion object {
-        private var restartPromptPending = false
+        private val restartState = StreamCenterSettingsRestartState()
         private var activeSettingsToast: Toast? = null
         private const val SETTINGS_ROW_HEIGHT_DP = 72
         private const val SETTINGS_ROW_RADIUS_DP = 16
         private const val SETTINGS_ROW_ICON_DP = 42
         private const val SETTINGS_ROW_SPACING_DP = 10
+        private const val SETTINGS_ROW_DISABLED_ALPHA = 0.52f
         private const val GRID_CARD_SPACING_DP = 10
         private const val TV_SHEET_WIDTH_FRACTION = 0.94f
         private const val TV_DIALOG_WIDTH_FRACTION = 0.86f
@@ -677,20 +663,17 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun markRestartNeeded() {
-        restartPromptPending = true
+        restartState.requireRestart()
     }
 
     protected fun resetRestartNeeded() {
-        restartPromptPending = false
+        restartState.reset(sharedPref)
     }
 
     protected fun consumeRestartNeeded(): Boolean {
-        val value = restartPromptPending
-        restartPromptPending = false
-        return value
+        return restartState.consume(sharedPref)
     }
 
-    private var dismissCallback: (() -> Unit)? = null
     private var playedEnterAnimation = false
     private val dialogBackdropLayers = mutableListOf<DialogBackdropLayer>()
     private val titleEffectTargets = mutableMapOf<TextView, Pair<String, String>>()
@@ -777,6 +760,66 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     protected val reduceMotion: Boolean
         get() = !visualAnimationsEnabled
 
+    protected val settingsHost: StreamCenterSettings?
+        get() = parentFragment as? StreamCenterSettings
+
+    protected val isEmbedded: Boolean
+        get() = settingsHost != null
+
+    override fun onCreateAnimation(transit: Int, enter: Boolean, nextAnim: Int): Animation? {
+        if (isEmbedded) {
+            StreamCenterSettingsNavigation.animation(
+                transit = transit,
+                entering = enter,
+                enabled = !reduceMotion,
+                rtl = resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL,
+                nextAnim = nextAnim,
+            )?.let { return it }
+        }
+        return super.onCreateAnimation(transit, enter, nextAnim)
+    }
+
+    open val screenTitle: String = "StreamCenter"
+
+    open val screenIcon: String? = null
+
+    open val screenAccent: String = COLOR_ACCENT
+
+    open fun screenAction(): SettingsScreenAction? = null
+
+    protected fun openScreen(fragment: StreamCenterBaseSettingsFragment, tag: String) {
+        val host = settingsHost
+        if (host != null) {
+            host.push(fragment, tag)
+            return
+        }
+        if (parentFragmentManager.findFragmentByTag(tag) == null) {
+            fragment.show(parentFragmentManager, tag)
+        }
+    }
+
+    protected fun applyTitleEffect(target: TextView, title: String, accent: String) {
+        titleGradientAnimations.remove(target)?.cancel()
+        titleColorTransitions.remove(target)
+        titleEffectTargets[target] = title to accent
+        if (target.width == 0) {
+            target.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    v: View?,
+                    left: Int, top: Int, right: Int, bottom: Int,
+                    oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+                ) {
+                    if (target.width == 0) return
+                    target.removeOnLayoutChangeListener(this)
+                    titleEffectTargets[target]?.let { (currentTitle, currentAccent) ->
+                        updateTitleEffect(target, currentTitle, currentAccent)
+                    }
+                }
+            })
+        }
+        updateTitleEffect(target, title, accent)
+    }
+
     private fun updateTitleEffect(target: TextView, title: String, accent: String) {
         if (!visualTitleEffectsEnabled) {
             titleGradientAnimations.remove(target)?.cancel()
@@ -857,12 +900,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     private fun nextTitleColorTransition(target: TextView): TitleColorTransition {
-        val commitColor = Color.parseColor("#A78BFA")
-        val buildColor = Color.parseColor("#4CC9F0")
-        val fromColor = titleColorTransitions[target]?.toColor ?: commitColor
+        val emberColor = Color.parseColor("#F2C066")
+        val screenColor = Color.parseColor("#F8E9C8")
+        val fromColor = titleColorTransitions[target]?.toColor ?: emberColor
         return TitleColorTransition(
             fromColor = fromColor,
-            toColor = if (fromColor == commitColor) buildColor else commitColor,
+            toColor = if (fromColor == emberColor) screenColor else emberColor,
             originFraction = Random.nextFloat(),
         )
     }
@@ -912,20 +955,20 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     private fun headerInfoBadgePalette(style: HeaderInfoEffectStyle): HeaderInfoBadgePalette {
         return when (style) {
             HeaderInfoEffectStyle.COMMIT -> HeaderInfoBadgePalette(
-                start = Color.parseColor("#21163C"),
-                end = Color.parseColor("#100E24"),
-                stroke = Color.parseColor("#A78BFA"),
-                label = Color.parseColor("#C4B5FD"),
-                value = Color.parseColor("#EDE9FE"),
-                shine = Color.parseColor("#DDD6FE"),
+                start = Color.parseColor("#2A1D10"),
+                end = Color.parseColor("#190F08"),
+                stroke = Color.parseColor("#F2C066"),
+                label = Color.parseColor("#E7C48A"),
+                value = Color.parseColor("#F7E8CB"),
+                shine = Color.parseColor("#FBE9BE"),
             )
             HeaderInfoEffectStyle.BUILD -> HeaderInfoBadgePalette(
-                start = Color.parseColor("#102E42"),
-                end = Color.parseColor("#1F1740"),
-                stroke = Color.parseColor("#4CC9F0"),
-                label = Color.parseColor("#7DD3FC"),
-                value = Color.parseColor("#E0F2FE"),
-                shine = Color.parseColor("#BAE6FD"),
+                start = Color.parseColor("#2A1810"),
+                end = Color.parseColor("#1B0F08"),
+                stroke = Color.parseColor("#E29A62"),
+                label = Color.parseColor("#E6B084"),
+                value = Color.parseColor("#F6E3CE"),
+                shine = Color.parseColor("#F4C79A"),
             )
         }
     }
@@ -992,9 +1035,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         value: String,
         style: HeaderInfoEffectStyle,
     ): LinearLayout {
-        val labelView = bodyText(label.uppercase(), 10).apply {
+        val labelView = bodyText(label, 10).apply {
             typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.08f
+            letterSpacing = 0.02f
         }
         val valueView = bodyText(value, 11)
         return LinearLayout(requireContext()).apply {
@@ -1040,6 +1083,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     fun refreshVisualEffectsImmediately() {
         (dialog as? BottomSheetDialog)?.dismissWithAnimation = !reduceMotion
         if (reduceMotion) {
+            view?.clearAnimation()
             view?.animate()?.cancel()
             view?.apply {
                 alpha = 1f
@@ -1057,7 +1101,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
 
     protected fun refreshVisibleSettingsEffects() {
-        parentFragmentManager.fragments
+        val host = settingsHost ?: this as? StreamCenterSettings
+        if (host == null) {
+            refreshVisualEffectsImmediately()
+            return
+        }
+        host.refreshVisualEffectsImmediately()
+        host.childFragmentManager.fragments
             .filterIsInstance<StreamCenterBaseSettingsFragment>()
             .forEach { it.refreshVisualEffectsImmediately() }
     }
@@ -1069,7 +1119,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     ) {
         var layer: DialogBackdropLayer? = null
         alertDialog.setOnShowListener {
-            val backdrop = dialogBackdropLayers.lastOrNull()?.dialog?.window?.decorView ?: view
+            val backdrop = dialogBackdropLayers.lastOrNull()?.dialog?.window?.decorView
+                ?: settingsHost?.view
+                ?: view
             layer = DialogBackdropLayer(alertDialog, backdrop).also(dialogBackdropLayers::add)
             backdrop?.apply {
                 alpha = 1f
@@ -1220,7 +1272,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
         if (!playedEnterAnimation) {
             playedEnterAnimation = true
-            if (!reduceMotion) {
+            if (!isEmbedded && !reduceMotion) {
                 view?.let { content ->
                     content.alpha = 0f
                     content.translationY = dp(28).toFloat()
@@ -1241,13 +1293,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         super.onStop()
     }
 
-    override fun onDismiss(dialog: DialogInterface) {
-        super.onDismiss(dialog)
-        dismissCallback?.invoke()
-        dismissCallback = null
-    }
-
     override fun onDestroyView() {
+        view?.animate()?.cancel()
         particleBackgrounds.forEach { it.setActive(false) }
         particleBackgrounds.clear()
         titleGradientAnimations.values.forEach { it.cancel() }
@@ -1260,11 +1307,6 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         chevronTargets.clear()
         nextChevronIndex = 0
         super.onDestroyView()
-    }
-
-    fun onDismissed(callback: () -> Unit): StreamCenterBaseSettingsFragment {
-        dismissCallback = callback
-        return this
     }
 
     protected fun dp(value: Int): Int {
@@ -1304,7 +1346,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             rowCards.forEachIndexed { colIndex, card ->
                 card.layoutParams = LinearLayout.LayoutParams(
                     0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                     1f,
                 ).apply { if (colIndex > 0) marginStart = dp(GRID_CARD_SPACING_DP) }
                 row.addView(card)
@@ -1314,6 +1356,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun standardSubmenuMinimumHeight(): Int {
+        if (isEmbedded) return 0
         return minOf(
             dp(SUBMENU_HEIGHT_DP),
             (resources.displayMetrics.heightPixels * SUBMENU_SCREEN_HEIGHT_RATIO).toInt(),
@@ -1333,36 +1376,38 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
     }
 
-    protected fun headerConnector(accent: String = COLOR_ACCENT): View {
-        return HeaderConnectorView(requireContext(), Color.parseColor(accent)).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(16),
-            )
-        }
-    }
-
     protected fun scroll(content: LinearLayout, fixedSubmenuHeight: Boolean = false): View {
+        if (isEmbedded) {
+            return ScrollView(requireContext()).apply {
+                isFocusable = false
+                isFocusableInTouchMode = false
+                descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                isFillViewport = true
+                isVerticalScrollBarEnabled = true
+                clipToPadding = false
+                setBackgroundColor(Color.TRANSPARENT)
+                addView(
+                    content,
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                requestInitialControlFocus(this)
+            }
+        }
         val frameHeight = if (fixedSubmenuHeight) {
+
             standardSubmenuMinimumHeight()
         } else {
             ViewGroup.LayoutParams.WRAP_CONTENT
         }
-        val frameBackground = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(
-                Color.parseColor("#070B1B"),
-                Color.parseColor("#111A38"),
-                Color.parseColor("#1A1030"),
-            ),
-        ).apply {
-            val radius = dp(22).toFloat()
-            cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
-        }
-        val particleBackground = SettingsParticleBackground(
-            requireContext(),
-            showOrbitalDecoration = !fixedSubmenuHeight,
-        )
+        val frameBackground = sheetFrameBackground()
+        val particleBackground = createParticleBackground(showOrbitalDecoration = !fixedSubmenuHeight)
         val scrollView = ScrollView(requireContext()).apply {
             isFocusable = false
             isFocusableInTouchMode = false
@@ -1400,12 +1445,36 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 frameHeight,
             )
-            particleBackgrounds += particleBackground
-            particleBackground.setActive(visualParticlesEnabled)
         }
     }
 
+    protected fun sheetFrameBackground(): GradientDrawable {
+        return GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.parseColor("#191210"),
+                Color.parseColor("#120D0B"),
+                Color.parseColor("#0C0908"),
+            ),
+        ).apply {
+            val radius = dp(22).toFloat()
+            cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+        }
+    }
+
+    protected fun createParticleBackground(showOrbitalDecoration: Boolean): View {
+        val background = SettingsParticleBackground(requireContext(), showOrbitalDecoration)
+        particleBackgrounds += background
+        background.setActive(visualParticlesEnabled)
+        return background
+    }
+
+    protected fun onSheetInteraction() {
+        dismissActiveSettingsToast()
+    }
+
     protected fun scrollableDialogView(content: View): ScrollView {
+
         return ScrollView(requireContext()).apply {
             isVerticalScrollBarEnabled = false
             addView(
@@ -1455,7 +1524,32 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         centered: Boolean = false,
         titleEffect: Boolean = false,
     ): LinearLayout {
+        if (isEmbedded) {
+            return LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                subtitle?.let {
+                    addView(
+                        bodyText(it, 12).apply {
+                            alpha = 0.82f
+                            setPadding(dp(2), 0, dp(2), dp(6))
+                            layoutParams = LinearLayout.LayoutParams(
+                                0,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                1f,
+                            )
+                        },
+                    )
+                }
+                metadata.forEach(::addView)
+            }
+        }
         return LinearLayout(requireContext()).apply {
+
             orientation = if (centered) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
             gravity = if (centered) Gravity.CENTER else Gravity.CENTER_VERTICAL
             setPadding(dp(2), dp(4), dp(2), dp(12))
@@ -1467,7 +1561,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             val texts = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = if (centered) Gravity.CENTER else Gravity.START
-                if (titleEffect) setPadding(dp(16), dp(9), dp(16), dp(9))
+                if (titleEffect) {
+                    setPadding(dp(22), dp(15), dp(22), dp(16))
+                    background = HeroScreenPanelDrawable(
+                        glowColor = Color.parseColor(accent),
+                        frameColor = Color.parseColor(tint(accent, "80")),
+                        radius = dp(18).toFloat(),
+                        strokeWidth = dp(1).toFloat(),
+                    )
+                }
                 layoutParams = LinearLayout.LayoutParams(
                     if (centered) ViewGroup.LayoutParams.MATCH_PARENT else 0,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1477,15 +1579,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
             eyebrow?.let {
-                texts.addView(counterText(it.uppercase(), 9).apply {
+                texts.addView(counterText(it, 10).apply {
                     typeface = Typeface.DEFAULT_BOLD
-                    letterSpacing = 0.12f
-                    setTextColor(Color.parseColor(tint(accent, "B8")))
+                    letterSpacing = 0.02f
+                    setTextColor(Color.parseColor(tint(accent, "C4")))
                     setPadding(0, 0, 0, dp(2))
                     if (centered) gravity = Gravity.CENTER
                 })
             }
-            val headerTitle = titleText(title, if (titleEffect) 27 else 22, true).apply {
+            val headerTitle = titleText(title, if (titleEffect) 30 else 23, true, display = true).apply {
                 if (centered) gravity = Gravity.CENTER
             }
             if (titleEffect) {
@@ -1494,20 +1596,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                     letterSpacing = 0.025f
                     setPadding(dp(14), dp(4), dp(14), dp(5))
                 }
-                titleEffectTargets[headerTitle] = title to accent
-                headerTitle.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
-                    override fun onLayoutChange(
-                        v: View?,
-                        left: Int, top: Int, right: Int, bottom: Int,
-                        oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
-                    ) {
-                        if (headerTitle.width > 0) {
-                            headerTitle.removeOnLayoutChangeListener(this)
-                            updateTitleEffect(headerTitle, title, accent)
-                        }
-                    }
-                })
-                updateTitleEffect(headerTitle, title, accent)
+                applyTitleEffect(headerTitle, title, accent)
             }
             texts.addView(headerTitle)
             subtitle?.let {
@@ -1551,12 +1640,25 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return size * if (isTvLikeDevice()) 1.08f else 1f
     }
 
-    protected fun titleText(value: String, size: Int = 18, bold: Boolean = true): TextView {
+    protected fun titleText(
+        value: String,
+        size: Int = 18,
+        bold: Boolean = true,
+        display: Boolean = false,
+    ): TextView {
         return TextView(requireContext()).apply {
             text = value
             textSize = tvScaledTextSize(size)
             setTextColor(Color.parseColor(COLOR_TEXT))
-            if (bold) typeface = Typeface.DEFAULT_BOLD
+            typeface = when {
+                display -> Typeface.create(Typeface.SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
+                bold -> Typeface.DEFAULT_BOLD
+                else -> Typeface.DEFAULT
+            }
+            if (display) {
+                letterSpacing = 0.01f
+                includeFontPadding = false
+            }
         }
     }
 
@@ -1577,9 +1679,34 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun sectionLabel(value: String): TextView {
-        return bodyText(value.uppercase(), 11).apply {
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.08f
+        return bodyText(value, 12).apply {
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            letterSpacing = 0.01f
+            includeFontPadding = false
+            setTextColor(Color.parseColor(COLOR_TEXT))
+            alpha = 0.88f
+        }
+    }
+
+    protected fun sectionHeading(
+        label: String,
+        accent: String = COLOR_ACCENT,
+        topMargin: Int = 16,
+    ): LinearLayout {
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(topMargin), dp(4), dp(6))
+            addView(sectionLabel(label))
+            addView(View(requireContext()).apply {
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(Color.parseColor(tint(accent, "3C")), Color.TRANSPARENT),
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(1), 1f).apply {
+                    marginStart = dp(12)
+                }
+            })
         }
     }
 
@@ -1619,20 +1746,20 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     protected fun chevron(accent: String): TextView {
         return TextView(requireContext()).apply {
-            text = "→"
+            text = "›"
             textSize = 26f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor(accent))
+            setTextColor(Color.parseColor(tint(accent, "C8")))
             gravity = Gravity.CENTER
             includeFontPadding = false
             contentDescription = "Apri sezione"
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply {
-                marginStart = dp(8)
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(40)).apply {
+                marginStart = dp(6)
             }
         }.also(chevronTargets::add)
     }
 
-    protected open fun shouldAnimateChevrons(): Boolean = visualAnimationsEnabled
+    protected open fun shouldAnimateChevrons(): Boolean = false
 
     protected fun refreshChevronAnimations() {
         stopChevronAnimations()
@@ -1684,6 +1811,30 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         host.postDelayed(chevronPulse, CHEVRON_INTERVAL_MS)
     }
 
+    internal fun catalogSiteBadge(
+        catalog: StreamCenterCatalogDefinition,
+        marginEnd: Int = 11,
+    ): FrameLayout {
+        val stremioCatalog = catalog.stremioAddon != null
+        return siteIconBadge(
+            fallback = if (stremioCatalog) "🔌" else catalog.title.take(1),
+            accent = if (stremioCatalog) COLOR_STREMIO else COLOR_CATALOGS,
+            contentDescription = "Icona di ${catalog.title}",
+            iconUrl = catalog.iconUrl,
+            websiteUrl = catalog.websiteUrl.takeUnless { stremioCatalog },
+            size = 42,
+            marginEnd = marginEnd,
+        )
+    }
+
+    internal fun installedExtensionBadge(extension: InstalledExtension): FrameLayout = siteIconBadge(
+        fallback = "\uD83E\uDDE9",
+        accent = COLOR_SOURCES,
+        contentDescription = "Logo di ${extension.name}",
+        iconResolver = { InstalledExtensionLogos.resolve(extension) },
+        showOnlyLoadedImage = true,
+    )
+
     protected fun siteIconBadge(
         fallback: String,
         accent: String,
@@ -1692,6 +1843,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         websiteUrl: String? = null,
         size: Int = 42,
         marginEnd: Int = 12,
+        iconResolver: (suspend () -> String?)? = null,
+        showOnlyLoadedImage: Boolean = false,
     ): FrameLayout {
         return FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply {
@@ -1707,10 +1860,13 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             val logoView = object : ImageView(requireContext()) {
                 override fun setImageDrawable(drawable: Drawable?) {
                     super.setImageDrawable(drawable)
-                    fallbackView.visibility = if (drawable == null) View.VISIBLE else View.INVISIBLE
+                    if (!showOnlyLoadedImage) {
+                        fallbackView.visibility = if (drawable == null) View.VISIBLE else View.INVISIBLE
+                    }
                 }
             }.apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
+                scaleType = if (showOnlyLoadedImage) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
+                if (showOnlyLoadedImage) visibility = View.INVISIBLE
                 this.contentDescription = contentDescription
                 background = GradientDrawable().apply {
                     setColor(Color.TRANSPARENT)
@@ -1726,6 +1882,30 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
             addView(logoView)
+            fun loadIcon(url: String) {
+                if (showOnlyLoadedImage) {
+                    ImageLoader.run {
+                        logoView.loadImage(url) {
+                            listener(
+                                onStart = {
+                                    logoView.visibility = View.INVISIBLE
+                                    fallbackView.visibility = View.VISIBLE
+                                },
+                                onSuccess = { _, _ ->
+                                    logoView.visibility = View.VISIBLE
+                                    fallbackView.visibility = View.INVISIBLE
+                                },
+                                onError = { _, _ ->
+                                    logoView.visibility = View.INVISIBLE
+                                    fallbackView.visibility = View.VISIBLE
+                                },
+                            )
+                        }
+                    }
+                } else {
+                    ImageLoader.run { logoView.loadImage(url) }
+                }
+            }
             val canUseInternet = StreamCenterVpnGuard.canUseInternet(sharedPref)
             val resolvedIcon = if (canUseInternet) {
                 iconUrl ?: websiteUrl?.let(StreamCenterSiteIcons::cached)
@@ -1733,7 +1913,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 null
             }
             if (resolvedIcon != null) {
-                ImageLoader.run { logoView.loadImage(resolvedIcon) }
+                loadIcon(resolvedIcon)
+            } else if (iconResolver != null && canUseInternet) {
+                logoView.doOnAttach {
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        val remoteIcon = withContext(Dispatchers.IO) {
+                            runCatchingCancellable { iconResolver() }.getOrNull()
+                        }
+                        if (logoView.isAttachedToWindow && remoteIcon != null) loadIcon(remoteIcon)
+                    }
+                }
             } else if (websiteUrl != null && canUseInternet) {
                 CoroutineScope(Dispatchers.IO).launch {
                     val remoteIcon = StreamCenterSiteIcons.resolve(websiteUrl)
@@ -1807,6 +1996,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     protected fun styledSwitch(
         checked: Boolean,
         accent: String = COLOR_ACCENT,
+        defaultChecked: Boolean? = null,
+        resetTitle: String = "Impostazione",
         onChanged: (Boolean) -> Unit,
     ): SwitchCompat {
         return SwitchCompat(requireContext()).apply {
@@ -1835,22 +2026,48 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 marginStart = dp(12)
             }
             setOnCheckedChangeListener { _, isChecked -> onChanged(isChecked) }
+            defaultChecked?.let { default ->
+                resetOnLongPress(this, resetTitle) { isChecked = default }
+            }
         }
+    }
+
+    protected fun resetOnLongPress(view: View, title: String, reset: () -> Unit) {
+        StreamCenterSettingReset.bind(view) {
+            reset()
+            StreamCenterLogger.logMenu(
+                action = "Impostazione ripristinata",
+                metadata = mapOf("voce" to title),
+            )
+            saveToast("$title: valore predefinito ripristinato")
+        }
+    }
+
+    private fun inheritSwitchReset(row: View, trailingViews: List<View>) {
+        trailingViews.filterIsInstance<SwitchCompat>().singleOrNull()
+            ?.takeIf { it.isLongClickable }
+            ?.let { toggle -> StreamCenterSettingReset.bind(row) { toggle.performLongClick() } }
     }
 
     protected fun switchRow(
         title: String,
         summary: String? = null,
         checked: Boolean,
+        defaultChecked: Boolean? = null,
         accent: String = COLOR_ACCENT,
         icon: String? = null,
+        leadingView: View? = null,
         strokeColor: String = COLOR_STROKE,
         topMargin: Int = SETTINGS_ROW_SPACING_DP,
         fixedHeight: Boolean = false,
+        dimWhenOff: Boolean = true,
+        bindChecked: ((Boolean) -> Unit) -> Unit = {},
         onChanged: (Boolean) -> Unit,
     ): LinearLayout {
         lateinit var views: SettingsRowViews
-        val toggle = styledSwitch(checked, accent) { isChecked ->
+        var suppressChange = false
+        val toggle = styledSwitch(checked, accent, defaultChecked, title) { isChecked ->
+            if (suppressChange) return@styledSwitch
             StreamCenterLogger.logMenu(
                 action = "Impostazione aggiornata",
                 metadata = mapOf(
@@ -1859,21 +2076,48 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 ),
             )
             playToggleFeedback(views.view, views.badge, accent, isChecked)
+            if (dimWhenOff) animateRowEnabledAppearance(views.view, isChecked)
             onChanged(isChecked)
         }
         views = settingsRow(
             title = title,
             summary = summary,
             icon = icon,
+            leadingView = leadingView,
             accent = accent,
             fillColor = COLOR_CARD_ALT,
             strokeColor = strokeColor,
             trailingViews = listOf(toggle),
             topMargin = topMargin,
             fixedHeight = fixedHeight,
+            enabledAppearance = checked || !dimWhenOff,
             logAction = false,
         ) { toggle.toggle() }
+        bindChecked { value ->
+            if (toggle.isChecked != value) {
+                suppressChange = true
+                toggle.isChecked = value
+                suppressChange = false
+            }
+            if (dimWhenOff) animateRowEnabledAppearance(views.view, value)
+        }
         return views.view
+    }
+
+    protected val settingsRowDisabledAlpha: Float
+        get() = SETTINGS_ROW_DISABLED_ALPHA
+
+    protected fun animateRowEnabledAppearance(row: View, enabled: Boolean) {
+        val target = if (enabled) 1f else SETTINGS_ROW_DISABLED_ALPHA
+        row.animate().cancel()
+        if (reduceMotion) {
+            row.alpha = target
+            return
+        }
+        row.animate()
+            .alpha(target)
+            .setDuration(220L)
+            .start()
     }
 
     protected fun settingsRow(
@@ -1890,10 +2134,11 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         topMargin: Int = SETTINGS_ROW_SPACING_DP,
         fixedHeight: Boolean = false,
         enabledAppearance: Boolean = true,
-        disabledAlpha: Float = 0.52f,
+        disabledAlpha: Float = SETTINGS_ROW_DISABLED_ALPHA,
         touchTarget: View? = trailingViews.lastOrNull(),
         logAction: Boolean = true,
         accessibilityState: (() -> String?)? = null,
+        onReset: (() -> Unit)? = null,
         onClick: (() -> Unit)? = null,
     ): SettingsRowViews {
         val rowHeight = settingsRowHeightDp()
@@ -1904,9 +2149,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             val verticalPadding = if (fixedHeight) 9 else 12
             setPadding(dp(14), dp(verticalPadding), dp(10), dp(verticalPadding))
             background = interactiveBackground(fillColor, accent, SETTINGS_ROW_RADIUS_DP, strokeColor)
-            layoutParams = verticalParams(top = topMargin).apply {
-                if (fixedHeight) height = dp(rowHeight)
-            }
+            layoutParams = verticalParams(top = topMargin)
             clipChildren = false
             clipToPadding = false
             alpha = if (enabledAppearance) 1f else disabledAlpha
@@ -1972,6 +2215,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             }
         }
         if (onClick != null) addCardTouchFeedback(row, accent, badge, touchTarget)
+        if (onReset != null) resetOnLongPress(row, title, onReset)
+        else inheritSwitchReset(row, trailingViews)
         return SettingsRowViews(row, badge, titleView, resolvedSummary)
     }
 
@@ -1980,6 +2225,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         options: List<SettingsChoiceOption<T>>,
         selectedValue: T,
         accent: String,
+        closeLabel: String? = null,
+        defaultValue: T? = null,
         onSelected: (SettingsChoiceOption<T>) -> Unit,
     ) {
         val content = LinearLayout(requireContext()).apply {
@@ -2011,6 +2258,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 trailingViews = listOf(selectedBadge),
                 topMargin = 8,
                 accessibilityState = { if (selected) "Selezionata" else "Non selezionata" },
+                onReset = defaultValue?.let { default ->
+                    {
+                        options.firstOrNull { it.value == default }?.let(onSelected)
+                        dialog.dismiss()
+                    }
+                },
             ) {
                 StreamCenterLogger.logMenu(
                     action = "Scelta impostazione confermata",
@@ -2026,10 +2279,11 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             rowViews.add(row.view)
         }
         addAdaptiveCardGrid(content, rowViews)
-        dialog = AlertDialog.Builder(requireContext())
+        val builder = AlertDialog.Builder(requireContext())
             .setCustomTitle(dialogTitle(title))
             .setView(scrollableDialogView(content))
-            .create()
+        if (closeLabel != null) builder.setNegativeButton(closeLabel, null)
+        dialog = builder.create()
         applyDialogBackdrop(dialog)
         dialog.show()
     }
@@ -2079,7 +2333,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             )
         }
         badge?.let(header::addView)
-        val titleView = titleText(title, 16, true)
+        val titleView = titleText(title, 16, true, display = true)
         header.addView(LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -2107,6 +2361,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             }
         }
         addCardTouchFeedback(header, accent, badge)
+        inheritSwitchReset(header, trailingViews)
         return SettingsRowViews(header, badge, titleView, summaryView)
     }
 
@@ -2188,7 +2443,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun dialogTitle(value: String, color: String = COLOR_TEXT): TextView {
-        return titleText(value, 20, true).apply {
+        return titleText(value, 21, true, display = true).apply {
             setTextColor(Color.parseColor(color))
             gravity = Gravity.CENTER
             setPadding(dp(24), dp(22), dp(24), 0)
@@ -2213,7 +2468,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             )
             addView(leadingView)
-            addView(titleText(value, 20, true).apply {
+            addView(titleText(value, 20, true, display = true).apply {
                 setTextColor(Color.parseColor(accent))
                 gravity = Gravity.CENTER
             })
@@ -2257,15 +2512,18 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
     }
 
-    protected fun animateCategoryExpansion(content: View) {
-        if (reduceMotion) return
+    protected fun animateCategoryExpansion(content: View, targetAlpha: Float = 1f) {
+        if (reduceMotion) {
+            content.alpha = targetAlpha
+            return
+        }
         content.alpha = 0f
         content.translationY = -dp(8).toFloat()
         content.post {
             val targetHeight = content.height
             val layoutParams = content.layoutParams
             if (targetHeight <= 0 || layoutParams == null) {
-                content.alpha = 1f
+                content.alpha = targetAlpha
                 content.translationY = 0f
                 return@post
             }
@@ -2281,7 +2539,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 start()
             }
             content.animate()
-                .alpha(1f)
+                .alpha(targetAlpha)
                 .translationY(0f)
                 .setDuration(210L)
                 .setInterpolator(DecelerateInterpolator())

@@ -324,13 +324,6 @@ internal object StreamCenterTorrentPreferences {
         preferenceKeys.forEach(editor::remove)
     }
 
-    fun isObsoletePreference(key: String): Boolean {
-        return key.startsWith("sourceTorrent") ||
-            key.startsWith("urlTorrent") ||
-            key.startsWith("torrentFilter") ||
-            key.startsWith("torrentExtReleaseSources")
-    }
-
     fun isDefaultPreference(key: String, value: Any?): Boolean = when (key) {
         SEARCH_LOCATION_KEY -> value == StreamCenterExtContainLocation.TITLE.preferenceValue
         LANGUAGE_KEY -> value == StreamCenterTorrentLanguageFilter.PREFER_ITALIAN.preferenceValue
@@ -519,7 +512,7 @@ internal object StreamCenterTorrentFilterEngine {
             return false
         }
         if (filters.minimumResolution > 0) {
-            val resolution = StreamCenterTorrentMetadata.resolution(metadataText)
+            val resolution = StreamCenterTorrentMetadata.resolution(candidate)
             if (resolution != null && resolution < filters.minimumResolution) return false
             if (
                 resolution == null &&
@@ -563,15 +556,17 @@ internal object StreamCenterTorrentFilterEngine {
         )
         val relevanceScore = StreamCenterTorrentMatchPolicy.relevanceScore(candidate.title, context)
         val languagePriority = languagePriority(languageMetadata, filters.language, filters.customItalianTermSet())
-        val qualityScore = when (StreamCenterTorrentMetadata.resolution(rawMetadata) ?: 0) {
+        val resolution = StreamCenterTorrentMetadata.resolution(candidate)
+        val qualityScore = when (resolution ?: 0) {
             in 2160..Int.MAX_VALUE -> 60
             in 1080..2159 -> 45
             in 720..1079 -> 30
             else -> 0
         }
+        val codecs = StreamCenterTorrentVideoCodecDetector.detect(candidate).codecs
         val codecScore = when {
-            Regex("""(?i)\b(?:hevc|h\.265|x265|av1)\b""").containsMatchIn(rawMetadata) -> 16
-            Regex("""(?i)\b(?:h\.264|x264|avc)\b""").containsMatchIn(rawMetadata) -> 10
+            StreamCenterTorrentVideoCodec.HEVC in codecs || StreamCenterTorrentVideoCodec.AV1 in codecs -> 16
+            StreamCenterTorrentVideoCodec.AVC in codecs -> 10
             else -> 0
         }
         val releaseFormScore = if (context.episode != null) {
@@ -600,7 +595,7 @@ internal object StreamCenterTorrentFilterEngine {
             candidate.seeders != null,
             candidate.leechers != null,
             candidate.extReleaseSourceId != null,
-            StreamCenterTorrentMetadata.resolution(rawMetadata) != null,
+            resolution != null,
         ).count { present -> present } * 4
         val seeders = candidate.seeders
         val seedScore = seeders
@@ -681,6 +676,24 @@ internal fun StreamCenterTorrentCandidate.isEligibleFor(
     listOfNotNull(title, selectedFileName).joinToString(" "),
     context,
 ) && StreamCenterTorrentFilterEngine.accepts(this, context, filters)
+
+internal fun StreamCenterTorrentCandidate.isEligibleForDiscovery(
+    context: StreamCenterTorrentPlaybackContext,
+    filters: StreamCenterTorrentFilterSettings,
+): Boolean {
+    val discoveryFilters = if (StreamCenterTorrentMatchPolicy.isBatchCandidate(title, context)) {
+        filters.copy(
+            language = StreamCenterTorrentLanguageFilter.ANY,
+            minimumSizeBytes = null,
+            maximumSizeBytes = null,
+            minimumResolution = 0,
+            excludeCinemaCopies = false,
+            excludedTerms = "",
+            blockedVideoCodecs = emptySet(),
+        )
+    } else filters
+    return isEligibleFor(context, discoveryFilters)
+}
 
 internal object StreamCenterTorrentMetadata {
     private val italianTokens = setOf("ita", "italian", "italiano", "italiana")
@@ -860,6 +873,22 @@ internal object StreamCenterTorrentMetadata {
     }
 
     fun isCinemaCopy(metadataText: String): Boolean = cinemaCopyRegex.containsMatchIn(metadataText)
+
+    fun resolution(candidate: StreamCenterTorrentCandidate): Int? =
+        candidate.selectedFileName?.let { path -> resolution(path.torrentFileName()) ?: resolution(path) }
+            ?: resolution(candidate.title)
+
+    fun formatSizeBytes(bytes: Long?): String? {
+        if (bytes == null || bytes <= 0L) return null
+        val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
+        var value = bytes.toDouble()
+        var unit = 0
+        while (value >= 1024 && unit < units.lastIndex) {
+            value /= 1024
+            unit++
+        }
+        return if (unit == 0) "$bytes B" else String.format(Locale.ITALY, "%.2f %s", value, units[unit])
+    }
 
     fun resolution(value: String): Int? {
         val normalized = cleanDisplayText(value.lowercase(Locale.ROOT))

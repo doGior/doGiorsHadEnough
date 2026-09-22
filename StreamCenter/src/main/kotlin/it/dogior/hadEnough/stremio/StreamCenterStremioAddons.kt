@@ -345,7 +345,7 @@ internal object StreamCenterStremioAddonClient {
         emittedStream
     }
 
-    private fun parseManifest(url: String, text: String): StreamCenterStremioAddon {
+    internal fun parseManifest(url: String, text: String): StreamCenterStremioAddon {
         val manifestUrl = normalizeManifestUrl(url)
         val root = JSONObject(text)
         val id = root.optNonBlank("id")
@@ -1172,7 +1172,7 @@ internal object StreamCenterStremioAddonClient {
             ?: Qualities.Unknown.value
     }
 
-    private fun normalizeManifestUrl(input: String): String {
+    internal fun normalizeManifestUrl(input: String): String {
         val candidate = input.trim().let { value ->
             when {
                 value.startsWith("stremio://", ignoreCase = true) ->

@@ -1,6 +1,5 @@
 package it.dogior.hadEnough.torrent
 
-import com.lagradost.cloudstream3.utils.Qualities
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.net.URI
@@ -229,9 +228,7 @@ internal object StreamCenterTorrentMatchPolicy {
                 StreamCenterTorrentEpisodeCoordinateKind.LOCAL ->
                     !hasCanonicalRenumbering || localPartCompatible
                 StreamCenterTorrentEpisodeCoordinateKind.ABSOLUTE -> !hasSeasonMarker
-                StreamCenterTorrentEpisodeCoordinateKind.SEASON,
-                StreamCenterTorrentEpisodeCoordinateKind.LEGACY,
-                -> true
+                StreamCenterTorrentEpisodeCoordinateKind.SEASON -> true
             }
         }
     }
@@ -279,11 +276,6 @@ internal object StreamCenterTorrentMatchPolicy {
                 markedEpisode -> 156
                 bareEpisode -> 142
                 else -> 0
-            }
-            StreamCenterTorrentEpisodeCoordinateKind.LEGACY -> when {
-                anySeasonEpisode -> 134
-                markedEpisode -> 130
-                else -> 118
             }
             StreamCenterTorrentEpisodeCoordinateKind.LOCAL -> when {
                 exactSeasonEpisode -> if (hasCanonicalRenumbering) 124 else 150
@@ -711,7 +703,7 @@ internal object StreamCenterTorrentMatchPolicy {
 
 internal object StreamCenterTorrentMagnet {
     private val infoHashRegex = Regex(
-        """(?i)(?:urn:btih:)?([a-f0-9]{40}|[a-z2-7]{32})(?:[^a-z0-9]|$)""",
+        """(?i)^(?:urn:btih:)?([a-f0-9]{40}|[a-z2-7]{32})$""",
     )
     private val exactBtihRegex = Regex(
         """(?i)^urn:btih:([a-f0-9]{40}|[a-z2-7]{32})$""",
@@ -741,13 +733,14 @@ internal object StreamCenterTorrentMagnet {
                 .firstOrNull()
                 ?.let(::normalizeInfoHash)
         }
-        return infoHashRegex.find(decode(trimmed))
+        return infoHashRegex.matchEntire(decode(trimmed))
             ?.groupValues
             ?.getOrNull(1)
             ?.let(::normalizeInfoHash)
     }
 
     fun build(candidate: StreamCenterTorrentCandidate): String? {
+        if (candidate.fileIndex?.let { it < 0 } == true) return null
         val suppliedMagnet = candidate.magnetUrl
         val hash = infoHash(suppliedMagnet) ?: infoHash(candidate.infoHash) ?: return null
         val suppliedParameters = magnetParameters(suppliedMagnet)
@@ -765,7 +758,10 @@ internal object StreamCenterTorrentMagnet {
         return buildList {
             add("xt=urn:btih:$hash")
             add("dn=${encode((candidate.selectedFileName ?: candidate.title).take(MAX_DISPLAY_NAME_LENGTH))}")
-            fileIndex?.let { index -> add("index=$index") }
+            fileIndex?.let { index ->
+                add("index=$index")
+                add("so=$index")
+            }
             trackers.forEach { tracker -> add("tr=${encode(tracker)}") }
         }.joinToString(separator = "&", prefix = "magnet:?")
     }
@@ -818,20 +814,23 @@ internal object StreamCenterTorrentMagnet {
     private const val MAX_DISPLAY_NAME_LENGTH = 240
 
     fun fileIndex(value: String?): Int? {
-        return magnetParameters(value)
-            .asSequence()
-            .filter { (key, _) ->
-                key.equals("index", ignoreCase = true) ||
-                    key.equals("so", ignoreCase = true) ||
-                    key.equals("fileIdx", ignoreCase = true)
-            }
-            .mapNotNull { (_, parameterValue) -> parameterValue.trim().toIntOrNull() }
-            .firstOrNull { index -> index >= 0 }
+        val parameters = magnetParameters(value)
+        return listOf("index", "so", "fileIdx").firstNotNullOfOrNull { requestedKey ->
+            parameters.asSequence()
+                .filter { (key, _) -> key.equals(requestedKey, ignoreCase = true) }
+                .mapNotNull { (_, parameterValue) -> parameterValue.trim().toIntOrNull() }
+                .firstOrNull { index -> index >= 0 }
+        }
     }
 
+    fun displayName(value: String?): String? = magnetParameters(value)
+        .firstOrNull { (key, _) -> key.equals("dn", ignoreCase = true) }
+        ?.second?.takeIf(String::isNotBlank)
+
     private fun magnetParameters(value: String?): List<Pair<String, String>> {
-        if (value.isNullOrBlank()) return emptyList()
-        return value.substringAfter('?', "")
+        val magnet = value?.trim()?.takeIf { it.startsWith("magnet:?", ignoreCase = true) }
+            ?: return emptyList()
+        return magnet.substringBefore('#').substringAfter('?', "")
             .split('&')
             .mapNotNull { parameter ->
                 val rawKey = parameter.substringBefore('=')
@@ -839,11 +838,6 @@ internal object StreamCenterTorrentMagnet {
                 decode(rawKey) to decode(parameter.substringAfter('=', ""))
             }
     }
-}
-
-internal fun qualityFromTorrentTitle(title: String): Int {
-    return StreamCenterTorrentMetadata.resolution(title)
-        ?: Qualities.Unknown.value
 }
 
 internal fun encodeTorrentPathValue(value: String): String =

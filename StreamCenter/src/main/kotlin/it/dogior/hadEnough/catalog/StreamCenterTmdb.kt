@@ -64,11 +64,24 @@ internal class StreamCenterTmdbCatalog(
         query: String,
         page: Int,
         showScore: Boolean,
+    ): StreamCenterCatalogPage = search(api, query, page, showScore, expectedType = null)
+
+    suspend fun search(
+        api: MainAPI,
+        query: String,
+        page: Int,
+        showScore: Boolean,
+        expectedType: TvType?,
     ): StreamCenterCatalogPage {
         if (query.isBlank() || page < 1) return StreamCenterCatalogPage(emptyList(), false)
         val encodedQuery = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
-        val document = document(requestUrl("/search", page, "query=$encodedQuery"))
-        val items = mediaCards(api, document, null, showScore)
+        val path = when (expectedType) {
+            TvType.Movie -> "/search/movie"
+            TvType.TvSeries -> "/search/tv"
+            else -> "/search"
+        }
+        val document = document(requestUrl(path, page, "query=$encodedQuery&include_adult=true"), search = true)
+        val items = mediaCards(api, document, expectedType, showScore)
         return StreamCenterCatalogPage(items, items.size >= PAGE_SIZE)
     }
 
@@ -82,8 +95,8 @@ internal class StreamCenterTmdbCatalog(
         return mediaCards(api, recommendationCards, null, showScore)
     }
 
-    private suspend fun document(url: String): Document {
-        val html = app.get(url, headers = headers).text
+    private suspend fun document(url: String, search: Boolean = false): Document {
+        val html = app.get(url, headers = if (search) tmdbSearchHeaders(headers) else headers).text
         return Jsoup.parse(html, url)
     }
 
@@ -130,8 +143,7 @@ internal class StreamCenterTmdbCatalog(
             if (expectedType != null && type != expectedType) return@mapNotNull null
             val canonicalUrl = "$TMDB_BASE_URL/${pathMatch.groupValues[1].lowercase(Locale.ROOT)}/${pathMatch.groupValues[2]}"
             if (!seen.add(canonicalUrl)) return@mapNotNull null
-            val titleElement = card.selectFirst("h2, h3")
-            val title = titleElement?.text()?.trim().orEmpty()
+            val title = tmdbCardHeading(card)
                 .ifBlank { link.attr("title").trim() }
                 .ifBlank { card.selectFirst("img[alt]")?.attr("alt")?.trim().orEmpty() }
                 .takeIf(String::isNotBlank)
@@ -272,6 +284,24 @@ internal class StreamCenterTmdbCatalog(
         private val YEAR_REGEX = Regex("\\b(?:18|19|20|21)\\d{2}\\b")
         private val VOTE_REGEX = Regex("\\d+(?:[.,]\\d+)?")
     }
+}
+
+internal fun tmdbCardHeading(card: Element): String = card.selectFirst("h2, h3")
+    ?.clone()
+    ?.apply { select(".adult").remove() }
+    ?.text()?.trim().orEmpty()
+
+internal fun tmdbSearchHeaders(headers: Map<String, String>): Map<String, String> {
+    val preferences = URLEncoder.encode(
+        """{"adult":true,"i18n_fallback_language":"en-US","locale":"it-IT","country_code":"IT"}""",
+        StandardCharsets.UTF_8.name(),
+    )
+    val cookies = headers.entries.filter { it.key.equals("Cookie", ignoreCase = true) }
+        .flatMap { it.value.split(';') }
+        .map(String::trim)
+        .filter { it.isNotBlank() && it.substringBefore('=') != "preferences" }
+    return headers.filterKeys { !it.equals("Cookie", ignoreCase = true) } +
+        ("Cookie" to (cookies + "preferences=$preferences").joinToString("; "))
 }
 
 internal fun extractTmdbPageTitle(document: Document): String {

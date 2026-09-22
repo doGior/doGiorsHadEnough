@@ -1,17 +1,22 @@
 package it.dogior.hadEnough.anime.metadata
 
 import com.lagradost.cloudstream3.app
+import it.dogior.hadEnough.cache.ExpiringCache
 import it.dogior.hadEnough.model.AniZipEpisodeCatalog
 import it.dogior.hadEnough.model.TmdbAnimeEpisodeMetadata
-import it.dogior.hadEnough.util.cleanText
+import it.dogior.hadEnough.model.TmdbAnimeShowRef
+import it.dogior.hadEnough.util.cleanMetadataEpisodeTitle
+import it.dogior.hadEnough.util.parseMetadataDate
+import it.dogior.hadEnough.util.parseMetadataRuntime
+import it.dogior.hadEnough.util.runCatchingCancellable
+import it.dogior.hadEnough.util.cleanTmdbEpisodeDescription
 import it.dogior.hadEnough.util.mapChunkedParallel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import java.io.File
-import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 internal class TmdbAnimeEpisodeMetadataClient(
     headers: Map<String, String>,
@@ -19,119 +24,156 @@ internal class TmdbAnimeEpisodeMetadataClient(
 ) {
     private val headers = headers
     private val mappingClient = AniBridgeEpisodeMappingClient(headers, cacheDirectory)
-    private val seasonCache = ConcurrentHashMap<String, List<TmdbEpisode>>()
+    private val seasonCache = ExpiringCache<String, List<TmdbEpisode>>(
+        maxEntries = 128,
+        ttlMillis = 15 * 60 * 1_000L,
+    )
 
-    suspend fun fetch(
+    suspend fun resolveShow(
         anilistId: Int,
+        sourceEpisodeNumbers: Set<Int>,
         aniZipCatalog: AniZipEpisodeCatalog,
-    ): Map<Int, TmdbAnimeEpisodeMetadata> = withContext(Dispatchers.IO) {
-        val episodeNumbers = aniZipCatalog.episodes.keys.filter { it > 0 }.toSet()
+    ): TmdbAnimeShowRef? = withContext(Dispatchers.IO) {
+        val episodeNumbers = sourceEpisodeNumbers.filter { it > 0 }.toSet()
+            .ifEmpty { aniZipCatalog.episodes.keys.filter { it > 0 }.toSet() }
+            .ifEmpty { setOf(1) }
         val requestDetails = buildMap<String, Any?> {
             put("id_anilist", anilistId)
             aniZipCatalog.tmdbId?.let { put("id_tmdb_anizip", it) }
             put("episodi_richiesti", episodeNumbers.size)
         }
-        if (episodeNumbers.isEmpty()) {
-            MetadataLog.info(
-                SOURCE,
-                "Recupero metadati episodi ignorato",
-                requestDetails + mapOf("motivo" to "nessun_episodio_anizip"),
-            )
-            return@withContext emptyMap()
-        }
+        MetadataLog.info(SOURCE, "Risoluzione serie TMDB avviata", requestDetails)
 
-        MetadataLog.info(SOURCE, "Recupero metadati episodi avviato", requestDetails)
-        val mappedReferences = mappingClient.fetch(anilistId, episodeNumbers)
-        MetadataLog.info(
-            SOURCE,
-            "Mappature AniBridge ricevute",
-            requestDetails + mapOf("mappature_ricevute" to mappedReferences.size),
-        )
-        val mappedMetadata = resolveMappedEpisodes(mappedReferences)
-        if (mappedMetadata.isNotEmpty()) {
-            MetadataLog.info(
-                SOURCE,
-                "Metadati episodi risolti tramite AniBridge",
-                requestDetails + mapOf("episodi_risolti" to mappedMetadata.size),
-            )
-            return@withContext mappedMetadata
-        }
+        resolveViaAniBridge(anilistId, episodeNumbers, requestDetails)
+            ?.let { return@withContext it }
 
-        val fallbackMetadata = aniZipCatalog.tmdbId?.let { tmdbId ->
+        val tmdbId = aniZipCatalog.tmdbId?.takeIf { it > 0 } ?: run {
             MetadataLog.info(
                 SOURCE,
-                "Avvio fallback TMDB basato sulle date",
-                requestDetails + mapOf("id_tmdb" to tmdbId),
+                "Nessuna serie TMDB risolvibile",
+                requestDetails + mapOf("motivo" to "nessun_id_tmdb"),
             )
-            resolveEpisodesByAirDate(tmdbId, aniZipCatalog, episodeNumbers)
-        }.orEmpty()
-        MetadataLog.info(
-            SOURCE,
-            "Recupero metadati episodi completato",
-            requestDetails + mapOf(
-                "strategia_finale" to if (aniZipCatalog.tmdbId == null) "nessuna_mappatura_disponibile" else "date_di_uscita",
-                "episodi_risolti" to fallbackMetadata.size,
-            ),
-        )
-        fallbackMetadata
+            return@withContext null
+        }
+        resolveViaAirDate(tmdbId, aniZipCatalog, episodeNumbers, requestDetails)
     }
 
-    suspend fun resolveTmdbShowId(anilistId: Int, episodeNumbers: Set<Int>): Int? {
-        if (anilistId <= 0) return null
-        val episodes = episodeNumbers.filter { it > 0 }.toSet().ifEmpty { setOf(1) }
-        val references = mappingClient.fetch(anilistId, episodes)
-        return references.values.firstNotNullOfOrNull { it.tmdbId.takeIf { id -> id > 0 } }
+    suspend fun resolveShowByTmdbId(
+        tmdbId: Int,
+        sourceEpisodeNumbers: Set<Int>,
+        aniZipCatalog: AniZipEpisodeCatalog,
+    ): TmdbAnimeShowRef? = withContext(Dispatchers.IO) {
+        if (tmdbId <= 0) return@withContext null
+        resolveViaAirDate(
+            tmdbId,
+            aniZipCatalog,
+            sourceEpisodeNumbers.filter { it > 0 }.toSet()
+                .ifEmpty { aniZipCatalog.episodes.keys.filter { it > 0 }.toSet() },
+            mapOf("id_tmdb" to tmdbId),
+        )
     }
 
-    private suspend fun resolveMappedEpisodes(
-        references: Map<Int, TmdbAnimeEpisodeReference>,
-    ): Map<Int, TmdbAnimeEpisodeMetadata> {
+    private suspend fun resolveViaAniBridge(
+        anilistId: Int,
+        episodeNumbers: Set<Int>,
+        requestDetails: Map<String, Any?>,
+    ): TmdbAnimeShowRef? {
+        if (anilistId <= 0 || episodeNumbers.isEmpty()) return null
+        val references = mappingClient.fetch(anilistId, episodeNumbers)
         if (references.isEmpty()) {
-            MetadataLog.info(SOURCE, "Risoluzione AniBridge non necessaria", mapOf("motivo" to "nessuna_mappatura"))
-            return emptyMap()
+            MetadataLog.info(SOURCE, "Nessuna mappatura AniBridge", requestDetails)
+            return null
         }
-        MetadataLog.info(
-            SOURCE,
-            "Risoluzione episodi tramite AniBridge avviata",
-            mapOf(
-                "mappature_ricevute" to references.size,
-                "stagioni_da_recuperare" to references.values.map { it.tmdbId to it.season }.distinct().size,
-            ),
-        )
         val seasonEpisodes = references.values
             .map { it.tmdbId to it.season }
             .distinct()
             .mapChunkedParallel(SEASON_REQUEST_CONCURRENCY) { (tmdbId, season) ->
-                val episodes = fetchSeason(tmdbId, season)
-                (tmdbId to season) to episodes
+                (tmdbId to season) to fetchSeason(tmdbId, season)
             }
             .toMap()
-
-        val result = references.mapNotNull { (sourceEpisode, reference) ->
-            val tmdbEpisode = seasonEpisodes[reference.tmdbId to reference.season]
+        val bySource = references.mapNotNull { (sourceEpisode, reference) ->
+            seasonEpisodes[reference.tmdbId to reference.season]
                 ?.firstOrNull { it.episode == reference.episode }
-                ?: return@mapNotNull null
-            tmdbEpisode.toMetadata()
-                .takeIf { it.title != null || it.description != null }
-                ?.let { sourceEpisode to it }
+                ?.let { sourceEpisode to it.toMetadata() }
         }.toMap()
+        val dominant = references.values
+            .groupingBy { it.tmdbId to it.season }
+            .eachCount()
+            .maxByOrNull { it.value }
+            ?.key
+            ?: return null
+        val (tmdbId, season) = dominant
+        val dominantSeasonEpisodes = seasonEpisodes[dominant].orEmpty()
+        val seasonAirDate = dominantSeasonEpisodes.mapNotNull(TmdbEpisode::airDate).minOrNull()
         MetadataLog.info(
             SOURCE,
-            "Risoluzione episodi tramite AniBridge completata",
-            mapOf(
-                "mappature_ricevute" to references.size,
-                "episodi_risolti" to result.size,
-                "stagioni_con_episodi" to seasonEpisodes.values.count { it.isNotEmpty() },
+            "Serie TMDB risolta tramite AniBridge",
+            requestDetails + mapOf(
+                "id_tmdb" to tmdbId,
+                "stagione_tmdb" to season,
+                "episodi_risolti" to bySource.size,
+                "episodi_stagione_tmdb" to dominantSeasonEpisodes.size,
             ),
         )
-        return result
+        return TmdbAnimeShowRef(
+            tmdbId = tmdbId,
+            season = season,
+            seasonAirDate = seasonAirDate,
+            episodes = bySource,
+            seasonEpisodes = dominantSeasonEpisodes.map { it.toMetadata() },
+        )
+    }
+
+    private suspend fun resolveViaAirDate(
+        tmdbId: Int,
+        aniZipCatalog: AniZipEpisodeCatalog,
+        episodeNumbers: Set<Int>,
+        requestDetails: Map<String, Any?>,
+    ): TmdbAnimeShowRef {
+        val byDate = resolveEpisodesByAirDate(tmdbId, aniZipCatalog, episodeNumbers)
+        if (byDate.isEmpty()) {
+            MetadataLog.info(
+                SOURCE,
+                "Serie TMDB risolta senza mappatura episodi",
+                requestDetails + mapOf("id_tmdb" to tmdbId),
+            )
+            return TmdbAnimeShowRef(tmdbId, season = null)
+        }
+        val dominantSeason = byDate.values
+            .groupingBy(TmdbEpisode::season)
+            .eachCount()
+            .maxByOrNull { it.value }
+            ?.key
+            ?: 1
+        val dominantSeasonEpisodes = fetchSeason(tmdbId, dominantSeason)
+        val seasonAirDate = dominantSeasonEpisodes
+            .mapNotNull(TmdbEpisode::airDate)
+            .minOrNull()
+            ?: byDate.values.filter { it.season == dominantSeason }.mapNotNull(TmdbEpisode::airDate).minOrNull()
+        MetadataLog.info(
+            SOURCE,
+            "Serie TMDB risolta tramite date di uscita",
+            requestDetails + mapOf(
+                "id_tmdb" to tmdbId,
+                "stagione_tmdb" to dominantSeason,
+                "episodi_risolti" to byDate.size,
+                "episodi_stagione_tmdb" to dominantSeasonEpisodes.size,
+            ),
+        )
+        return TmdbAnimeShowRef(
+            tmdbId = tmdbId,
+            season = dominantSeason,
+            seasonAirDate = seasonAirDate,
+            episodes = byDate.mapValues { it.value.toMetadata() },
+            seasonEpisodes = dominantSeasonEpisodes.map { it.toMetadata() },
+        )
     }
 
     private suspend fun resolveEpisodesByAirDate(
         tmdbId: Int,
         aniZipCatalog: AniZipEpisodeCatalog,
         episodeNumbers: Set<Int>,
-    ): Map<Int, TmdbAnimeEpisodeMetadata> {
+    ): Map<Int, TmdbEpisode> {
         val sourceByDate = aniZipCatalog.episodes
             .mapNotNull { (number, episode) ->
                 val date = episode.airDate ?: episode.fallbackAirDate
@@ -139,80 +181,32 @@ internal class TmdbAnimeEpisodeMetadataClient(
             }
             .filter { (number, _) -> number in episodeNumbers }
             .groupBy({ (_, date) -> date }, { (number, _) -> number })
-        if (sourceByDate.isEmpty()) {
-            MetadataLog.info(
-                SOURCE,
-                "Fallback TMDB per date ignorato",
-                mapOf("id_tmdb" to tmdbId, "motivo" to "nessuna_data_anizip_utilizzabile"),
-            )
-            return emptyMap()
-        }
-        MetadataLog.info(
-            SOURCE,
-            "Risoluzione episodi TMDB per date avviata",
-            mapOf(
-                "id_tmdb" to tmdbId,
-                "episodi_richiesti" to episodeNumbers.size,
-                "date_anizip_distinte" to sourceByDate.size,
-            ),
-        )
+        if (sourceByDate.isEmpty()) return emptyMap()
 
         val tmdbByDate = fetchSeriesEpisodes(tmdbId)
             .mapNotNull { episode -> episode.airDate?.let { it to episode } }
             .groupBy({ (date, _) -> date }, { (_, episode) -> episode })
-        if (tmdbByDate.isEmpty()) {
-            MetadataLog.warning(
-                SOURCE,
-                "Fallback TMDB per date senza episodi utilizzabili",
-                mapOf("id_tmdb" to tmdbId, "motivo" to "nessun_episodio_tmdb_con_data"),
-            )
-            return emptyMap()
-        }
+        if (tmdbByDate.isEmpty()) return emptyMap()
 
-        val result = buildMap {
+        return buildMap {
             sourceByDate.forEach { (date, sourceEpisodes) ->
                 val tmdbEpisodes = tmdbByDate[date].orEmpty()
                 if (sourceEpisodes.size != tmdbEpisodes.size) return@forEach
                 sourceEpisodes.sorted()
                     .zip(tmdbEpisodes.sortedWith(compareBy(TmdbEpisode::season, TmdbEpisode::episode)))
-                    .forEach { (sourceEpisode, tmdbEpisode) ->
-                        tmdbEpisode.toMetadata()
-                            .takeIf { it.title != null || it.description != null }
-                            ?.let { put(sourceEpisode, it) }
-                }
+                    .forEach { (sourceEpisode, tmdbEpisode) -> put(sourceEpisode, tmdbEpisode) }
             }
         }
-        MetadataLog.info(
-            SOURCE,
-            "Risoluzione episodi TMDB per date completata",
-            mapOf(
-                "id_tmdb" to tmdbId,
-                "date_anizip_distinte" to sourceByDate.size,
-                "date_tmdb_distinte" to tmdbByDate.size,
-                "episodi_risolti" to result.size,
-            ),
-        )
-        return result
     }
 
     private suspend fun fetchSeriesEpisodes(tmdbId: Int): List<TmdbEpisode> {
-        if (tmdbId <= 0) {
-            MetadataLog.warning(
-                SOURCE,
-                "Elenco stagioni TMDB ignorato",
-                mapOf("id_tmdb" to tmdbId, "motivo" to "id_tmdb_non_valido"),
-            )
-            return emptyList()
-        }
+        if (tmdbId <= 0) return emptyList()
         val details = mapOf("id_tmdb" to tmdbId)
         val document = document(
             url = "$TMDB_BASE_URL/tv/$tmdbId/seasons",
             operation = "Elenco stagioni TMDB",
             details = details,
-        ) ?: run {
-            MetadataLog.warning(SOURCE, "Elenco stagioni TMDB non disponibile", details)
-            return emptyList()
-        }
+        ) ?: return emptyList()
         val seasons = document.select("a[href*=/season/]")
             .mapNotNull { anchor ->
                 val href = anchor.attr("href")
@@ -224,44 +218,15 @@ internal class TmdbAnimeEpisodeMetadataClient(
             .distinct()
             .sorted()
             .take(MAX_FALLBACK_SEASONS)
-        MetadataLog.info(
-            SOURCE,
-            "Stagioni TMDB individuate",
-            details + mapOf("stagioni_individuate" to seasons.size, "limite_stagioni" to MAX_FALLBACK_SEASONS),
-        )
-        val episodes = seasons.mapChunkedParallel(SEASON_REQUEST_CONCURRENCY) { season ->
+        return seasons.mapChunkedParallel(SEASON_REQUEST_CONCURRENCY) { season ->
             fetchSeason(tmdbId, season).takeIf { it.isNotEmpty() }
         }.flatten()
-        MetadataLog.info(
-            SOURCE,
-            "Episodi stagioni TMDB elaborati",
-            details + mapOf("stagioni_consultate" to seasons.size, "episodi_trovati" to episodes.size),
-        )
-        return episodes
     }
 
     private suspend fun fetchSeason(tmdbId: Int, season: Int): List<TmdbEpisode> {
-        if (tmdbId <= 0 || season < 0) {
-            MetadataLog.warning(
-                SOURCE,
-                "Stagione TMDB ignorata",
-                mapOf(
-                    "id_tmdb" to tmdbId,
-                    "stagione_tmdb" to season,
-                    "motivo" to "identificativo_non_valido",
-                ),
-            )
-            return emptyList()
-        }
+        if (tmdbId <= 0 || season < 0) return emptyList()
         val cacheKey = "$tmdbId:$season"
-        seasonCache[cacheKey]?.let { cached ->
-            MetadataLog.info(
-                SOURCE,
-                "Stagione TMDB ottenuta dalla cache",
-                mapOf("id_tmdb" to tmdbId, "stagione_tmdb" to season, "episodi_in_cache" to cached.size),
-            )
-            return cached
-        }
+        seasonCache[cacheKey]?.let { return it }
         val details = mapOf("id_tmdb" to tmdbId, "stagione_tmdb" to season)
         val episodes = document(
             url = "$TMDB_BASE_URL/tv/$tmdbId/season/$season",
@@ -270,14 +235,8 @@ internal class TmdbAnimeEpisodeMetadataClient(
         )
             ?.let { parseSeasonEpisodes(it, season) }
             .orEmpty()
-        if (episodes.isNotEmpty()) seasonCache.putIfAbsent(cacheKey, episodes)
-        val resolved = seasonCache[cacheKey] ?: episodes
-        MetadataLog.info(
-            SOURCE,
-            "Stagione TMDB elaborata",
-            details + mapOf("episodi_trovati" to resolved.size, "cache_aggiornata" to episodes.isNotEmpty()),
-        )
-        return resolved
+        if (episodes.isNotEmpty()) seasonCache.put(cacheKey, episodes)
+        return episodes
     }
 
     private suspend fun document(
@@ -288,12 +247,9 @@ internal class TmdbAnimeEpisodeMetadataClient(
         val requestUrl = "$url?language=it-IT"
         val requestDetails = details + mapOf(
             "operazione" to operation,
-            "tentativo" to 1,
-            "tentativi_massimi" to 1,
             "timeout_secondi" to TMDB_TIMEOUT_SECONDS,
         )
-        MetadataLog.info(SOURCE, "Richiesta TMDB avviata", requestDetails)
-        val responseResult = runCatching {
+        val responseResult = runCatchingCancellable {
             app.get(
                 requestUrl,
                 headers = headers,
@@ -321,13 +277,7 @@ internal class TmdbAnimeEpisodeMetadataClient(
             )
             return null
         }
-        val document = Jsoup.parse(response.text, requestUrl)
-        MetadataLog.info(
-            SOURCE,
-            "Risposta TMDB elaborata",
-            requestDetails + mapOf("stato_http" to response.code),
-        )
-        return document
+        return Jsoup.parse(response.text, requestUrl)
     }
 
     private fun parseSeasonEpisodes(document: Document, fallbackSeason: Int): List<TmdbEpisode> {
@@ -344,43 +294,45 @@ internal class TmdbAnimeEpisodeMetadataClient(
             TmdbEpisode(
                 season = season,
                 episode = episode,
-                title = cleanTitle(
+                title = cleanMetadataEpisodeTitle(
                     card.selectFirst("div.episode_title h3 a")?.text()
                         ?: anchor?.text(),
                 ),
-                description = cleanDescription(card.selectFirst("div.overview p")?.text()),
-                airDate = normalizeDate(card.selectFirst("div.date span.date")?.text()),
+                description = cleanTmdbEpisodeDescription(card.selectFirst("div.overview p")?.text()),
+                airDate = parseMetadataDate(card.selectFirst("div.date span.date")?.text()),
+                still = extractStill(card),
+                runTime = parseMetadataRuntime(card.selectFirst("div.date span.runtime")?.text()),
+                ratingPercent = parseRatingPercent(card),
             )
         }
     }
 
-    private fun cleanTitle(value: String?): String? {
-        return cleanText(value)
-            ?.replace(Regex("""^\d+\.\s*"""), "")
-            ?.takeIf(String::isNotBlank)
+    private fun parseRatingPercent(card: Element): Int? {
+        val rating = card.selectFirst("div.rating") ?: return null
+        return Regex("""\d+""").find(rating.text())
+            ?.value
+            ?.toIntOrNull()
+            ?.takeIf { it in 1..100 }
     }
 
-    private fun cleanDescription(value: String?): String? {
-        return cleanText(
-            value
-                ?.replace("Leggi di pi\u00f9", "")
-                ?.replace("Leggi di piu", ""),
-        )
-    }
-
-    private fun normalizeDate(value: String?): String? {
-        val text = cleanText(value) ?: return null
-        ISO_DATE.find(text)?.value?.let { return it }
-        val match = NAMED_DATE.find(text) ?: return null
-        val day = match.groupValues[1].toIntOrNull() ?: return null
-        val month = MONTHS[match.groupValues[2].lowercase(Locale.ROOT)] ?: return null
-        val year = match.groupValues[3].toIntOrNull() ?: return null
-        return String.format(Locale.US, "%04d-%02d-%02d", year, month, day)
+    private fun extractStill(card: Element): String? {
+        val image = card.selectFirst("div.image img") ?: return null
+        val fromSrcset = image.attr("srcset")
+            .split(",")
+            .mapNotNull { it.trim().substringBefore(" ").takeIf(String::isNotBlank) }
+            .lastOrNull()
+        return (fromSrcset ?: image.attr("src")).takeIf { it.startsWith("http") }
     }
 
     private fun TmdbEpisode.toMetadata(): TmdbAnimeEpisodeMetadata = TmdbAnimeEpisodeMetadata(
         title = title,
         description = description,
+        posterUrl = still,
+        airDate = airDate,
+        runTime = runTime,
+        ratingPercent = ratingPercent,
+        tmdbSeason = season,
+        tmdbEpisode = episode,
     )
 
     private data class TmdbEpisode(
@@ -389,6 +341,9 @@ internal class TmdbAnimeEpisodeMetadataClient(
         val title: String?,
         val description: String?,
         val airDate: String?,
+        val still: String?,
+        val runTime: Int?,
+        val ratingPercent: Int?,
     )
 
     private companion object {
@@ -399,33 +354,5 @@ internal class TmdbAnimeEpisodeMetadataClient(
         const val MAX_FALLBACK_SEASONS = 32
         val SEASON_IN_URL = Regex("""/season/(\d+)""")
         val EPISODE_IN_URL = Regex("""/episode/(\d+)""")
-        val ISO_DATE = Regex("""\d{4}-\d{2}-\d{2}""")
-        val NAMED_DATE = Regex("""(\d{1,2})\s+(\p{L}+),?\s+(\d{4})""")
-        val MONTHS = mapOf(
-            "gennaio" to 1,
-            "febbraio" to 2,
-            "marzo" to 3,
-            "aprile" to 4,
-            "maggio" to 5,
-            "giugno" to 6,
-            "luglio" to 7,
-            "agosto" to 8,
-            "settembre" to 9,
-            "ottobre" to 10,
-            "novembre" to 11,
-            "dicembre" to 12,
-            "january" to 1,
-            "february" to 2,
-            "march" to 3,
-            "april" to 4,
-            "may" to 5,
-            "june" to 6,
-            "july" to 7,
-            "august" to 8,
-            "september" to 9,
-            "october" to 10,
-            "november" to 11,
-            "december" to 12,
-        )
     }
 }

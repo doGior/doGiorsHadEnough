@@ -3,6 +3,8 @@ package it.dogior.hadEnough.anime.metadata
 import android.util.JsonReader
 import android.util.JsonToken
 import com.lagradost.cloudstream3.app
+import it.dogior.hadEnough.util.runCatchingCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -128,12 +130,12 @@ internal class AniBridgeEpisodeMappingClient(
                 "Download archivio mappature avviato",
                 mapOf("timeout_secondi" to ARCHIVE_TIMEOUT_SECONDS),
             )
-            val responseResult = runCatching {
+            val responseResult = runCatchingCancellable {
                 app.get(
-                ARCHIVE_URL,
-                headers = headers + mapOf("Accept" to "application/zip"),
-                cacheTime = 0,
-                timeout = ARCHIVE_TIMEOUT_SECONDS,
+                    ARCHIVE_URL,
+                    headers = headers + mapOf("Accept" to "application/zip"),
+                    cacheTime = 0,
+                    timeout = ARCHIVE_TIMEOUT_SECONDS,
                 )
             }
             val response = responseResult.getOrNull() ?: run {
@@ -185,6 +187,8 @@ internal class AniBridgeEpisodeMappingClient(
                     mapOf("stato_http" to response.code, "dimensione_archivio_byte" to it.length()),
                 )
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             MetadataLog.failure(
                 source = SOURCE,

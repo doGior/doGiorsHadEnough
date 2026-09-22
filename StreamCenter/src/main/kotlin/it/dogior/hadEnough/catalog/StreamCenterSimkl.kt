@@ -1,5 +1,7 @@
 package it.dogior.hadEnough.catalog
 
+import it.dogior.hadEnough.util.youtubeTrailerUrl
+
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.MainAPI
@@ -27,7 +29,6 @@ internal data class StreamCenterSimklIds(
     val simkl: Int,
     val imdb: String?,
     val tmdb: String?,
-    val tvdb: String?,
     val mal: Int?,
     val anilist: Int?,
     val kitsu: Int?,
@@ -159,7 +160,25 @@ internal class StreamCenterSimklCatalog : StreamCenterCatalog {
         mal: Int? = null,
         anilist: Int? = null,
         allowedCategories: Set<String> = MEDIA_CATEGORIES,
-    ): String? {
+    ): String? = resolveMedia(simkl, imdb, tmdb, mal, anilist, allowedCategories)
+        ?.let { (category, itemIds) -> "https://simkl.com/$category/${itemIds.simkl}" }
+
+    suspend fun resolveMediaIds(
+        imdb: String? = null,
+        tmdb: String? = null,
+        mal: Int? = null,
+        anilist: Int? = null,
+        allowedCategories: Set<String> = MEDIA_CATEGORIES,
+    ): StreamCenterSimklIds? = resolveMedia(null, imdb, tmdb, mal, anilist, allowedCategories)?.second
+
+    private suspend fun resolveMedia(
+        simkl: Int? = null,
+        imdb: String? = null,
+        tmdb: String? = null,
+        mal: Int? = null,
+        anilist: Int? = null,
+        allowedCategories: Set<String> = MEDIA_CATEGORIES,
+    ): Pair<String, StreamCenterSimklIds>? {
         val params = buildMap {
             simkl?.let { put("simkl", it.toString()) }
             imdb?.trim()?.takeIf(String::isNotBlank)?.let { put("imdb", it) }
@@ -174,7 +193,7 @@ internal class StreamCenterSimklCatalog : StreamCenterCatalog {
             val itemIds = ids(item.optJSONObject("ids"), simkl)
             val category = mediaCategory(item)
             if (itemIds.simkl > 0 && category in allowedCategories) {
-                return "https://simkl.com/$category/${itemIds.simkl}"
+                return category to itemIds
             }
         }
         return null
@@ -355,7 +374,6 @@ internal class StreamCenterSimklCatalog : StreamCenterCatalog {
             simkl = simkl,
             imdb = value?.optNullableString("imdb"),
             tmdb = value?.optNullableString("tmdb"),
-            tvdb = value?.optNullableString("tvdb"),
             mal = value?.optNullableString("mal")?.toIntOrNull(),
             anilist = value?.optNullableString("anilist")?.toIntOrNull(),
             kitsu = value?.optNullableString("kitsu")?.toIntOrNull(),
@@ -447,8 +465,10 @@ internal class StreamCenterSimklCatalog : StreamCenterCatalog {
     }
 
     private fun trailer(array: JSONArray?): String? {
-        val youtube = array?.optJSONObject(0)?.optNullableString("youtube") ?: return null
-        return "https://www.youtube.com/watch?v=$youtube"
+        if (array == null) return null
+        return (0 until array.length()).firstNotNullOfOrNull { index ->
+            youtubeTrailerUrl(array.optJSONObject(index)?.optNullableString("youtube"))
+        }
     }
 
     private fun runtime(value: Any?): Int? {

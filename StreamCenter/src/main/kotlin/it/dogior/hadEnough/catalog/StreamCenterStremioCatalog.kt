@@ -179,7 +179,14 @@ internal class StreamCenterStremioCatalog(
         val id: String,
     )
 
-    private companion object {
+    companion object {
         const val ROUTE_PREFIX = "https://streamcenter.stremio/catalog"
+
+        fun catalogKeyForUrl(url: String): String? {
+            if (!url.startsWith("$ROUTE_PREFIX/")) return null
+            val parts = url.removePrefix("$ROUTE_PREFIX/").substringBefore('?').split('/')
+            if (parts.size != 3) return null
+            return runCatching { URLDecoder.decode(parts[0], "UTF-8") }.getOrNull()?.takeIf(String::isNotBlank)
+        }
     }
 }

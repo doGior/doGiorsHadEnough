@@ -4,11 +4,6 @@ internal enum class StreamCenterLocalSyncPayloadType(
     val wireValue: String,
     val title: String,
 ) {
-    ALL("all", "Tutto"),
-    CLOUDSTREAM("cloudstream", "Configurazione CloudStream"),
-    LIBRARY("library", "Libreria locale"),
-    STREAMCENTER("streamcenter", "Configurazione StreamCenter"),
-
     SELECTIVE("selective", "Selezione"),
     ;
 

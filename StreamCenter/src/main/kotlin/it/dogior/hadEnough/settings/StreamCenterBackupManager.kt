@@ -37,7 +37,7 @@ internal object StreamCenterBackupManager {
     private const val BACKUP_EXTENSION = ".streamcenter"
     private const val BACKUP_MIME_TYPE = "application/vnd.streamcenter.backup"
     private val backupExtensionPattern = Regex(
-        "(?:\\.streamcenter(?:\\.json)?|\\.json)$",
+        "\\.streamcenter$",
         RegexOption.IGNORE_CASE,
     )
 
@@ -261,8 +261,12 @@ internal object StreamCenterBackupManager {
             "Il file selezionato non è un backup di StreamCenter."
         }
         val schemaVersion = root.optInt("schemaVersion", -1)
-        require(schemaVersion in 1..BACKUP_SCHEMA_VERSION) {
-            "Questa versione del backup non è ancora supportata."
+        require(schemaVersion == BACKUP_SCHEMA_VERSION) {
+            "Questa versione del backup non è supportata."
+        }
+        val pluginVersion = root.optString("pluginVersion")
+        require(pluginVersion.toIntOrNull()?.let { it >= 10 } == true) {
+            "Sono supportati solo i backup di StreamCenter v10 o successive."
         }
         val encodedPreferences = root.optJSONObject("preferences")
             ?: throw IllegalArgumentException("Il backup non contiene alcuna configurazione valida.")
@@ -297,7 +301,7 @@ internal object StreamCenterBackupManager {
             "Il backup non contiene tutte le impostazioni dichiarate."
         }
         return ParsedBackup(
-            pluginVersion = root.optString("pluginVersion", "sconosciuta"),
+            pluginVersion = pluginVersion,
             preferences = decodedPreferences,
         )
     }
@@ -440,8 +444,7 @@ internal object StreamCenterBackupManager {
     }
 
     private fun isBackupFileName(fileName: String): Boolean {
-        return fileName.endsWith(BACKUP_EXTENSION, ignoreCase = true) ||
-            fileName.endsWith("$BACKUP_EXTENSION.json", ignoreCase = true)
+        return fileName.endsWith(BACKUP_EXTENSION, ignoreCase = true)
     }
 
     private fun twoDigits(value: Int): String = String.format(Locale.ITALY, "%02d", value)

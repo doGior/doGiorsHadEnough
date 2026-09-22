@@ -2,8 +2,11 @@ package it.dogior.hadEnough.torrent
 
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.util.StreamCenterLogger
+import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
@@ -18,7 +21,7 @@ internal object StreamCenterTorrentResolver {
         logTabName: String,
     ): Boolean {
         if (domains.isEmpty()) return false
-        val startedAt = System.currentTimeMillis()
+        val startedAt = System.nanoTime()
         var timedOut = false
         var finalOutcome: StreamCenterExtSearchOutcome? = null
         var resultOutcome: StreamCenterExtSearchOutcome? = null
@@ -165,18 +168,16 @@ internal object StreamCenterTorrentResolver {
             .take(resultLimit)
             .map(RankedResolvedCandidate::resolved)
             .toList()
+        val vpnActive = StreamCenterVpnGuard.isVpnActive(StreamCenterPlugin.activeContext)
         ranked.forEach { resolved ->
             callback(
                 newExtractorLink(
                     source = "EXT",
-                    name = resolved.candidate.displayName(emitDomain),
+                    name = resolved.candidate.displayName(emitDomain, vpnActive),
                     url = resolved.magnet,
                     type = ExtractorLinkType.MAGNET,
                 ) {
-                    quality = qualityFromTorrentTitle(
-                        listOfNotNull(resolved.candidate.title, resolved.candidate.selectedFileName)
-                            .joinToString(" "),
-                    )
+                    quality = StreamCenterTorrentMetadata.resolution(resolved.candidate) ?: Qualities.Unknown.value
                 },
             )
         }
@@ -200,7 +201,7 @@ internal object StreamCenterTorrentResolver {
                 "risultati_emessi" to ranked.size,
                 "limite_risultati" to resultLimit,
                 "timeout" to timedOut,
-                "durata_ms" to (System.currentTimeMillis() - startedAt),
+                "durata_ms" to ((System.nanoTime() - startedAt) / 1_000_000L),
             ),
             level = when {
                 timedOut || (ranked.isEmpty() && effectiveOutcome?.status?.availability != StreamCenterExtAvailability.AVAILABLE) ->
@@ -217,7 +218,7 @@ internal object StreamCenterTorrentResolver {
         domainCount: Int,
         sourceTimeoutMs: Long,
     ): Long {
-        val elapsedMs = System.currentTimeMillis() - startedAt
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L
         val remainingMs = (sourceTimeoutMs - elapsedMs).coerceAtLeast(1L)
         if (domainIndex >= domainCount - 1) return remainingMs
         val fallbackReserveMs = minOf(DOMAIN_FALLBACK_RESERVE_MS, remainingMs / 3)
@@ -252,10 +253,13 @@ internal object StreamCenterTorrentResolver {
             .split(',', ';', '\n')
             .count { term -> term.isNotBlank() },
         "sorgenti_ext" to StreamCenterExtReleaseSources.forCategory(context.extCategory()).map { source -> source.title },
-        "cookie_cloudflare_presente" to StreamCenterExtCloudflareSession.hasVerifiedClearance(domain.baseUrl),
+        "cookie_cloudflare_presente" to StreamCenterExtCloudflareSession.hasClearanceCookie(domain.baseUrl),
     )
 
-    private fun StreamCenterTorrentCandidate.displayName(domain: StreamCenterExtDomain?): String {
+    private fun StreamCenterTorrentCandidate.displayName(
+        domain: StreamCenterExtDomain?,
+        vpnActive: Boolean,
+    ): String {
         val releaseName = StreamCenterExtReleaseSources.byId(extReleaseSourceId)?.title
             ?: domain?.let { endpoint ->
                 when (endpoint) {
@@ -265,14 +269,12 @@ internal object StreamCenterTorrentResolver {
                 }
             }
             ?: "EXT"
-        val resolution = StreamCenterTorrentMetadata.resolution(
-            listOfNotNull(title, selectedFileName).joinToString(" "),
-        )
+        val resolution = StreamCenterTorrentMetadata.resolution(this)
         val codecDetection = StreamCenterTorrentVideoCodecDetector.detect(this)
         val summary = buildList {
             add(releaseName)
             resolution?.let { value -> add("${value}p") }
-            this@displayName.size
+            (StreamCenterTorrentMetadata.formatSizeBytes(sizeBytes) ?: this@displayName.size)
                 ?.takeIf { value -> value.isNotBlank() }
                 ?.let(::add)
             seeders?.let { value -> add("🌱 $value") }
@@ -288,7 +290,8 @@ internal object StreamCenterTorrentResolver {
                 ?.joinToString(" + ") { codec -> codec.displayName }
                 ?.let { codecs -> add("Codec: $codecs") }
         }
-        return (listOf(summary) + details).joinToString("\n")
+        val vpnLine = if (vpnActive) "🔒 VPN attiva" else "⚠️ VPN non attiva"
+        return (listOf(vpnLine, summary) + details).joinToString("\n")
     }
 
     private fun StreamCenterExtAvailability.logLevel(): StreamCenterLogger.Level = when (this) {

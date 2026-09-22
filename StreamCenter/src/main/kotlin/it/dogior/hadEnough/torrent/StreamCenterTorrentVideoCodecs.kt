@@ -74,7 +74,7 @@ internal data class StreamCenterTorrentVideoCodecDetection(
 
 internal object StreamCenterTorrentVideoCodecDetector {
     fun detect(candidate: StreamCenterTorrentCandidate): StreamCenterTorrentVideoCodecDetection =
-        StreamCenterTorrentVideoCodecDetection(StreamCenterTorrentVideoCodec.detectAll(codecText(candidate)))
+        StreamCenterTorrentVideoCodecDetection(detectedCodecs(candidate))
 
     fun accepts(
         candidate: StreamCenterTorrentCandidate,
@@ -86,15 +86,12 @@ internal object StreamCenterTorrentVideoCodecDetector {
         return detected.any { codec -> codec !in blockedCodecs }
     }
 
-    private fun codecText(candidate: StreamCenterTorrentCandidate): String = buildString {
-        append(candidate.title)
-        candidate.selectedFileName?.let { name ->
-            append(' ')
-            append(name)
+    private fun detectedCodecs(candidate: StreamCenterTorrentCandidate): Set<StreamCenterTorrentVideoCodec> {
+        candidate.selectedFileName?.let { path ->
+            val fileCodecs = StreamCenterTorrentVideoCodec.detectAll(path.torrentFileName())
+                .ifEmpty { StreamCenterTorrentVideoCodec.detectAll(path) }
+            if (fileCodecs.isNotEmpty()) return fileCodecs
         }
-        candidate.availableFiles?.forEach { file ->
-            append(' ')
-            append(file.path)
-        }
+        return StreamCenterTorrentVideoCodec.detectAll(candidate.title)
     }
 }

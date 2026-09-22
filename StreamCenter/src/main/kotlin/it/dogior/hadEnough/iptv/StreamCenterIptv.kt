@@ -8,6 +8,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 object StreamCenterIptv {
@@ -15,7 +16,31 @@ object StreamCenterIptv {
         "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists"
     const val ROUTE_PREFIX = "https://streamcenter.local/iptv/channel/"
 
+    const val CUSTOM_PLAYLIST_PREFIX = "custom_"
+
+    @Volatile
+    private var customPlaylistsState: List<CustomPlaylist> = emptyList()
+
+    fun setCustomPlaylists(playlists: List<CustomPlaylist>) {
+        customPlaylistsState = playlists
+    }
+
+    fun customPlaylists(): List<CustomPlaylist> = customPlaylistsState
+
+    fun customRegions(): List<Region> =
+        customPlaylistsState.map { Region(key = it.key, name = it.name, isCustom = true) }
+
+    fun allRegions(): List<Region> = regions + customRegions()
+
     suspend fun fetchChannels(regionKey: String): List<Channel> {
+        customPlaylistsState.firstOrNull { it.key == regionKey }?.let { playlist ->
+            val region = Region(key = playlist.key, name = playlist.name, isCustom = true)
+            val content = playlist.content
+                ?: playlist.url?.let { runCatching { app.get(it).text }.getOrNull() }
+                ?: return emptyList()
+            return parsePlaylist(content, region)
+        }
+        if (regionKey.startsWith(CUSTOM_PLAYLIST_PREFIX)) return emptyList()
         val region = regions.firstOrNull { it.key == regionKey } ?: regions.first { it.key == "italy" }
         return parsePlaylist(app.get("$PLAYLIST_ROOT/playlist_${region.key}.m3u8").text, region)
     }
@@ -25,11 +50,12 @@ object StreamCenterIptv {
     ): Map<String, List<Channel>?> = supervisorScope {
         val completed = AtomicInteger()
         val semaphore = Semaphore(6)
-        regions.map { region ->
+        val catalogRegions = allRegions()
+        catalogRegions.map { region ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val channels = runCatching { fetchChannels(region.key) }.getOrNull()
-                    onRegionLoaded(region, channels, completed.incrementAndGet(), regions.size)
+                    onRegionLoaded(region, channels, completed.incrementAndGet(), catalogRegions.size)
                     region.key to channels
                 }
             }
@@ -126,7 +152,7 @@ object StreamCenterIptv {
             id = "${region.key}:$localId",
             name = name,
             logo = attributes["tvg-logo"]?.takeIf(String::isNotBlank),
-            group = attributes["group-title"].orEmpty().ifBlank { "TV Italia" },
+            group = attributes["group-title"].orEmpty().ifBlank { if (region.isCustom) "Altro" else "TV Italia" },
             streamUrl = streamUrl,
             userAgent = options["http-user-agent"]?.takeIf(String::isNotBlank),
             referer = options["http-referrer"]?.takeIf(String::isNotBlank),
@@ -271,7 +297,31 @@ object StreamCenterIptv {
         val key: String,
         val name: String,
         val isCategory: Boolean = false,
+        val isCustom: Boolean = false,
     )
+
+    data class CustomPlaylist(
+        val key: String,
+        val name: String,
+        val url: String? = null,
+        val content: String? = null,
+        val categories: List<String> = emptyList(),
+        val language: String? = null,
+    )
+
+    fun languageForRegion(regionKey: String): String? {
+        customPlaylistsState.firstOrNull { it.key == regionKey }?.let { return it.language }
+        if (regionKey.startsWith(CUSTOM_PLAYLIST_PREFIX)) return null
+        return languageCodeFor(regionKey)
+    }
+
+    fun categoriesOf(channels: List<Channel>): List<String> =
+        channels.map { it.group.trim().ifBlank { "Altro" } }
+            .distinct()
+            .sortedBy { it.lowercase(Locale.ROOT) }
+
+    fun channelsForCategory(channels: List<Channel>, category: String): List<Channel> =
+        channels.filter { it.group.trim().ifBlank { "Altro" }.equals(category, ignoreCase = true) }
 
     fun languageCodeFor(regionKey: String): String = when (regionKey) {
         "italy", "san_marino", "zz_vod_it" -> "it"

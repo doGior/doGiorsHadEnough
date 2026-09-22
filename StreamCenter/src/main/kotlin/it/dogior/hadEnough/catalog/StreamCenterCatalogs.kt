@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
+import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
 import it.dogior.hadEnough.stremio.StreamCenterStremioCatalogDescriptor
 import it.dogior.hadEnough.stremio.StreamCenterStremioResource
@@ -319,8 +320,54 @@ internal object StreamCenterCatalogs {
         ),
     )
 
+    const val IPTV_CATALOG_KEY_PREFIX = "iptvlist_"
+
+    fun iptvCatalogKey(playlistKey: String): String = "$IPTV_CATALOG_KEY_PREFIX$playlistKey"
+
+    fun iptvPlaylistKey(catalogKey: String): String = catalogKey.removePrefix(IPTV_CATALOG_KEY_PREFIX)
+
+    fun isIptvCatalogKey(catalogKey: String): Boolean = catalogKey.startsWith(IPTV_CATALOG_KEY_PREFIX)
+
+    fun iptvCustomCatalogDefinition(
+        playlist: StreamCenterIptv.CustomPlaylist,
+    ): StreamCenterCatalogDefinition? {
+        if (playlist.categories.isEmpty()) return null
+        val sections = playlist.categories.map { category ->
+            StreamCenterCatalogSection(
+                key = "iptvcat_${category.lowercase(Locale.ROOT).hashCode().toUInt().toString(16)}",
+                title = category,
+                path = category,
+                type = TvType.Live,
+            )
+        }.distinctBy(StreamCenterCatalogSection::key)
+        return StreamCenterCatalogDefinition(
+            key = iptvCatalogKey(playlist.key),
+            title = playlist.name,
+            displayName = "StreamCenter (${playlist.name})",
+            websiteUrl = playlist.url ?: "https://streamcenter.local/iptv/${playlist.key}",
+            sections = sections,
+            supportedTypes = setOf(TvType.Live),
+        )
+    }
+
+    fun iptvCustomCatalogs(): List<StreamCenterCatalogDefinition> =
+        StreamCenterIptv.customPlaylists().mapNotNull(::iptvCustomCatalogDefinition)
+
+    fun removeIptvCatalog(sharedPref: SharedPreferences?, playlistKey: String) {
+        removeCatalog(
+            sharedPref,
+            StreamCenterCatalogDefinition(
+                key = iptvCatalogKey(playlistKey),
+                title = "",
+                displayName = "",
+                websiteUrl = "",
+                sections = emptyList(),
+            ),
+        )
+    }
+
     fun allCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> =
-        catalogs + stremioCatalogs(sharedPref)
+        catalogs + stremioCatalogs(sharedPref) + iptvCustomCatalogs()
 
     fun stremioCatalogDefinition(
         addon: StreamCenterStremioAddon,

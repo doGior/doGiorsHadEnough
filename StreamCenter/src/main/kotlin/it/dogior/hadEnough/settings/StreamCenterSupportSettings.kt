@@ -1,8 +1,11 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.availability.*
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
 import android.content.res.ColorStateList
@@ -10,43 +13,47 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.text.InputFilter
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.edit
 import androidx.core.widget.doAfterTextChanged
+import androidx.lifecycle.lifecycleScope
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.syncproviders.AccountManager
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import org.jsoup.Jsoup
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragment() {
+    override val screenTitle: String = "Sistema"
+
+    override val screenIcon: String = "⚙️"
+
+    override val screenAccent: String = COLOR_SUPPORT
+
     private var activeBackupDialog: AlertDialog? = null
     private var backupLocationText: TextView? = null
     private val backupFolderPicker = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -61,131 +68,111 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
     }
 
     private companion object {
-        const val CHANGELOG_URL = "https://telegra.ph/StreamCenter-Changelog-07-18-2"
-        const val CHANGELOG_TIMEOUT_MS = 10_000L
-        const val API_CHECK_TIMEOUT_MS = 12_000L
         const val TELEGRAM_GROUP_URL = "https://t.me/cloudstream_italia"
-        val versionHeaderPattern = Regex("^#{2,3}\\s*(.*?)(?:\\s+INIZIO)?\\s*$", RegexOption.IGNORE_CASE)
-        val versionTitleWithDatePattern = Regex(
-            "^(.+?)\\s*\\((\\d{1,2}\\s*/\\s*\\d{1,2}\\s*/\\s*\\d{4})\\)$",
-            RegexOption.IGNORE_CASE,
-        )
-        val endMarkerPattern = Regex("^#{2,3}\\s*(?:FINE)?\\s*$", RegexOption.IGNORE_CASE)
-        val primaryHeaderPattern = Regex(
-            "^#\\s*Modific(?:a|he)\\s+Principal(?:e|i)\\b.*$",
-            RegexOption.IGNORE_CASE,
-        )
-        val secondaryHeaderPattern = Regex(
-            "^#\\s*Modific(?:a|he)\\s+Secondari(?:a|e)\\b.*$",
-            RegexOption.IGNORE_CASE,
-        )
     }
-
-    private enum class ChangelogSection {
-        NONE,
-        PRIMARY,
-        SECONDARY,
-    }
-
-    private data class ChangelogVersion(
-        val title: String,
-        val date: String? = null,
-        val primaryChanges: MutableList<String> = mutableListOf(),
-        val secondaryChanges: MutableList<String> = mutableListOf(),
-    )
 
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
     ): View {
-        val content = rootContainer()
+        val content = rootContainer().apply {
+            setPadding(paddingLeft, 0, paddingRight, paddingBottom)
+        }
         content.minimumHeight = standardSubmenuMinimumHeight()
-        content.addView(
-            header(
-                title = "Supporto",
-                icon = "❓",
-                accent = COLOR_SUPPORT,
-            ),
-        )
 
-        val supportCards = mutableListOf<View>()
-        supportCards.add(supportCard(
-            icon = "\uD83D\uDCCB",
-            title = "Log",
-            summary = "",
-            accent = COLOR_LOG,
-        ) {
-            val tag = "StreamCenterLogsSettings"
-            if (parentFragmentManager.findFragmentByTag(tag) == null) {
-                StreamCenterLogsSettingsFragment().show(parentFragmentManager, tag)
-            }
-        })
-        supportCards.add(supportCard(
-            icon = "💬",
-            title = "Invia feedback",
-            summary = "",
-            accent = COLOR_FEEDBACK,
-        ) {
-            showFeedbackChoiceDialog()
-        })
-        supportCards.add(supportCard(
-            icon = "\uD83D\uDCDD",
-            title = "Cambiamenti",
-            summary = "",
-            accent = COLOR_SUPPORT,
-        ) {
-            showChangelogDialog()
-        })
-        supportCards.add(supportCard(
-            icon = "\uD83D\uDCBE",
-            title = "Esporta/Importa",
-            summary = "",
-            accent = COLOR_BACKUP,
-        ) {
-            showBackupChoiceDialog()
-        })
-        supportCards.add(supportCard(
-            icon = "🔐",
-            title = "Sync Locale",
-            summary = "",
-            accent = COLOR_LOCAL_SYNC,
-        ) {
-            showLocalSyncWarningDialog()
-        })
-        supportCards.add(supportCard(
-            icon = "♻️",
-            title = "Ripristina tutte le impostazioni",
-            summary = "",
-            accent = COLOR_RESET,
-        ) {
-            val alertDialog = AlertDialog.Builder(requireContext())
-                .setCustomTitle(dialogTitle("Ripristina impostazioni"))
-                .setMessage("Vuoi riportare StreamCenter alle impostazioni iniziali?")
-                .setPositiveButton("Ripristina") { _, _ ->
-                    runCatching {
-                        StreamCenterPlugin.resetAllConfiguration(
-                            requireContext().applicationContext,
-                            sharedPref,
-                        )
-                    }.onSuccess {
-                        refreshVisibleSettingsEffects()
-                        resetRestartNeeded()
-                        saveToast("StreamCenter ripristinato")
-                    }.onFailure {
-                        showBackupError("Ripristino non riuscito", it)
-                    }
-                }
-                .setNegativeButton("Annulla", null)
-                .create()
-            applyDialogBackdrop(alertDialog)
-            alertDialog.show()
-        }.apply {
-            (layoutParams as LinearLayout.LayoutParams).topMargin = dp(18)
-        })
-
-        addAdaptiveCardGrid(content, supportCards)
+        fun addSection(label: String, accent: String, topMargin: Int, rows: List<View>) {
+            content.addView(sectionHeading(label, accent, topMargin))
+            addAdaptiveCardGrid(content, rows)
+        }
+        addSection("Rete", COLOR_VPN_GUARD, 4, listOf(vpnGuardRow()))
+        addSection("Dati", COLOR_BACKUP, 16, listOf(backupCard(), syncLocaleCard(), cacheCard()))
+        addSection("Diagnostica", COLOR_LOG, 16, listOf(logCard(), feedbackCard(), resetCard()))
         return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    private var setVpnGuardChecked: ((Boolean) -> Unit)? = null
+
+    private fun vpnGuardRow(): View = switchRow(
+        title = "Protezione VPN",
+        summary = "Blocca Internet finché la VPN non è attiva.",
+        checked = StreamCenterPlugin.isVpnRequired(sharedPref),
+        defaultChecked = StreamCenterPlugin.isVpnRequired(null),
+        accent = COLOR_VPN_GUARD,
+        icon = "🛡️",
+        fixedHeight = true,
+        bindChecked = { setter -> setVpnGuardChecked = setter },
+    ) { enabled ->
+        sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_REQUIRE_VPN, enabled) }
+    }
+
+    private fun logCard(): View = supportCard(
+        icon = "📋",
+        title = "Log",
+        summary = "Ricerche, fonti ed errori.",
+        accent = COLOR_LOG,
+    ) {
+        openScreen(StreamCenterLogsSettingsFragment(), "StreamCenterLogsSettings")
+    }
+
+    private fun cacheCard(): View = supportCard(
+        icon = "⚡",
+        title = "Cache",
+        summary = "Riapre subito le schede già viste.",
+        accent = COLOR_CACHE,
+    ) {
+        openScreen(StreamCenterCacheSettingsFragment(), "StreamCenterCacheSettings")
+    }
+
+    private fun feedbackCard(): View = supportCard(
+        icon = "💬",
+        title = "Invia feedback",
+        summary = "Segnala un problema.",
+        accent = COLOR_FEEDBACK,
+    ) { showFeedbackChoiceDialog() }
+
+    private fun backupCard(): View = supportCard(
+        icon = "💾",
+        title = "Esporta e importa",
+        summary = "Salva la configurazione in un file.",
+        accent = COLOR_BACKUP,
+    ) { showBackupChoiceDialog() }
+
+    private fun syncLocaleCard(): View = supportCard(
+        icon = "🔐",
+        title = "Sync locale",
+        summary = "Allinea i dispositivi sulla stessa rete.",
+        accent = COLOR_LOCAL_SYNC,
+    ) { showLocalSyncWarningDialog() }
+
+    private fun resetCard(): View = supportCard(
+        icon = "♻️",
+        title = "Ripristina tutte le impostazioni",
+        summary = "Torna alla configurazione iniziale.",
+        accent = COLOR_RESET,
+    ) {
+        val alertDialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Ripristina impostazioni"))
+            .setMessage("Vuoi riportare StreamCenter alle impostazioni iniziali?")
+            .setPositiveButton("Ripristina") { _, _ ->
+                runCatching {
+                    StreamCenterPlugin.resetAllConfiguration(
+                        requireContext().applicationContext,
+                        sharedPref,
+                    )
+                }.onSuccess {
+                    setVpnGuardChecked?.invoke(StreamCenterPlugin.isVpnRequired(sharedPref))
+                    refreshVisibleSettingsEffects()
+                    resetRestartNeeded()
+                    saveToast("StreamCenter ripristinato")
+                }.onFailure {
+                    showBackupError("Ripristino non riuscito", it)
+                }
+            }
+            .setNegativeButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(alertDialog)
+        alertDialog.show()
     }
 
     private fun supportCard(
@@ -214,7 +201,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             .setCustomTitle(dialogTitle("Funzionalità sperimentale", COLOR_LOCAL_SYNC))
             .setMessage(localSyncWarningMessage())
             .setPositiveButton("Continua") { _, _ -> openLocalSync() }
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(alertDialog)
         alertDialog.show()
@@ -253,360 +240,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
     }
 
     private fun openLocalSync() {
-        val tag = "StreamCenterLocalSyncSettings"
-        if (parentFragmentManager.findFragmentByTag(tag) == null) {
-            StreamCenterLocalSyncSettingsFragment().show(parentFragmentManager, tag)
-        }
-    }
-
-    private fun showChangelogDialog() {
-        val ctx = context ?: return
-        var loadingCancelled = false
-        var loadingFinished = false
-        var timeoutAction: Runnable? = null
-        val loadingDialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Cambiamenti"))
-            .setMessage("Recupero delle modifiche in corso…")
-            .setNegativeButton("Annulla", null)
-            .create()
-        applyDialogBackdrop(loadingDialog) {
-            if (!loadingFinished) loadingCancelled = true
-            timeoutAction?.let { loadingDialog.window?.decorView?.removeCallbacks(it) }
-        }
-        loadingDialog.show()
-        val changelogTimeoutAction = Runnable {
-            if (!loadingDialog.isShowing || loadingFinished || loadingCancelled) return@Runnable
-            loadingFinished = true
-            loadingDialog.dismiss()
-            Toast.makeText(
-                ctx,
-                "Impossibile recuperare i cambiamenti.",
-                Toast.LENGTH_LONG,
-            ).show()
-        }
-        timeoutAction = changelogTimeoutAction
-        loadingDialog.window?.decorView?.postDelayed(changelogTimeoutAction, CHANGELOG_TIMEOUT_MS)
-
-        CoroutineScope(Dispatchers.IO).launch {
-            val versions = try {
-                withTimeout(CHANGELOG_TIMEOUT_MS) { fetchChangelogVersions() }
-            } catch (_: TimeoutCancellationException) {
-                emptyList()
-            } catch (_: Exception) {
-                emptyList()
-            }
-            withContext(Dispatchers.Main) {
-                if (!isAdded || loadingCancelled || loadingFinished) return@withContext
-                loadingFinished = true
-                loadingDialog.window?.decorView?.removeCallbacks(changelogTimeoutAction)
-                loadingDialog.dismiss()
-                if (versions.isEmpty()) {
-                    Toast.makeText(
-                        ctx,
-                        "Impossibile recuperare i cambiamenti.",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                } else {
-                    showChangelogVersionPicker(versions)
-                }
-            }
-        }
-    }
-
-    private suspend fun fetchChangelogVersions(): List<ChangelogVersion> {
-        StreamCenterVpnGuard.requireInternetAccess(sharedPref)
-        val html = app.get(
-            CHANGELOG_URL,
-            headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Android) StreamCenter",
-                "Accept-Language" to "it-IT,it;q=0.9",
-            ),
-            timeout = 8L,
-        ).text
-        val document = Jsoup.parse(html, CHANGELOG_URL)
-        val article = document.selectFirst("#_tl_editor")
-            ?: document.selectFirst(".tl_article_content")
-            ?: return emptyList()
-        val lines = article.children().flatMap { element ->
-            val listItems = element.children().filter { it.tagName().equals("li", ignoreCase = true) }
-            val texts = if (listItems.isEmpty()) {
-                listOf(element.wholeText())
-            } else {
-                listItems.map { "- ${it.text()}" }
-            }
-            texts.flatMap { it.lineSequence().toList() }
-        }.map(::normalizeChangelogLine).filter { it.isNotBlank() }
-
-        val versions = mutableListOf<ChangelogVersion>()
-        var currentVersion: ChangelogVersion? = null
-        var currentSection = ChangelogSection.NONE
-        lines.forEach { line ->
-            if (endMarkerPattern.matches(line)) {
-                currentVersion = null
-                currentSection = ChangelogSection.NONE
-                return@forEach
-            }
-
-            val version = versionHeaderPattern.matchEntire(line)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.trim()
-                ?.let(::parseChangelogVersion)
-            if (version != null) {
-                currentVersion = version
-                versions += currentVersion
-                currentSection = ChangelogSection.NONE
-                return@forEach
-            }
-
-            when {
-                primaryHeaderPattern.matches(line) -> currentSection = ChangelogSection.PRIMARY
-                secondaryHeaderPattern.matches(line) -> currentSection = ChangelogSection.SECONDARY
-                currentVersion != null && currentSection != ChangelogSection.NONE -> {
-                    val change = line.replaceFirst(Regex("^[-–—]+\\s*"), "").trim()
-                    if (change.isNotEmpty()) {
-                        when (currentSection) {
-                            ChangelogSection.PRIMARY -> currentVersion.primaryChanges += change
-                            ChangelogSection.SECONDARY -> currentVersion.secondaryChanges += change
-                            ChangelogSection.NONE -> Unit
-                        }
-                    }
-                }
-            }
-        }
-        return versions
-    }
-
-    private fun normalizeChangelogLine(value: String): String {
-        return value.replace('\u00A0', ' ').replace(Regex("\\s+"), " ").trim()
-    }
-
-    private fun isVersionTitle(value: String): Boolean {
-        return value.equals("Prima Versione", ignoreCase = true) ||
-            value.startsWith("Dalla V", ignoreCase = true) ||
-            value.matches(Regex("^V\\d+(?:\\.\\d+)?$", RegexOption.IGNORE_CASE))
-    }
-
-    private fun parseChangelogVersion(value: String): ChangelogVersion? {
-        val match = versionTitleWithDatePattern.matchEntire(value.trim())
-        val title = match?.groupValues?.getOrNull(1)?.trim() ?: value.trim()
-        val date = match?.groupValues
-            ?.getOrNull(2)
-            ?.replace(Regex("\\s+"), "")
-            ?.takeIf(String::isNotBlank)
-        return title.takeIf(::isVersionTitle)?.let { ChangelogVersion(it, date) }
-    }
-
-    private fun showChangelogVersionPicker(versions: List<ChangelogVersion>) {
-        val ctx = context ?: return
-        val list = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(6), dp(20), dp(14))
-        }
-        lateinit var dialog: AlertDialog
-        val rowViews = mutableListOf<View>()
-        versions.forEach { version ->
-            val status = changelogVersionStatus(version)
-            val accent = status?.second ?: COLOR_SUPPORT
-            val icon = when {
-                isInstalledPluginVersion(version.title) -> "\u2713"
-                isUpcomingPluginVersion(version.title) -> "\u2726"
-                else -> "V"
-            }
-            val statusView = status?.let { (label, color) ->
-                chip(label, color)
-            }
-            val arrow = chevron(accent)
-            val versionRow = settingsRow(
-                title = version.title,
-                summary = changelogChangesSummary(version),
-                accent = accent,
-                fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(accent, "66"),
-                leadingView = iconBadge(icon, accent, size = 40, marginEnd = 12),
-                statusView = statusView,
-                trailingViews = listOf(arrow),
-                topMargin = 8,
-                touchTarget = arrow,
-            ) {
-                dialog.dismiss()
-                showChangelogVersion(version, versions)
-            }
-            styleChangelogVersionTitle(versionRow.title, version)
-            rowViews.add(versionRow.view)
-        }
-        addAdaptiveCardGrid(list, rowViews)
-        dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogBrandTitle(
-                "Scegli una versione",
-                iconBadge("V", COLOR_SUPPORT, size = 40, marginEnd = 10),
-                COLOR_SUPPORT,
-            ))
-            .setView(ScrollView(ctx).apply {
-                isVerticalScrollBarEnabled = false
-                addView(list)
-            })
-            .setNegativeButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
-    }
-
-    private fun changelogChangesSummary(version: ChangelogVersion): String {
-        val totalChanges = version.primaryChanges.size + version.secondaryChanges.size
-        if (totalChanges == 0) return "Nessuna modifica indicata"
-        return buildList {
-            add("$totalChanges modifiche")
-            if (version.primaryChanges.isNotEmpty()) add("${version.primaryChanges.size} principali")
-            if (version.secondaryChanges.isNotEmpty()) add("${version.secondaryChanges.size} secondarie")
-        }.joinToString(" · ")
-    }
-
-    private fun styleChangelogVersionTitle(titleView: TextView, version: ChangelogVersion) {
-        val date = version.date ?: return
-        val title = "${version.title} ($date)"
-        val dateStart = version.title.length + 1
-        titleView.text = SpannableString(title).apply {
-            setSpan(
-                ForegroundColorSpan(Color.parseColor(COLOR_MUTED)),
-                dateStart,
-                length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-            setSpan(
-                RelativeSizeSpan(0.68f),
-                dateStart,
-                length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
-        }
-    }
-
-    private fun changelogVersionStatus(version: ChangelogVersion): Pair<String, String>? {
-        return when {
-            isInstalledPluginVersion(version.title) -> "Installata" to COLOR_SUCCESS
-            isUpcomingPluginVersion(version.title) -> "Prossima" to COLOR_ACCENT
-            else -> null
-        }
-    }
-
-    private fun isInstalledPluginVersion(changelogVersion: String): Boolean {
-        val pluginVersion = BuildConfig.PLUGIN_VERSION.trim()
-        val title = changelogVersion.trim()
-        return title.equals("V$pluginVersion", ignoreCase = true) ||
-            (pluginVersion == "1" && title.equals("Prima Versione", ignoreCase = true)) ||
-            title.endsWith("alla V$pluginVersion", ignoreCase = true)
-    }
-
-    private fun isUpcomingPluginVersion(changelogVersion: String): Boolean {
-        val installedVersion = BuildConfig.PLUGIN_VERSION.trim().toIntOrNull() ?: return false
-        return changelogMajorVersion(changelogVersion) == installedVersion + 1
-    }
-
-    private fun changelogMajorVersion(changelogVersion: String): Int? {
-        val directVersion = Regex("^V(\\d+)(?:\\.\\d+)?$", RegexOption.IGNORE_CASE)
-            .matchEntire(changelogVersion.trim())
-            ?.groupValues
-            ?.getOrNull(1)
-        val targetVersion = Regex("\\balla\\s+V(\\d+)(?:\\.\\d+)?$", RegexOption.IGNORE_CASE)
-            .find(changelogVersion.trim())
-            ?.groupValues
-            ?.getOrNull(1)
-        return (directVersion ?: targetVersion)?.toIntOrNull()
-    }
-
-    private fun showChangelogVersion(
-        version: ChangelogVersion,
-        versions: List<ChangelogVersion>,
-    ) {
-        val ctx = context ?: return
-        val accent = changelogVersionStatus(version)?.second ?: COLOR_SUPPORT
-        val icon = when {
-            isInstalledPluginVersion(version.title) -> "\u2713"
-            isUpcomingPluginVersion(version.title) -> "\u2726"
-            else -> "V"
-        }
-        val content = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(4), dp(20), dp(12))
-            version.date?.let { date ->
-                addView(bodyText(date, 11).apply {
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    layoutParams = verticalParams(top = 4)
-                })
-            }
-            addView(chip(changelogChangesSummary(version), accent).apply {
-                layoutParams = verticalParams(top = if (version.date == null) 4 else 8)
-            })
-            if (version.primaryChanges.isNotEmpty()) {
-                addChangelogSection(
-                    this,
-                    "Modifiche principali",
-                    version.primaryChanges,
-                    accent,
-                    primary = true,
-                )
-            }
-            if (version.secondaryChanges.isNotEmpty()) {
-                addChangelogSection(
-                    this,
-                    "Modifiche secondarie",
-                    version.secondaryChanges,
-                    accent,
-                    primary = false,
-                )
-            }
-            if (version.primaryChanges.isEmpty() && version.secondaryChanges.isEmpty()) {
-                addView(emptyStateCard("Nessuna modifica indicata", accent).apply {
-                    layoutParams = verticalParams(top = 14)
-                })
-            }
-        }
-        val dialogTitle = dialogBrandTitle(
-            version.title,
-            iconBadge(icon, accent, size = 40, marginEnd = 10),
-            accent,
-        )
-        val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle)
-            .setView(ScrollView(ctx).apply { addView(content) })
-            .setPositiveButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
-        dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
-            dialog.dismiss()
-            showChangelogVersionPicker(versions)
-        }
-    }
-
-    private fun addChangelogSection(
-        content: LinearLayout,
-        title: String,
-        changes: List<String>,
-        accent: String,
-        primary: Boolean,
-    ) {
-        content.addView(sectionLabel(title).apply {
-            setTextColor(Color.parseColor(accent))
-            layoutParams = verticalParams(top = 16)
-        })
-        changes.forEach { change ->
-            val changeRow = settingsRow(
-                title = change,
-                accent = accent,
-                fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(accent, "55"),
-                leadingView = iconBadge(if (primary) "+" else "•", accent, size = 30, marginEnd = 10),
-                topMargin = 8,
-            )
-            changeRow.title.apply {
-                textSize = 13f
-                typeface = if (primary) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                setLineSpacing(dp(2).toFloat(), 1f)
-            }
-            content.addView(changeRow.view)
-        }
+        openScreen(StreamCenterLocalSyncSettingsFragment(), "StreamCenterLocalSyncSettings")
     }
 
     private fun showFeedbackChoiceDialog() {
@@ -672,7 +306,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         val alertDialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Invia feedback"))
             .setView(choices)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         dialog = alertDialog
         applyDialogBackdrop(alertDialog)
@@ -774,6 +408,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             summaryView = locationText,
             trailingViews = listOf(resetLocation),
         ).view
+        StreamCenterSettingReset.bind(location) { resetLocation.performClick() }
+        StreamCenterSettingReset.bind(resetLocation) { resetLocation.performClick() }
         val content = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, 0, 0, dp(4))
@@ -790,7 +426,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         val alertDialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Esporta/Importa"))
             .setView(content)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(alertDialog) {
             if (backupLocationText === locationText) backupLocationText = null
@@ -844,7 +480,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             .setCustomTitle(dialogTitle("Nome del backup"))
             .setView(content)
             .setPositiveButton("Esporta", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(dialog)
         setBackupBackNavigation(dialog, ::showBackupChoiceDialog)
@@ -902,7 +538,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         val loadingDialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Importa configurazione"))
             .setMessage("Ricerca dei backup nella cartella…")
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(loadingDialog) { cancelled = true }
         setBackupBackNavigation(loadingDialog, ::showBackupChoiceDialog)
@@ -1050,7 +686,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             .setCustomTitle(dialogTitle("Rinomina backup"))
             .setView(content)
             .setPositiveButton("Rinomina", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(dialog)
         setBackupBackNavigation(dialog, onBack)
@@ -1082,7 +718,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             .setCustomTitle(dialogTitle("Elimina backup"))
             .setMessage("Vuoi eliminare definitivamente ${backup.name}?")
             .setPositiveButton("Elimina", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(dialog)
         setBackupBackNavigation(dialog, onBack)
@@ -1213,7 +849,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             .setCustomTitle(dialogTitle("Importa configurazione"))
             .setMessage("Vuoi importare ${backup.name}?")
             .setPositiveButton("Importa", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         presentBackupDialog(dialog)
         setBackupBackNavigation(dialog, onBack)
@@ -1289,66 +925,36 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
     }
 
-    private enum class ApiCheckState {
-        WAITING,
-        RUNNING,
-        SUCCESS,
-        FAILURE,
-        CONNECTED,
-        DISCONNECTED,
-    }
+    private var activeApiDialog: AlertDialog? = null
 
     private data class ApiCheckRowViews(
         val container: LinearLayout,
         val badge: TextView,
-        val label: TextView,
-        val name: String,
+        val detail: TextView,
     )
 
-    protected fun checkApis() {
+    protected fun checkApis(includeDisabled: Boolean = false) {
         val ctx = context ?: return
-        val siteCheckNames = listOf(
-            "AnimeUnity",
-            "AnimeWorld",
-            "AnimeSaturn",
-            "StreamingCommunity",
-            "VixCloud",
-            "VixSrc",
-            "VidxGo",
-        )
-        val metadataCheckNames = listOf(
-            "AniZip",
-            "MyAnimeList",
-            "AniList",
-            "Kitsu",
-            "TMDB",
-        )
-        val checkNames = siteCheckNames + metadataCheckNames
+        activeApiDialog?.dismiss()
+        val preferences = sharedPref
+        val checks = StreamCenterAvailabilityChecker.checks(preferences)
         val rows = mutableMapOf<String, ApiCheckRowViews>()
-        val states = checkNames.associateWith { ApiCheckState.WAITING }.toMutableMap()
-        var dialogVisible = true
-        var checkFinished = false
-        var timeoutAction: Runnable? = null
-        val timeoutHandler = Handler(Looper.getMainLooper())
+        val results = checks.associate { it.id to AvailabilityResult(AvailabilityState.WAITING, "") }.toMutableMap()
+        val accounts = cloudstreamConnectionResults()
+        var checkJob: Job? = null
+        val checkedAt = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.ITALY).format(Date())
 
-        val summary = bodyText("0 disponibili  ·  0 non raggiungibili", 13).apply {
+        val summary = bodyText(availabilitySummary(results.values, checks.size), 12).apply {
             setTextColor(Color.parseColor(COLOR_TEXT))
             gravity = Gravity.CENTER
-            setPadding(dp(24), dp(4), dp(24), dp(4))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
+            setPadding(dp(20), dp(4), dp(20), dp(8))
         }
         val progress = ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = false
-            max = checkNames.size
+            max = checks.size
             progress = 0
             progressTintList = ColorStateList.valueOf(Color.parseColor(COLOR_API_CHECK))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(5),
-            ).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)).apply {
                 marginStart = dp(14)
                 marginEnd = dp(14)
                 bottomMargin = dp(12)
@@ -1358,125 +964,141 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(8), dp(14), dp(14))
             background = cardBackground(COLOR_BACKGROUND, COLOR_STROKE, 20)
+            addView(bodyText(
+                "Controlla accesso e risposte delle fonti; la riproduzione non è garantita. ", 12,
+            ))
         }
+        val includeDisabledToggle = CheckBox(ctx).apply {
+            text = "Verifica anche le fonti disattivate"
+            textSize = 13f
+            setTextColor(Color.parseColor(COLOR_TEXT))
+            buttonTintList = ColorStateList.valueOf(Color.parseColor(COLOR_API_CHECK))
+            isChecked = includeDisabled
+            minimumHeight = dp(48)
+        }
+        content.addView(includeDisabledToggle)
 
-        fun addSection(title: String, names: List<String>, accent: String) {
+        fun addHeading(title: String, accent: String) {
             content.addView(titleText(title, 14, true).apply {
                 setTextColor(Color.parseColor(accent))
-                layoutParams = verticalParams(top = 10)
+                layoutParams = verticalParams(top = 12)
                 setPadding(dp(4), 0, 0, dp(2))
             })
-            names.forEach { name ->
-                createApiCheckRow(ctx, name).also { row ->
-                    rows[name] = row
-                    setApiCheckState(row, ApiCheckState.WAITING)
-                    content.addView(row.container)
-                }
-            }
         }
-
-        addSection("Sito", siteCheckNames, COLOR_SOURCES)
-        addSection("Metadati", metadataCheckNames, COLOR_API_CHECK)
-        addSection("Servizi CloudStream", emptyList(), COLOR_CLOUDSTREAM_SERVICES)
-        cloudstreamConnectionResults().forEach { (name, connected) ->
-            createApiCheckRow(ctx, name).also { row ->
-                setApiCheckState(
-                    row,
-                    if (connected) ApiCheckState.CONNECTED else ApiCheckState.DISCONNECTED,
-                )
+        AvailabilityGroup.entries.forEach { group ->
+            addHeading(group.title, when (group) {
+                AvailabilityGroup.TORRENT -> COLOR_TORRENT
+                AvailabilityGroup.SITES -> COLOR_SOURCES
+                else -> COLOR_API_CHECK
+            })
+            val entries = checks.filter { it.group == group }
+            if (entries.isEmpty()) content.addView(bodyText(
+                when (group) {
+                    AvailabilityGroup.STREMIO -> "Nessun add-on Stremio configurato"
+                    AvailabilityGroup.SECTIONS -> "Nessuna sezione attiva"
+                    else -> "Nessuna fonte installata"
+                }, 12,
+            ))
+            entries.forEach { check ->
+                val row = createApiCheckRow(ctx, check.name)
+                rows[check.id] = row
+                setApiCheckState(row, results.getValue(check.id))
                 content.addView(row.container)
             }
         }
-
-        val dialogHeader = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(dialogTitle("Verifica API e Fonti"))
-            addView(summary)
-            addView(progress)
+        addHeading("Account CloudStream", COLOR_CLOUDSTREAM_SERVICES)
+        accounts.forEach { (name, connected) ->
+            val row = createApiCheckRow(ctx, name)
+            setApiCheckState(row, AvailabilityResult(
+                if (connected) AvailabilityState.SUCCESS else AvailabilityState.DISABLED, "",
+            ), if (connected) "Collegato" else "Non collegato")
+            content.addView(row.container)
         }
+
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogHeader)
+            .setCustomTitle(LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(dialogTitle("Verifica API e Fonti"))
+                addView(summary)
+                addView(progress)
+            })
             .setView(ScrollView(ctx).apply { addView(content) })
+            .setPositiveButton("Copia report", null)
             .setNeutralButton("Riprova", null)
             .setNegativeButton("Chiudi", null)
             .create()
+        activeApiDialog = dialog
         applyDialogBackdrop(dialog) {
-            dialogVisible = false
-            timeoutAction?.let(timeoutHandler::removeCallbacks)
+            checkJob?.cancel()
+            if (activeApiDialog === dialog) activeApiDialog = null
         }
         dialog.show()
-
+        includeDisabledToggle.setOnCheckedChangeListener { _, checked ->
+            dialog.dismiss()
+            checkApis(checked)
+        }
+        dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+            val report = buildString {
+                appendLine("Data: $checkedAt · Versione: ${BuildConfig.PLUGIN_VERSION}")
+                append(availabilityReport(checks, results))
+                appendLine()
+                appendLine("Account CloudStream (collegamenti locali; accesso remoto non verificato)")
+                accounts.forEach { (name, connected) ->
+                    appendLine("$name: ${if (connected) "collegato" else "non collegato"}")
+                }
+            }
+            (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
+                ?.setPrimaryClip(ClipData.newPlainText("Verifica API e Fonti", report))
+            saveToast("Report copiato")
+        }
         val retryButton = dialog.getButton(DialogInterface.BUTTON_NEUTRAL).apply {
-            visibility = View.GONE
+            isEnabled = false
             setOnClickListener {
                 dialog.dismiss()
-                checkApis()
+                checkApis(includeDisabled)
             }
         }
-
-        fun renderSummary(completed: Int) {
-            val online = states.count { it.value == ApiCheckState.SUCCESS }
-            val unavailable = states.count { it.value == ApiCheckState.FAILURE }
-            progress.progress = completed
-            summary.text = "$online disponibili  ·  $unavailable non raggiungibili"
+        fun renderSummary() {
+            progress.progress = results.values.count { it.state != AvailabilityState.WAITING && it.state != AvailabilityState.RUNNING }
+            summary.text = availabilitySummary(results.values, checks.size)
         }
-
-        checkNames.forEach { name ->
-            states[name] = ApiCheckState.RUNNING
-            rows[name]?.let { setApiCheckState(it, ApiCheckState.RUNNING) }
-        }
-        renderSummary(0)
-        val apiTimeoutAction = Runnable {
-            if (!dialogVisible || checkFinished) return@Runnable
-            checkFinished = true
-            states.forEach { (name, state) ->
-                if (state == ApiCheckState.WAITING || state == ApiCheckState.RUNNING) {
-                    states[name] = ApiCheckState.FAILURE
-                    rows[name]?.let {
-                        setApiCheckState(it, ApiCheckState.FAILURE, "Timeout della verifica")
-                    }
-                }
-            }
-            renderSummary(checkNames.size)
-            retryButton.visibility = View.VISIBLE
-        }
-        timeoutAction = apiTimeoutAction
-        timeoutHandler.postDelayed(apiTimeoutAction, API_CHECK_TIMEOUT_MS)
-        CoroutineScope(Dispatchers.IO).launch {
-            runCatching {
-                StreamCenter.checkApisAvailability(sharedPref) { name, isRunning, result, detail ->
+        checkJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                AvailabilityRunner.run(checks, includeDisabled,
+                    canUseInternet = { StreamCenterVpnGuard.canUseInternet(preferences) },
+                ) { check, result ->
                     withContext(Dispatchers.Main) {
-                        if (!dialogVisible || checkFinished) return@withContext
-                        val row = rows[name] ?: return@withContext
-                        val state = if (isRunning) {
-                            ApiCheckState.RUNNING
-                        } else if (result == true) {
-                            ApiCheckState.SUCCESS
-                        } else {
-                            ApiCheckState.FAILURE
-                        }
-                        states[name] = state
-                        setApiCheckState(row, state, detail)
-                        renderSummary(states.count { it.value in setOf(ApiCheckState.SUCCESS, ApiCheckState.FAILURE) })
-                    }
-                }
-            }
-            withContext(Dispatchers.Main) {
-                if (!dialogVisible || checkFinished) return@withContext
-                checkFinished = true
-                timeoutHandler.removeCallbacks(apiTimeoutAction)
-                states.forEach { (name, state) ->
-                    if (state == ApiCheckState.WAITING || state == ApiCheckState.RUNNING) {
-                        states[name] = ApiCheckState.FAILURE
-                        rows[name]?.let {
-                            setApiCheckState(it, ApiCheckState.FAILURE, "Verifica interrotta")
+                        if (dialog.isShowing) {
+                            results[check.id] = result
+                            rows[check.id]?.let { setApiCheckState(it, result) }
+                            renderSummary()
                         }
                     }
                 }
-                renderSummary(checkNames.size)
-                retryButton.visibility = View.VISIBLE
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (dialog.isShowing) {
+                    checks.filter { results[it.id]?.state in setOf(AvailabilityState.WAITING, AvailabilityState.RUNNING) }
+                        .forEach { check ->
+                            val result = AvailabilityResult(AvailabilityState.FAILURE, "Verifica interrotta: riprova")
+                            results[check.id] = result
+                            rows[check.id]?.let { setApiCheckState(it, result) }
+                        }
+                }
+            } finally {
+                if (dialog.isShowing) {
+                    renderSummary()
+                    retryButton.isEnabled = true
+                }
             }
         }
+    }
+
+    override fun onDestroyView() {
+        activeApiDialog?.dismiss()
+        activeApiDialog = null
+        super.onDestroyView()
     }
 
     private fun createApiCheckRow(ctx: Context, name: String): ApiCheckRowViews {
@@ -1486,55 +1108,47 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(10) }
         }
-        val label = titleText(name, 13, true).apply { maxLines = 2 }
+        val label = titleText(name, 13, true)
+        val detail = bodyText("", 12).apply { setPadding(0, dp(3), 0, 0) }
         val labels = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             addView(label)
+            addView(detail)
         }
         val container = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(58)
+            minimumHeight = dp(64)
             setPadding(dp(10), dp(10), dp(12), dp(10))
             layoutParams = verticalParams(top = 6)
             addView(badge)
             addView(labels)
         }
-        return ApiCheckRowViews(container, badge, label, name)
+        return ApiCheckRowViews(container, badge, detail)
     }
 
-    private fun setApiCheckState(
-        row: ApiCheckRowViews,
-        state: ApiCheckState,
-        detail: String? = null,
-    ) {
-        val (symbol, label, color) = when (state) {
-            ApiCheckState.WAITING -> Triple("\u2022", "In attesa", COLOR_MUTED)
-            ApiCheckState.RUNNING -> Triple("\u2026", "Verifica in corso", COLOR_ACCENT)
-            ApiCheckState.SUCCESS -> Triple("\u2713", "Raggiungibile", COLOR_SUCCESS)
-            ApiCheckState.FAILURE -> Triple("\u00D7", "Non raggiungibile", COLOR_DANGER)
-            ApiCheckState.CONNECTED -> Triple("\u2713", "Collegato", COLOR_SUCCESS)
-            ApiCheckState.DISCONNECTED -> Triple("\u2022", "Non collegato", COLOR_MUTED)
+    private fun setApiCheckState(row: ApiCheckRowViews, result: AvailabilityResult, labelOverride: String? = null) {
+        val (symbol, color) = when (result.state) {
+            AvailabilityState.WAITING -> "•" to COLOR_MUTED
+            AvailabilityState.RUNNING -> "…" to COLOR_ACCENT
+            AvailabilityState.SUCCESS -> "✓" to COLOR_SUCCESS
+            AvailabilityState.WARNING -> "!" to COLOR_ACCENT
+            AvailabilityState.FAILURE -> "×" to COLOR_DANGER
+            AvailabilityState.DISABLED -> "•" to COLOR_MUTED
+            AvailabilityState.BLOCKED -> "!" to COLOR_ACCENT
         }
         row.badge.text = symbol
         row.badge.setTextColor(Color.parseColor(color))
         row.badge.background = cardBackground(tint(color, "22"), tint(color, "99"), 17)
-        val status = detail?.trim()?.takeIf(String::isNotBlank)
-            ?.let { "$label\n$it" }
-            ?: label
-        val text = "${row.name} - $status"
-        row.label.text = SpannableString(text).apply {
-            setSpan(
-                ForegroundColorSpan(Color.parseColor(color)),
-                row.name.length + 3,
-                text.length,
-                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-            )
+        row.detail.text = buildString {
+            append(labelOverride ?: result.state.label)
+            result.elapsedMs?.let { append(" · $it ms") }
+            if (result.detail.isNotBlank()) append("\n${result.detail}")
         }
+        row.detail.setTextColor(Color.parseColor(color))
         row.container.background = cardBackground(COLOR_CARD_ALT, tint(color, "66"), 16)
-        row.container.alpha = if (state == ApiCheckState.DISCONNECTED) 0.64f else 1f
+        row.container.alpha = if (result.state == AvailabilityState.DISABLED) 0.64f else 1f
     }
 
     private fun cloudstreamConnectionResults(): List<Pair<String, Boolean>> {

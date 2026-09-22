@@ -13,8 +13,13 @@ internal object StreamCenterTorrentVideoFileDetector {
     )
 
     fun isUsableVideoFile(path: String): Boolean {
-        val fileName = path.substringAfterLast('/').substringAfterLast('\\').trim()
+        val fileName = path.torrentFileName()
         val extension = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        return extension in videoExtensions && !ignoredVideoRegex.containsMatchIn(fileName)
+        return extension in videoExtensions && !ignoredVideoRegex.containsMatchIn(fileName) &&
+            path.split('/', '\\').dropLast(1).none { directory ->
+                directory.trim().lowercase(Locale.ROOT) in ignoredDirectories
+            }
     }
+
+    private val ignoredDirectories = setOf("sample", "samples", "trailer", "trailers", "extras", "featurettes")
 }

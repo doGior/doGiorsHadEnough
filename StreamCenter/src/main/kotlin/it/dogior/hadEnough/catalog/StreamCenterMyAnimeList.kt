@@ -1,5 +1,7 @@
 package it.dogior.hadEnough.catalog
 
+import it.dogior.hadEnough.util.normalizeTrailerUrl
+
 import com.lagradost.cloudstream3.Actor
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ActorRole
@@ -10,7 +12,6 @@ import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newAnimeSearchResponse
-import it.dogior.hadEnough.util.mapChunkedParallel
 import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
@@ -18,20 +19,6 @@ import org.jsoup.nodes.Element
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-
-internal data class StreamCenterMalEpisode(
-    val number: Int,
-    val title: String?,
-    val airedDate: String?,
-    val score: Score?,
-)
-
-internal data class StreamCenterMalRecommendation(
-    val title: String,
-    val url: String,
-    val posterUrl: String?,
-    val type: TvType,
-)
 
 internal data class StreamCenterMalMedia(
     val id: Int,
@@ -62,7 +49,6 @@ internal data class StreamCenterMalMedia(
     val synopsis: String?,
     val trailerUrl: String?,
     val characters: List<ActorData>,
-    val recommendations: List<StreamCenterMalRecommendation>,
 ) {
     val titleCandidates: List<String>
         get() = listOfNotNull(title, englishTitle, japaneseTitle) + synonyms
@@ -130,9 +116,6 @@ internal class StreamCenterMyAnimeListCatalog(
                 ?.trim()
                 ?.takeIf(String::isNotBlank)
             ?: throw IllegalStateException("Titolo MyAnimeList non trovato")
-        val recommendations = runCatching {
-            recommendationCards(document(actualUrl.trimEnd('/') + "/userrecs"), id)
-        }.getOrElse { recommendationCards(document, id) }
         return StreamCenterMalMedia(
             id = id,
             url = actualUrl,
@@ -162,32 +145,7 @@ internal class StreamCenterMyAnimeListCatalog(
             synopsis = synopsis(document),
             trailerUrl = trailer(document),
             characters = characters(document),
-            recommendations = recommendations,
         )
-    }
-
-    suspend fun episodes(media: StreamCenterMalMedia): List<StreamCenterMalEpisode> {
-        val episodeUrl = "${media.url.trimEnd('/')}/episode"
-        val firstDocument = document("$episodeUrl?offset=0")
-        val knownPageCount = media.totalEpisodes
-            ?.takeIf { it > 0 }
-            ?.let { ((it - 1) / EPISODE_PAGE_SIZE) + 1 }
-            ?: 1
-        val offsets = buildSet {
-            add(0)
-            repeat(knownPageCount) { page -> add(page * EPISODE_PAGE_SIZE) }
-            firstDocument.select("a[href*=offset]").forEach { link ->
-                OFFSET.find(link.attr("href"))?.groupValues?.getOrNull(1)?.toIntOrNull()?.let(::add)
-            }
-        }.filter { it >= 0 }.sorted()
-        val remainingEpisodes = offsets
-            .filterNot { it == 0 }
-            .mapChunkedParallel(EPISODE_REQUEST_CHUNK_SIZE) { page ->
-                episodeRows(document("$episodeUrl?offset=$page"))
-            }
-            .flatten()
-        return (episodeRows(firstDocument) + remainingEpisodes).distinctBy(StreamCenterMalEpisode::number)
-            .sortedBy(StreamCenterMalEpisode::number)
     }
 
     private suspend fun document(url: String): Document {
@@ -271,51 +229,6 @@ internal class StreamCenterMyAnimeListCatalog(
         }.distinctBy { it.actor.name.lowercase(Locale.ROOT) }
     }
 
-    private fun recommendationCards(document: Document, currentId: Int): List<StreamCenterMalRecommendation> {
-        val containers = document.select(
-            "div.anime_recommendation, div.detail-user-recs-text, div.js-scrollfix-bottom-rel > table, " +
-                "table.anime_detail_related_anime",
-        )
-        val links = if (containers.isEmpty()) {
-            document.select("a[href*=/anime/]")
-        } else {
-            containers.select("a[href*=/anime/]")
-        }
-        val seen = mutableSetOf<Int>()
-        return links.mapNotNull { link ->
-            val url = absoluteUrl(link.attr("href")) ?: return@mapNotNull null
-            val id = animeId(url) ?: return@mapNotNull null
-            if (id == currentId || !seen.add(id)) return@mapNotNull null
-            val image = link.selectFirst("img")
-            val title = text(link)
-                ?: image?.attr("alt")?.trim()?.takeIf(String::isNotBlank)
-                ?: link.attr("title").trim().takeIf(String::isNotBlank)
-                ?: return@mapNotNull null
-            StreamCenterMalRecommendation(
-                title = title,
-                url = url,
-                posterUrl = image?.let(::imageUrl),
-                type = animeType(null),
-            )
-        }.take(RECOMMENDATIONS_LIMIT)
-    }
-
-    private fun episodeRows(document: Document): List<StreamCenterMalEpisode> {
-        return document.select("tr.episode-list-data, table.episode_list tr").mapNotNull { row ->
-            val link = row.selectFirst("a[href*=/episode/]") ?: return@mapNotNull null
-            val number = EPISODE_PATH.find(link.attr("href"))?.groupValues?.getOrNull(1)?.toIntOrNull()
-                ?: firstNumber(text(row.selectFirst("td.episode-number")))
-                ?: return@mapNotNull null
-            val title = text(row.selectFirst("td.episode-title a, td.episode-title"))
-                ?.removePrefix("Episode $number")
-                ?.trim('-', ' ', ':')
-                ?.takeIf(String::isNotBlank)
-            val aired = parseDate(text(row.selectFirst("td.episode-aired")))
-            val episodeScore = score(text(row.selectFirst("td.episode-poll")), 5)
-            StreamCenterMalEpisode(number, title, aired, episodeScore)
-        }
-    }
-
     private fun canonicalAnimeUrl(url: String): String {
         val absolute = absoluteUrl(url) ?: throw IllegalArgumentException("URL MyAnimeList non valido")
         val match = ANIME_PATH.find(absolute) ?: throw IllegalArgumentException("URL MyAnimeList non valido")
@@ -380,16 +293,10 @@ internal class StreamCenterMyAnimeListCatalog(
     }
 
     private fun trailer(document: Document): String? {
-        val element: Element = document.selectFirst(
+        return document.select(
             "a[href*=youtube.com/watch], a[href*=youtu.be/], iframe[src*=youtube.com/embed]",
-        ) ?: return null
-        val value: String = element.attr("href").ifBlank { element.attr("src") }
-            .trim()
-            .takeIf(String::isNotBlank) ?: return null
-        return when {
-            value.startsWith("//") -> "https:$value"
-            value.startsWith("/") -> "$BASE_URL$value"
-            else -> value
+        ).firstNotNullOfOrNull { element ->
+            normalizeTrailerUrl(element.attr("href").ifBlank { element.attr("src") })
         }
     }
 
@@ -397,14 +304,6 @@ internal class StreamCenterMyAnimeListCatalog(
         val hours = HOURS.find(value.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         val minutes = MINUTES.find(value.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
         return (hours * 60 + minutes).takeIf { it > 0 }
-    }
-
-    private fun parseDate(value: String?): String? {
-        val match = DATE.find(value.orEmpty()) ?: return null
-        val month = MONTHS[match.groupValues[1].lowercase(Locale.ROOT)] ?: return null
-        val day = match.groupValues[2].toIntOrNull() ?: return null
-        val year = match.groupValues[3].toIntOrNull() ?: return null
-        return String.format(Locale.US, "%04d-%02d-%02d", year, month, day)
     }
 
     private fun listValue(value: String?): List<String> {
@@ -459,33 +358,13 @@ internal class StreamCenterMyAnimeListCatalog(
     companion object {
         private const val BASE_URL = "https://myanimelist.net"
         private const val PAGE_SIZE = 50
-        private const val EPISODE_PAGE_SIZE = 100
-        private const val EPISODE_REQUEST_CHUNK_SIZE = 3
-        private const val RECOMMENDATIONS_LIMIT = 20
         private val ANIME_PATH = Regex("/anime/(\\d+)(/[^?#]*)?", RegexOption.IGNORE_CASE)
-        private val EPISODE_PATH = Regex("/episode/(\\d+)", RegexOption.IGNORE_CASE)
-        private val OFFSET = Regex("[?&]offset=(\\d+)", RegexOption.IGNORE_CASE)
         private val RESIZED_IMAGE_PATH = Regex("/r/\\d+x\\d+/")
         private val NUMBER = Regex("\\d+(?:[.,]\\d+)?")
         private val INTEGER = Regex("\\d+")
         private val YEAR = Regex("\\b(?:19|20|21)\\d{2}\\b")
         private val HOURS = Regex("(\\d+)\\s*hr", RegexOption.IGNORE_CASE)
         private val MINUTES = Regex("(\\d+)\\s*min", RegexOption.IGNORE_CASE)
-        private val DATE = Regex("([A-Za-z]{3})\\s+(\\d{1,2}),\\s+(\\d{4})")
         private val WHITESPACE = Regex("\\s+")
-        private val MONTHS = mapOf(
-            "jan" to 1,
-            "feb" to 2,
-            "mar" to 3,
-            "apr" to 4,
-            "may" to 5,
-            "jun" to 6,
-            "jul" to 7,
-            "aug" to 8,
-            "sep" to 9,
-            "oct" to 10,
-            "nov" to 11,
-            "dec" to 12,
-        )
     }
 }

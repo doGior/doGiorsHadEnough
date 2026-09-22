@@ -24,6 +24,10 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 
 class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
+    override val screenTitle: String = "Log"
+
+    override val screenAccent: String = COLOR_LOG
+
     private data class PendingLogExport(
         val fileName: String,
         val content: String,
@@ -61,21 +65,14 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         savedInstanceState: Bundle?,
     ): View {
         val content = rootContainer().apply {
-            setPadding(paddingLeft, dp(8), paddingRight, paddingBottom)
+            setPadding(paddingLeft, 0, paddingRight, paddingBottom)
             minimumHeight = standardSubmenuMinimumHeight()
         }
-        content.addView(
-            header(
-                title = "Log",
-                icon = "\uD83D\uDCCB",
-                accent = COLOR_LOG,
-            ),
-        )
-
         val enabledRow = switchRow(
             title = "Log",
             summary = "",
             checked = StreamCenterLogger.isEnabled(sharedPref),
+            defaultChecked = StreamCenterLogger.isEnabled(null),
             accent = COLOR_LOG,
             icon = "\uD83D\uDD0E",
             fixedHeight = true,
@@ -101,6 +98,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             accent = COLOR_LOG,
             fillColor = COLOR_CARD_ALT,
             summaryView = retentionLabel,
+            onReset = { updateLogRetention(retentionLabel, StreamCenterLogger.retentionPolicy(null)) },
             trailingViews = listOf(chevron(COLOR_LOG)),
             fixedHeight = true,
         ) {
@@ -196,9 +194,10 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             title: String,
             valueRow: View,
             checked: Boolean,
+            onReset: () -> Unit,
             onCheckedChanged: (Boolean) -> Unit,
         ): LinearLayout {
-            val toggle = styledSwitch(checked, COLOR_LOG, onCheckedChanged)
+            val toggle = styledSwitch(checked, COLOR_LOG, onChanged = onCheckedChanged)
             return LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -221,6 +220,15 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 })
                 addView(valueRow)
                 addCardTouchFeedback(this, COLOR_LOG)
+                val reset = {
+                    toggle.isChecked = false
+                    onReset()
+                }
+                resetOnLongPress(this, title, reset)
+                resetOnLongPress(toggle, title, reset)
+                (valueRow as? android.view.ViewGroup)?.getChildAt(0)?.let {
+                    resetOnLongPress(it, title, reset)
+                }
             }
         }
 
@@ -241,6 +249,13 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             title = "In base ai giorni",
             valueRow = daysValueRow,
             checked = daysEnabled,
+            onReset = {
+                daysInput.setText("30")
+                daysInput.error = null
+                updateLogRetention(retentionLabel, StreamCenterLogger.retentionPolicy(sharedPref).copy(
+                    days = StreamCenterLogger.retentionPolicy(null).days,
+                ))
+            },
         ) { enabled ->
             daysEnabled = enabled
             refreshSelection()
@@ -250,6 +265,13 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             title = "In base alla quantità",
             valueRow = logCountValueRow,
             checked = logCountEnabled,
+            onReset = {
+                logCountInput.setText("50")
+                logCountInput.error = null
+                updateLogRetention(retentionLabel, StreamCenterLogger.retentionPolicy(sharedPref).copy(
+                    maximumLogCount = StreamCenterLogger.retentionPolicy(null).maximumLogCount,
+                ))
+            },
         ) { enabled ->
             logCountEnabled = enabled
             refreshSelection()
@@ -265,7 +287,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 addView(content)
             })
             .setPositiveButton("Applica", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
@@ -325,7 +347,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         val loadingDialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Archivio Log"))
             .setMessage("Caricamento delle sessioni in corso…")
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(loadingDialog)
         loadingDialog.show()
@@ -420,7 +442,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         val loadingDialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle(title))
             .setMessage("Lettura del log in corso…")
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(
             alertDialog = loadingDialog,
@@ -486,7 +508,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             .setCustomTitle(dialogTitle("Elimina log"))
             .setMessage("Questa sessione di log verrà eliminata definitivamente.")
             .setPositiveButton("Elimina", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()

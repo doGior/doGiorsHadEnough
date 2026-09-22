@@ -44,6 +44,10 @@ private const val AUTO_SYNC_ROW_HEIGHT_DP = 80
 private const val IDLE_SESSION_STATUS = "Nessuna sessione attiva al momento"
 
 internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsFragment(), StreamCenterLocalSyncListener {
+    override val screenTitle: String = "Sync locale"
+
+    override val screenAccent: String = COLOR_LOCAL_SYNC
+
     private lateinit var manager: StreamCenterLocalSyncManager
     private var autoCard: LinearLayout? = null
     private var autoExpanded = false
@@ -95,8 +99,8 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         }
         content.addView(
             header(
-                title = "Sync Locale",
-                subtitle = "Trasferimento tra dispositivi sulla stessa rete",
+                title = "Sync locale",
+                subtitle = "Trasferimento tra dispositivi sulla stessa rete.",
                 icon = "🔐",
                 accent = COLOR_LOCAL_SYNC,
             ),
@@ -265,7 +269,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 layoutParams = verticalParams(10).apply { height = dp(5) }
             }
             addView(progressBar)
-            addView(sectionLabel("Registro").apply { setPadding(0, dp(12), 0, dp(6)) })
+            addView(sectionHeading("Registro", COLOR_LOCAL_SYNC, topMargin = 12))
             logText = bodyText("In attesa di un'azione…", 11).apply {
                 typeface = Typeface.MONOSPACE
                 setTextColor(Color.parseColor(tint(COLOR_TEXT, "D6")))
@@ -307,6 +311,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         card.removeAllViews()
 
         val peers = StreamCenterLocalSyncTrust.trustedPeers(context)
+        val autoEnabled = StreamCenterLocalSyncAutoConfig.isEnabled(context)
 
         val expandButton = categoryExpandButton(
             expanded = autoExpanded,
@@ -315,11 +320,18 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             size = 34,
         ) { toggleAutoExpanded() }
         val masterSwitch = styledSwitch(
-            StreamCenterLocalSyncAutoConfig.isEnabled(context),
+            autoEnabled,
             COLOR_LOCAL_SYNC,
+            defaultChecked = false,
+            resetTitle = "Sync automatico",
         ) { isOn ->
             StreamCenterLocalSyncAutoConfig.setEnabled(context, isOn)
             StreamCenterLocalSyncAutoRunner.refresh()
+            autoCard?.let { autoSyncCardView ->
+                for (index in 0 until autoSyncCardView.childCount) {
+                    animateRowEnabledAppearance(autoSyncCardView.getChildAt(index), isOn)
+                }
+            }
         }.apply {
             id = View.generateViewId()
             isFocusable = true
@@ -336,6 +348,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             icon = "🔁",
             accent = COLOR_LOCAL_SYNC,
             trailingViews = listOf(masterSwitch, expandButton),
+            enabledAppearance = autoEnabled,
         ) { expandButton.callOnClick() }
         headerRow.title.maxLines = 1
         headerRow.title.ellipsize = android.text.TextUtils.TruncateAt.END
@@ -351,6 +364,11 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         val categories = StreamCenterLocalSyncAutoConfig.categories(context)
         val categoriesRowViews = settingsRow(
             title = "Cosa sincronizzare",
+            onReset = {
+                StreamCenterLocalSyncAutoConfig.setCategories(context, StreamCenterLocalSyncAutoConfig.DEFAULT_CATEGORIES)
+                StreamCenterLocalSyncAutoRunner.refresh()
+                rebuildAutoSyncCard()
+            },
             summary = categories.joinToString(", ") { it.title }.ifBlank { "Niente selezionato" },
             icon = "📂",
             accent = COLOR_LOCAL_SYNC,
@@ -373,7 +391,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         interval.field.nextFocusUpId = categoriesRow.id
         card.addView(categoriesRow)
         card.addView(interval.view)
-        card.addView(sectionLabel("Dispositivi fidati").apply { setPadding(dp(4), dp(12), dp(4), dp(6)) })
+        card.addView(sectionHeading("Dispositivi fidati", COLOR_LOCAL_SYNC, topMargin = 12))
         if (peers.isEmpty()) {
             card.addView(
                 bodyText(
@@ -418,6 +436,11 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 }
                 card.addView(peerRow)
                 previousPeerRow = peerRow
+            }
+        }
+        if (!autoEnabled) {
+            for (index in 1 until card.childCount) {
+                card.getChildAt(index).alpha = settingsRowDisabledAlpha
             }
         }
     }
@@ -514,6 +537,12 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             )
             addView(field)
         }
+        val resetInterval = {
+            field.error = null
+            field.setText(StreamCenterLocalSyncAutoConfig.DEFAULT_INTERVAL_MINUTES.toString())
+        }
+        resetOnLongPress(row, "Frequenza", resetInterval)
+        resetOnLongPress(field, "Frequenza", resetInterval)
         return IntervalRowViews(row, field)
     }
 
@@ -560,6 +589,11 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                     trailingViews = listOf(selectedBadge),
                     topMargin = if (index == 0) 10 else 8,
                     accessibilityState = { if (selected) "Selezionata" else "Non selezionata" },
+                    onReset = {
+                        StreamCenterLocalSyncAutoConfig.removePeerMode(context, peer.id)
+                        rebuildAutoSyncCard()
+                        dialog.dismiss()
+                    },
                 ) {
                     StreamCenterLocalSyncAutoConfig.setPeerMode(context, peer.id, mode)
                     rebuildAutoSyncCard()
@@ -604,7 +638,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 StreamCenterLocalSyncAutoRunner.refresh()
                 rebuildAutoSyncCard()
             }
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
             .also {
                 applyDialogBackdrop(it)
@@ -629,6 +663,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 switchRow(
                     title = category.title,
                     checked = StreamCenterLocalSyncAutoConfig.isCategoryEnabled(context, category),
+                    defaultChecked = category in StreamCenterLocalSyncAutoConfig.DEFAULT_CATEGORIES,
                     accent = COLOR_LOCAL_SYNC,
                     icon = autoCategoryIcon(category),
                     topMargin = if (index == 0) 0 else 10,
@@ -661,6 +696,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 switchRow(
                     title = category.title,
                     checked = category in selected,
+                    defaultChecked = true,
                     accent = COLOR_LOCAL_SYNC,
                     icon = autoCategoryIcon(category),
                     topMargin = if (index == 0) 0 else 10,
@@ -675,7 +711,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             .setPositiveButton("Invia") { _, _ ->
                 if (selected.isNotEmpty()) startSending(selected.toSet())
             }
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
             .also {
                 applyDialogBackdrop(it)
@@ -704,14 +740,6 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
 
     private fun showOfferConfirmation(offer: StreamCenterLocalSyncOffer) {
         val message = when (offer.type) {
-            StreamCenterLocalSyncPayloadType.ALL ->
-                "È stato trovato un trasferimento completo da ${offer.senderName}. Se procedi, verranno sostituite la configurazione CloudStream, la libreria locale del profilo corrente e la configurazione StreamCenter. Token, percorsi locali, download e file dei plugin resteranno sul dispositivo. Vuoi scaricarlo e applicarlo?"
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM ->
-                "È stata trovata una configurazione CloudStream da ${offer.senderName}. Se procedi, verranno sostituite soltanto le impostazioni e i dati di configurazione CloudStream. La libreria locale e la configurazione StreamCenter resteranno invariate. Token, percorsi locali, download e file dei plugin resteranno sul dispositivo. Vuoi scaricarla e applicarla?"
-            StreamCenterLocalSyncPayloadType.LIBRARY ->
-                "È stata trovata una libreria locale di CloudStream da ${offer.senderName}. Se procedi, libreria, episodi e progressi del profilo CloudStream corrente verranno completamente sostituiti. Vuoi scaricarla e applicarla?"
-            StreamCenterLocalSyncPayloadType.STREAMCENTER ->
-                "È stata trovata una configurazione StreamCenter da ${offer.senderName}. Se procedi, tutte le preferenze, le fonti, i filtri e le personalizzazioni di StreamCenter verranno sostituiti. Le impostazioni e la libreria di CloudStream resteranno invariate. Vuoi scaricarla e applicarla?"
             StreamCenterLocalSyncPayloadType.SELECTIVE ->
                 "È stata trovata una selezione di dati da ${offer.senderName}. Verranno sostituite soltanto le categorie incluse nella selezione (libreria/progressi e/o configurazioni); le categorie non incluse resteranno invariate. Vuoi scaricarla e applicarla?"
         }
@@ -760,7 +788,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             .setCustomTitle(dialogTitle("Verifica il mittente", COLOR_LOCAL_SYNC))
             .setView(wrapper)
             .setPositiveButton("Connetti", null)
-            .setNegativeButton("Annulla", null)
+            .setNegativeButton("Chiudi", null)
             .create()
         activeOfferDialog = dialog
         applyDialogBackdrop(

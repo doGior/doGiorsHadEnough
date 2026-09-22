@@ -19,8 +19,6 @@ import java.util.UUID
 
 object StreamCenterLogger {
     const val PREF_ENABLED = "loggingEnabled"
-    const val PREF_RETENTION_MODE = "loggingRetentionMode"
-    const val PREF_RETENTION_VALUE = "loggingRetentionValue"
     const val PREF_RETENTION_DAYS = "loggingRetentionDays"
     const val PREF_RETENTION_LOG_COUNT = "loggingRetentionLogCount"
 
@@ -29,7 +27,6 @@ object StreamCenterLogger {
     private const val LOG_FILE_EXTENSION = ".jsonl"
     private const val LOG_FORMAT_VERSION = 2
     private const val MILLIS_PER_DAY = 24L * 60L * 60L * 1_000L
-    private val LEGACY_RETENTION_MODES = setOf("DAYS", "LOG_COUNT")
 
     private const val RECORD_TYPE_SESSION = "session"
     private const val RECORD_TYPE_EVENT = "event"
@@ -104,17 +101,7 @@ object StreamCenterLogger {
     fun retentionPolicy(preferences: SharedPreferences?): RetentionPolicy {
         val days = preferences?.getInt(PREF_RETENTION_DAYS, 0)?.takeIf { it > 0 }
         val maximumLogCount = preferences?.getInt(PREF_RETENTION_LOG_COUNT, 0)?.takeIf { it > 0 }
-        if (days != null || maximumLogCount != null) {
-            return RetentionPolicy(days, maximumLogCount)
-        }
-
-        val legacyValue = preferences?.getInt(PREF_RETENTION_VALUE, 0)?.takeIf { it > 0 }
-            ?: return RetentionPolicy()
-        return when (preferences.getString(PREF_RETENTION_MODE, null)) {
-            "DAYS" -> RetentionPolicy(days = legacyValue)
-            "LOG_COUNT" -> RetentionPolicy(maximumLogCount = legacyValue)
-            else -> RetentionPolicy()
-        }
+        return RetentionPolicy(days, maximumLogCount)
     }
 
     fun setRetentionPolicy(preferences: SharedPreferences, policy: RetentionPolicy) {
@@ -124,15 +111,11 @@ object StreamCenterLogger {
             days?.let { putInt(PREF_RETENTION_DAYS, it) } ?: remove(PREF_RETENTION_DAYS)
             maximumLogCount?.let { putInt(PREF_RETENTION_LOG_COUNT, it) }
                 ?: remove(PREF_RETENTION_LOG_COUNT)
-            remove(PREF_RETENTION_MODE)
-            remove(PREF_RETENTION_VALUE)
         }.apply()
     }
 
     fun isDefaultRetentionPreference(key: String, value: Any?): Boolean {
         return when (key) {
-            PREF_RETENTION_MODE -> value !is String || value !in LEGACY_RETENTION_MODES
-            PREF_RETENTION_VALUE -> value !is Int || value <= 0
             PREF_RETENTION_DAYS, PREF_RETENTION_LOG_COUNT -> value !is Int || value <= 0
             else -> false
         }
@@ -723,7 +706,7 @@ object StreamCenterLogger {
     }
 
     private fun sanitizeMetadataValue(key: String, value: Any?): Any {
-        if (isSensitiveKey(key)) return REDACTED_VALUE
+        if (value !is Boolean && isSensitiveKey(key)) return REDACTED_VALUE
         return when (value) {
             null, JSONObject.NULL -> JSONObject.NULL
             is SourcedValue -> JSONObject()

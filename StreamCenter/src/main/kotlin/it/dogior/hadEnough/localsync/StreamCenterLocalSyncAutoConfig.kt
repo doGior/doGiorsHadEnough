@@ -61,11 +61,11 @@ internal object StreamCenterLocalSyncAutoConfig {
     private const val KEY_INTERVAL_MINUTES = "auto_interval_minutes"
     private const val KEY_PEER_MODE_PREFIX = "auto_peer_mode_"
 
-    private const val DEFAULT_INTERVAL_MINUTES = 5
+    const val DEFAULT_INTERVAL_MINUTES = 5
     private const val MIN_INTERVAL_MINUTES = 1
     private const val MAX_INTERVAL_MINUTES = 240
 
-    private val DEFAULT_CATEGORIES = setOf(StreamCenterLocalSyncCategory.LIBRARY)
+    val DEFAULT_CATEGORIES = setOf(StreamCenterLocalSyncCategory.LIBRARY)
 
     fun isEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, false)
 

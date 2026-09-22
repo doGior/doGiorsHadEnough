@@ -31,7 +31,7 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 9
+version = 10
 val pluginVersion = version.toString()
 
 cloudstream {
@@ -40,7 +40,15 @@ cloudstream {
 
     status = 1
 
-    tvTypes = listOf("Movie", "TvSeries", "Anime", "AnimeMovie", "Live")
+    tvTypes = listOf(
+        "TvSeries", 
+        "Movie", 
+        "AsianDrama", 
+        "Anime", 
+        "Torrent",
+        "Live",
+        "Others"
+    )
 
     requiresResources = true
     language = "it"
@@ -49,6 +57,8 @@ cloudstream {
 }
 
 android {
+    testOptions.unitTests.isIncludeAndroidResources = true
+
     buildFeatures {
         buildConfig = true
     }
@@ -65,7 +75,15 @@ android {
 }
 
 dependencies {
+    compileOnly("io.coil-kt.coil3:coil:3.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testRuntimeOnly("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+}
+
+configurations.named("testImplementation") {
+    extendsFrom(configurations.getByName("compileOnly"))
 }

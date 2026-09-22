@@ -25,8 +25,7 @@ internal object StreamCenterConfigurationStore {
                 null -> return@mapNotNull null
                 else -> throw IllegalArgumentException("Tipo non supportato per la preferenza $key.")
             }
-            val excluded = StreamCenterPlugin.isObsoleteTorrentPreference(key) ||
-                StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue) ||
+            val excluded = StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue) ||
                 StreamCenterPlugin.isDefaultHomePreference(key, portableValue) ||
                 StreamCenterPlugin.isDefaultVpnRequirementPreference(key, portableValue) ||
                 StreamCenterLogger.isDefaultRetentionPreference(key, portableValue)

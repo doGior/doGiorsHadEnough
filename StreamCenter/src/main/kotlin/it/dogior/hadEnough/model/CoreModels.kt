@@ -4,6 +4,8 @@ import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ShowStatus
 import it.dogior.hadEnough.stremio.StreamCenterStremioPlaybackContext
 import it.dogior.hadEnough.torrent.StreamCenterTorrentPlaybackContext
+import it.dogior.hadEnough.extensions.ExtensionPlaybackContext
+import it.dogior.hadEnough.anime.metadata.AnimeSeasonPlayback
 
 internal data class StreamCenterMetadata(
     val title: String,
@@ -48,6 +50,8 @@ internal data class StreamCenterPlaybackData(
     val streamingCommunity: StreamingCommunityPlaybackData? = null,
     val stremio: StreamCenterStremioPlaybackContext? = null,
     val torrent: StreamCenterTorrentPlaybackContext? = null,
+    val extensions: ExtensionPlaybackContext? = null,
+    val animeSeason: AnimeSeasonPlayback? = null,
 )
 
 internal data class ResolvedLoadSources(

@@ -3,6 +3,7 @@ package it.dogior.hadEnough.anime.source
 import android.content.SharedPreferences
 import com.lagradost.cloudstream3.app
 import it.dogior.hadEnough.StreamCenterAnimeArchiveFilters
+import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.model.AnilistMetadata
 import it.dogior.hadEnough.model.AnimeSyncIds
 import it.dogior.hadEnough.model.AnimeUnityAnime
@@ -340,6 +341,14 @@ internal class AnimeUnitySourceClient(
             if (candidates.values.any { it.matches(syncIds) }) break
         }
 
+        if (
+            candidates.values.none { it.matches(syncIds) } &&
+            (syncIds.anilistId != null || syncIds.malId != null) &&
+            !StreamCenterPlugin.isPerformanceModeEnabled(sharedPref)
+        ) {
+            searchBroadenedVariants(titleCandidates, syncIds, candidates)
+        }
+
         val idMatches = candidates.values.filter { it.matches(syncIds) }
         val exactMatches = idMatches.ifEmpty {
             if (!allowTitleFallback) {
@@ -377,6 +386,62 @@ internal class AnimeUnitySourceClient(
             .filter { it.contentKey() in matchedContentKeys || it.matches(syncIds) }
             .distinctBy(AnimeUnityAnime::id)
             .sortedWith(compareBy<AnimeUnityAnime> { if (it.isDub) 1 else 0 }.thenBy { it.id })
+    }
+
+    private suspend fun searchBroadenedVariants(
+        titleCandidates: List<String>,
+        syncIds: AnimeSyncIds,
+        candidates: MutableMap<Int, AnimeUnityAnime>,
+    ) {
+        val broadenedQueries = broadenedArchiveQueries(titleCandidates)
+        if (broadenedQueries.isEmpty()) return
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca allargata avviata",
+            mapOf("query_allargate" to broadenedQueries.size),
+        )
+        for (chunk in broadenedQueries.chunked(SEARCH_PARALLELISM)) {
+            coroutineScope {
+                chunk.map { query ->
+                    async(Dispatchers.IO) {
+                        runCatching { fetchArchive(title = query) }
+                            .onFailure {
+                                AnimeSourceLog.warning(
+                                    SOURCE_NAME,
+                                    "Ricerca allargata non riuscita",
+                                    error = it,
+                                )
+                            }
+                            .getOrDefault(emptyList())
+                    }
+                }.awaitAll()
+            }.flatten().forEach { anime ->
+                if (!candidates.containsKey(anime.id)) candidates[anime.id] = anime
+            }
+            if (candidates.values.any { it.matches(syncIds) }) break
+        }
+        AnimeSourceLog.info(
+            SOURCE_NAME,
+            "Ricerca allargata completata",
+            mapOf("candidati_univoci" to candidates.size),
+        )
+    }
+
+    private fun broadenedArchiveQueries(titleCandidates: List<String>): List<String> {
+        val existing = titleCandidates.map { it.trim().lowercase() }.toSet()
+        return titleCandidates
+            .asSequence()
+            .mapNotNull(::broadenedQuery)
+            .filterNot { it.trim().lowercase() in existing }
+            .distinctBy { it.lowercase() }
+            .take(MAX_BROADENED_QUERIES)
+            .toList()
+    }
+
+    private fun broadenedQuery(title: String): String? {
+        val words = title.trim().split(WHITESPACE_REGEX).filter(String::isNotBlank)
+        if (words.size <= BROADENED_QUERY_WORD_COUNT) return null
+        return words.take(BROADENED_QUERY_WORD_COUNT).joinToString(" ").takeIf { it.length >= 3 }
     }
 
     private fun buildArchiveBody(
@@ -677,6 +742,9 @@ internal class AnimeUnitySourceClient(
         const val MAX_ARCHIVE_PAGE_INDEX = 16_384
         const val SEARCH_PARALLELISM = 4
         const val EPISODES_PER_PAGE = 120
+        const val BROADENED_QUERY_WORD_COUNT = 4
+        const val MAX_BROADENED_QUERIES = 6
+        val WHITESPACE_REGEX = Regex("""\s+""")
         val ARCHIVE_TOTAL_KEYS = listOf(
             "tot",
             "total",

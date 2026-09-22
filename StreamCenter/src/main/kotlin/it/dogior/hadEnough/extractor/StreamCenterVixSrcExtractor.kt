@@ -42,7 +42,7 @@ class StreamCenterVixSrcExtractor : ExtractorApi() {
         callback(
             newExtractorLink(
                 source = "VixSrc",
-                name = "StreamingCommunity - VixSrc",
+                name = "VixSrc",
                 url = playlistUrl,
                 type = ExtractorLinkType.M3U8,
             ) {

@@ -7,6 +7,7 @@ internal enum class StreamCenterTorrentFileSelectionFailure {
     VIDEO_FILES_MISSING,
     EPISODE_FILE_MISSING,
     EPISODE_FILE_AMBIGUOUS,
+    FILES_FILTERED,
 }
 
 internal data class StreamCenterTorrentFileSelection(
@@ -18,6 +19,7 @@ internal object StreamCenterTorrentFileSelector {
     fun select(
         files: List<StreamCenterTorrentFile>,
         context: StreamCenterTorrentPlaybackContext,
+        accepts: (StreamCenterTorrentFile) -> Boolean = { true },
     ): StreamCenterTorrentFileSelection {
         if (context.episode == null) return StreamCenterTorrentFileSelection()
         if (files.isEmpty()) {
@@ -26,7 +28,8 @@ internal object StreamCenterTorrentFileSelector {
             )
         }
         val videoFiles = files.filter { file ->
-            StreamCenterTorrentVideoFileDetector.isUsableVideoFile(file.path)
+            file.index >= 0 && file.sizeBytes?.let { it > 0L } != false &&
+                StreamCenterTorrentVideoFileDetector.isUsableVideoFile(file.path)
         }
         if (videoFiles.isEmpty()) {
             return StreamCenterTorrentFileSelection(
@@ -39,16 +42,20 @@ internal object StreamCenterTorrentFileSelector {
                 .takeIf { score -> score > 0 }
                 ?.let { score -> file to score }
         }
-        val highestScore = scored.maxOfOrNull(Pair<StreamCenterTorrentFile, Int>::second)
+        val eligible = scored.filter { (file, _) -> accepts(file) }
+        if (scored.isNotEmpty() && eligible.isEmpty()) {
+            return StreamCenterTorrentFileSelection(failure = StreamCenterTorrentFileSelectionFailure.FILES_FILTERED)
+        }
+        val highestScore = eligible.maxOfOrNull(Pair<StreamCenterTorrentFile, Int>::second)
         val matchingFiles = highestScore
-            ?.let { score -> scored.filter { it.second == score }.map(Pair<StreamCenterTorrentFile, Int>::first) }
+            ?.let { score -> eligible.filter { it.second == score }.map(Pair<StreamCenterTorrentFile, Int>::first) }
             .orEmpty()
         val selected = when {
             matchingFiles.size == 1 -> matchingFiles.single()
             matchingFiles.size > 1 && (highestScore ?: 0) >= EXPLICIT_EPISODE_SCORE ->
                 matchingFiles.maxWithOrNull(
                     compareBy<StreamCenterTorrentFile> { file ->
-                        StreamCenterTorrentMetadata.resolution(file.fileName()) ?: 0
+                        StreamCenterTorrentMetadata.resolution(file.path.torrentFileName()) ?: 0
                     }.thenBy { file -> file.sizeBytes ?: 0L }
                         .thenByDescending(StreamCenterTorrentFile::index),
                 )
@@ -69,7 +76,7 @@ internal object StreamCenterTorrentFileSelector {
         file: StreamCenterTorrentFile,
         context: StreamCenterTorrentPlaybackContext,
     ): Int {
-        val fileName = file.fileName()
+        val fileName = file.path.torrentFileName()
         if (context.isAnime) {
             return StreamCenterTorrentMatchPolicy.animeEpisodeEvidenceScore(
                 candidateTitle = fileName,
@@ -140,9 +147,6 @@ internal object StreamCenterTorrentFileSelector {
         }
         return false
     }
-
-    private fun StreamCenterTorrentFile.fileName(): String =
-        path.substringAfterLast('/').substringAfterLast('\\').trim()
 
     private const val EXPLICIT_EPISODE_SCORE = 104
 }

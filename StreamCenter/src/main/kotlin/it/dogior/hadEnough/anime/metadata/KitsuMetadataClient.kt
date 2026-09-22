@@ -1,8 +1,6 @@
 package it.dogior.hadEnough.anime.metadata
 
-import it.dogior.hadEnough.model.KitsuEpisodeMetadata
 import it.dogior.hadEnough.util.cleanText
-import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -51,136 +49,6 @@ internal class KitsuMetadataClient(
             },
         )
         return json
-    }
-
-    suspend fun fetchEpisodes(
-        kitsuId: Int?,
-        targetEpisodeCount: Int? = null,
-    ): Map<Int, KitsuEpisodeMetadata> {
-        val resolvedKitsuId = kitsuId ?: run {
-            MetadataLog.info(
-                SOURCE,
-                "Recupero episodi ignorato",
-                mapOf("motivo" to "id_kitsu_assente"),
-            )
-            return emptyMap()
-        }
-        val baseDetails = buildMap<String, Any?> {
-            put("id_kitsu", resolvedKitsuId)
-            targetEpisodeCount?.let { put("episodi_obiettivo", it) }
-        }
-        MetadataLog.info(SOURCE, "Recupero episodi avviato", baseDetails)
-        val result = linkedMapOf<Int, KitsuEpisodeMetadata>()
-        var offset = 0
-        var page = 0
-        val maxPages = if (targetEpisodeCount == null) DEFAULT_MAX_PAGES else EXTENDED_MAX_PAGES
-        var pagesCompleted = 0
-        var stopReason = "limite_pagine_raggiunto"
-        while (page < maxPages) {
-            val json = request(
-                "anime/$resolvedKitsuId/episodes?page%5Blimit%5D=20&page%5Boffset%5D=$offset",
-                operation = "Episodi anime Kitsu",
-                details = baseDetails + mapOf(
-                    "pagina" to page + 1,
-                    "offset" to offset,
-                    "limite_pagina" to PAGE_SIZE,
-                ),
-            )
-            if (json == null) {
-                stopReason = "risposta_non_disponibile"
-                break
-            }
-            val data = json.optJSONArray("data")
-            if (data == null) {
-                stopReason = "campo_dati_assente"
-                MetadataLog.warning(
-                    SOURCE,
-                    "Pagina episodi Kitsu priva di dati",
-                    baseDetails + mapOf("pagina" to page + 1),
-                )
-                break
-            }
-            if (data.length() == 0) {
-                stopReason = "pagina_vuota"
-                break
-            }
-            for (index in 0 until data.length()) {
-                val attributes = data.optJSONObject(index)?.optJSONObject("attributes") ?: continue
-                val number = attributes.optNullableInt("number")
-                    ?: attributes.optNullableInt("relativeNumber")
-                    ?: continue
-                if (result.containsKey(number)) continue
-                val title = attributes.optNullableString("canonicalTitle")
-                    ?: attributes.optJSONObject("titles")?.let {
-                        it.optNullableString("en")
-                            ?: it.optNullableString("en_us")
-                            ?: it.optNullableString("en_jp")
-                    }
-                val synopsis = cleanText(attributes.optNullableString("synopsis"))
-                val airdate = attributes.optNullableString("airdate")
-                val length = attributes.optNullableInt("length")
-                val thumbnail = attributes.optJSONObject("thumbnail")?.optNullableString("original")
-                result[number] = KitsuEpisodeMetadata(
-                    name = title,
-                    description = synopsis,
-                    runTime = length,
-                    posterUrl = thumbnail,
-                    date = airdate,
-                )
-            }
-            pagesCompleted++
-            if (targetEpisodeCount != null && (result.keys.maxOrNull() ?: 0) >= targetEpisodeCount) {
-                stopReason = "obiettivo_episodi_raggiunto"
-                break
-            }
-            if (json.optJSONObject("links")?.optNullableString("next") == null) {
-                stopReason = "nessuna_pagina_successiva"
-                break
-            }
-            offset += PAGE_SIZE
-            page++
-        }
-        MetadataLog.info(
-            SOURCE,
-            "Recupero episodi completato",
-            baseDetails + mapOf(
-                "episodi_recuperati" to result.size,
-                "pagine_completate" to pagesCompleted,
-                "motivo_terminazione" to stopReason,
-            ),
-        )
-        return result
-    }
-
-    suspend fun fetchContentRating(kitsuId: Int?): String? {
-        val resolvedKitsuId = kitsuId ?: run {
-            MetadataLog.info(
-                SOURCE,
-                "Recupero classificazione contenuti ignorato",
-                mapOf("motivo" to "id_kitsu_assente"),
-            )
-            return null
-        }
-        val details = mapOf("id_kitsu" to resolvedKitsuId)
-        MetadataLog.info(SOURCE, "Recupero classificazione contenuti avviato", details)
-        val attributes = fetchAnimeAttributes(
-            kitsuId = resolvedKitsuId,
-            operation = "Classificazione contenuti Kitsu",
-            details = details,
-        ) ?: run {
-                MetadataLog.warning(SOURCE, "Classificazione contenuti non disponibile", details)
-                return null
-            }
-        val rating = listOfNotNull(
-            attributes.optNullableString("ageRating"),
-            attributes.optNullableString("ageRatingGuide"),
-        ).joinToString(" - ").takeIf(String::isNotBlank)
-        MetadataLog.info(
-            SOURCE,
-            "Classificazione contenuti elaborata",
-            details + mapOf("classificazione_disponibile" to (rating != null)),
-        )
-        return rating
     }
 
     suspend fun fetchNativeTitle(kitsuId: Int?): String? {
@@ -329,9 +197,6 @@ internal class KitsuMetadataClient(
         const val SOURCE = "Kitsu"
         const val API_URL = "https://kitsu.io/api/edge"
         const val ACCEPT = "application/vnd.api+json"
-        const val PAGE_SIZE = 20
-        const val DEFAULT_MAX_PAGES = 15
-        const val EXTENDED_MAX_PAGES = 80
     }
 
     private val animeAttributesCache = ConcurrentHashMap<Int, JSONObject>()

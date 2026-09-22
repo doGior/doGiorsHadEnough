@@ -14,7 +14,6 @@ internal enum class StreamCenterTorrentEpisodeCoordinateKind {
     LOCAL,
     SEASON,
     ABSOLUTE,
-    LEGACY,
 }
 
 internal data class StreamCenterTorrentEpisodeCoordinate(
@@ -32,7 +31,6 @@ internal data class StreamCenterTorrentPlaybackContext(
     val isMovie: Boolean = false,
     val season: Int? = null,
     val episode: Int? = null,
-    val episodeNumberAliases: Map<Int, List<Int>>? = null,
     val episodeNumberings: Map<Int, StreamCenterTorrentEpisodeNumbering>? = null,
     val imdbId: String? = null,
 )
@@ -68,17 +66,6 @@ internal fun StreamCenterTorrentPlaybackContext.episodeCoordinatesForSearch(): L
                         season = null,
                         episode = absoluteEpisode,
                         kind = StreamCenterTorrentEpisodeCoordinateKind.ABSOLUTE,
-                    )
-                )
-            }
-        episodeNumberAliases.orEmpty()[localEpisode].orEmpty()
-            .filter { it > 0 }
-            .forEach { alias ->
-                add(
-                    StreamCenterTorrentEpisodeCoordinate(
-                        season = null,
-                        episode = alias,
-                        kind = StreamCenterTorrentEpisodeCoordinateKind.LEGACY,
                     )
                 )
             }
@@ -154,17 +141,12 @@ internal fun StreamCenterTorrentPlaybackContext.forEpisode(
     episode: Int?,
 ): StreamCenterTorrentPlaybackContext {
     val resolvedEpisode = episode?.takeIf { value -> value > 0 }
-    val aliasesForEpisode = resolvedEpisode
-        ?.let { number -> episodeNumberAliases.orEmpty()[number] }
-        ?.takeIf(List<Int>::isNotEmpty)
-        ?.let { aliases -> mapOf(resolvedEpisode to aliases) }
     val numberingForEpisode = resolvedEpisode
         ?.let { number -> episodeNumberings.orEmpty()[number] }
         ?.let { numbering -> mapOf(resolvedEpisode to numbering) }
     return copy(
         season = season,
         episode = episode,
-        episodeNumberAliases = aliasesForEpisode,
         episodeNumberings = numberingForEpisode,
     )
 }
@@ -203,7 +185,7 @@ internal enum class StreamCenterExtDomain(
         title = "EXT secondario",
         baseUrl = "https://extto.com",
         defaultEnabled = true,
-        requiresCloudflare = false,
+        requiresCloudflare = true,
     ),
     PROXY(
         preferenceValue = "proxy",
@@ -385,3 +367,13 @@ internal data class StreamCenterTorrentFile(
     val path: String,
     val sizeBytes: Long? = null,
 )
+
+internal fun StreamCenterTorrentCandidate.withSelectedFile(file: StreamCenterTorrentFile) = copy(
+    fileIndex = file.index,
+    selectedFileName = file.path,
+    size = null,
+    sizeBytes = file.sizeBytes,
+    availableFiles = null,
+)
+
+internal fun String.torrentFileName(): String = substringAfterLast('/').substringAfterLast('\\').trim()

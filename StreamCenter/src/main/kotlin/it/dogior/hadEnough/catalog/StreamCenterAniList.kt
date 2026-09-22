@@ -191,7 +191,6 @@ internal class StreamCenterAniListCatalog(
                 pageInfo { hasNextPage }
                 media(
                   type: ANIME,
-                  isAdult: false,
                   sort: ${'$'}sort,
                   status: ${'$'}status,
                   season: ${'$'}season,

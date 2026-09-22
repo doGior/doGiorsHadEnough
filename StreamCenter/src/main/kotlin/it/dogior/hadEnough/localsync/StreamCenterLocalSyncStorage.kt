@@ -72,6 +72,7 @@ internal object StreamCenterLocalSyncStorage {
         context: Context,
         categories: Set<StreamCenterLocalSyncCategory>,
     ): StreamCenterLocalSyncPayload {
+        require(categories.isNotEmpty()) { "La selezione di sincronizzazione è vuota." }
         val datastore = datastore(context)
         val settings = settings(context)
         val streamCenterPreferences = StreamCenterConfigurationStore.preferences(context)
@@ -136,34 +137,18 @@ internal object StreamCenterLocalSyncStorage {
         val datastoreValues = decodePreferences(root.getJSONObject("datastore"))
         val settingsValues = decodePreferences(root.getJSONObject("settings"))
         val libraryValues = decodePreferences(root.getJSONObject("library"))
-        val streamCenterValues = root.optJSONObject("streamCenter")
-            ?.let(::decodePreferences)
-            .orEmpty()
-        when (type) {
-            StreamCenterLocalSyncPayloadType.ALL ->
-                applyAll(context, datastoreValues, settingsValues, libraryValues, streamCenterValues)
-            StreamCenterLocalSyncPayloadType.CLOUDSTREAM ->
-                applyCloudStream(context, datastoreValues, settingsValues, libraryValues, streamCenterValues)
-            StreamCenterLocalSyncPayloadType.LIBRARY -> {
-                require(datastoreValues.isEmpty()) { "La libreria contiene configurazioni CloudStream inattese." }
-                require(streamCenterValues.isEmpty()) { "La libreria contiene dati StreamCenter inattesi." }
-                applyLibrary(context, libraryValues, settingsValues)
-            }
-            StreamCenterLocalSyncPayloadType.STREAMCENTER -> {
-                require(libraryValues.isEmpty()) { "La configurazione StreamCenter contiene una libreria inattesa." }
-                applyStreamCenter(context, datastoreValues, settingsValues, streamCenterValues)
-            }
-            StreamCenterLocalSyncPayloadType.SELECTIVE -> {
-                val categories = root.optJSONArray("categories")?.let { array ->
-                    buildSet {
-                        for (index in 0 until array.length()) {
-                            StreamCenterLocalSyncCategory.fromWireValue(array.optString(index))?.let(::add)
-                        }
-                    }
-                }.orEmpty()
-                applySelective(context, categories, datastoreValues, settingsValues, libraryValues, streamCenterValues)
+        val streamCenterValues = decodePreferences(root.getJSONObject("streamCenter"))
+        val categories = root.getJSONArray("categories").let { array ->
+            buildSet {
+                for (index in 0 until array.length()) {
+                    add(requireNotNull(StreamCenterLocalSyncCategory.fromWireValue(array.getString(index))) {
+                        "Categoria di sincronizzazione non supportata."
+                    })
+                }
             }
         }
+        require(categories.isNotEmpty()) { "La selezione di sincronizzazione è vuota." }
+        applySelective(context, categories, datastoreValues, settingsValues, libraryValues, streamCenterValues)
         val stats = root.optJSONObject("stats")
         return StreamCenterLocalSyncResult(
             type = type,
@@ -434,58 +419,6 @@ internal object StreamCenterLocalSyncStorage {
         }
     }
 
-    private fun applyAll(
-        context: Context,
-        datastoreValues: Map<String, Any>,
-        settingsValues: Map<String, Any>,
-        libraryValues: Map<String, Any>,
-        streamCenterValues: Map<String, Any>,
-    ) {
-        validateCloudStreamConfiguration(datastoreValues, settingsValues)
-        require(libraryValues.keys.all(::isValidLibraryPayloadKey)) { "La libreria contiene chiavi non valide." }
-        val datastore = datastore(context)
-        val settings = settings(context)
-        val streamCenter = StreamCenterConfigurationStore.preferences(context)
-        val previousDatastore = datastore.all.toMap()
-        val previousSettings = settings.all.toMap()
-        val previousStreamCenter = streamCenter.all.toMap()
-        runCatching {
-            replaceCloudStreamConfiguration(datastore, datastoreValues)
-            replaceTransferable(settings, settingsValues)
-            replaceLibrary(datastore, libraryValues)
-            StreamCenterConfigurationStore.replace(streamCenter, streamCenterValues)
-        }.getOrElse { error ->
-            runCatching { replaceAll(settings, previousSettings) }.exceptionOrNull()?.let(error::addSuppressed)
-            runCatching { replaceAll(datastore, previousDatastore) }.exceptionOrNull()?.let(error::addSuppressed)
-            runCatching { replaceAll(streamCenter, previousStreamCenter) }.exceptionOrNull()?.let(error::addSuppressed)
-            throw error
-        }
-    }
-
-    private fun applyCloudStream(
-        context: Context,
-        datastoreValues: Map<String, Any>,
-        settingsValues: Map<String, Any>,
-        libraryValues: Map<String, Any>,
-        streamCenterValues: Map<String, Any>,
-    ) {
-        require(libraryValues.isEmpty()) { "La configurazione CloudStream contiene una libreria inattesa." }
-        require(streamCenterValues.isEmpty()) { "La configurazione CloudStream contiene dati StreamCenter inattesi." }
-        validateCloudStreamConfiguration(datastoreValues, settingsValues)
-        val datastore = datastore(context)
-        val settings = settings(context)
-        val previousDatastore = datastore.all.toMap()
-        val previousSettings = settings.all.toMap()
-        runCatching {
-            replaceTransferable(settings, settingsValues)
-            replaceCloudStreamConfiguration(datastore, datastoreValues)
-        }.getOrElse { error ->
-            runCatching { replaceAll(settings, previousSettings) }.exceptionOrNull()?.let(error::addSuppressed)
-            runCatching { replaceAll(datastore, previousDatastore) }.exceptionOrNull()?.let(error::addSuppressed)
-            throw error
-        }
-    }
-
     private fun validateCloudStreamConfiguration(
         datastoreValues: Map<String, Any>,
         settingsValues: Map<String, Any>,
@@ -494,17 +427,6 @@ internal object StreamCenterLocalSyncStorage {
             "Il datastore contiene dati che non appartengono alla configurazione CloudStream."
         }
         require(settingsValues.keys.all(::isTransferable)) { "Le impostazioni contengono chiavi non trasferibili." }
-    }
-
-    private fun applyLibrary(
-        context: Context,
-        datastoreValues: Map<String, Any>,
-        settingsValues: Map<String, Any>,
-    ) {
-        require(settingsValues.isEmpty()) { "Una libreria locale non può modificare le impostazioni." }
-        require(datastoreValues.keys.all(::isValidLibraryPayloadKey)) { "La libreria contiene chiavi non valide." }
-        val datastore = datastore(context)
-        replaceLibrary(datastore, datastoreValues)
     }
 
     private fun replaceLibrary(
@@ -536,20 +458,6 @@ internal object StreamCenterLocalSyncStorage {
         check(expectedKeys.all(datastore::contains)) { "La verifica della libreria ricevuta non è riuscita." }
     }
 
-    private fun applyStreamCenter(
-        context: Context,
-        datastoreValues: Map<String, Any>,
-        settingsValues: Map<String, Any>,
-        streamCenterValues: Map<String, Any>,
-    ) {
-        require(datastoreValues.isEmpty()) { "La configurazione StreamCenter non può modificare il datastore CloudStream." }
-        require(settingsValues.isEmpty()) { "La configurazione StreamCenter non può modificare le impostazioni CloudStream." }
-        StreamCenterConfigurationStore.replace(
-            StreamCenterConfigurationStore.preferences(context),
-            streamCenterValues,
-        )
-    }
-
     private fun replaceTransferable(preferences: SharedPreferences, values: Map<String, Any>) {
         val editor = preferences.edit()
         preferences.all.keys.filter(::isTransferable).forEach(editor::remove)
@@ -565,12 +473,6 @@ internal object StreamCenterLocalSyncStorage {
         preferences.all.keys.filter(::isCloudStreamConfigurationKey).forEach(editor::remove)
         values.forEach { (key, value) -> put(editor, key, value) }
         check(editor.commit()) { "Non è stato possibile applicare la configurazione CloudStream." }
-    }
-
-    private fun replaceAll(preferences: SharedPreferences, values: Map<String, *>) {
-        val editor = preferences.edit().clear()
-        values.forEach { (key, value) -> value?.let { put(editor, key, it) } }
-        check(editor.commit()) { "Non è stato possibile ripristinare la configurazione precedente." }
     }
 
     private fun put(editor: SharedPreferences.Editor, key: String, value: Any) {

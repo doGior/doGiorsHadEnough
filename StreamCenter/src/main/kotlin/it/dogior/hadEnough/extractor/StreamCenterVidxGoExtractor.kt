@@ -7,6 +7,12 @@ import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 class StreamCenterVidxGoExtractor : ExtractorApi() {
     override val name = "VidxGo"
@@ -14,6 +20,7 @@ class StreamCenterVidxGoExtractor : ExtractorApi() {
     override val requiresReferer = false
 
     companion object {
+        private const val PLAYBACK_DATA_PREFIX = "streamcenter:vidxgo:"
         private const val BROWSER_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
 
@@ -38,6 +45,50 @@ class StreamCenterVidxGoExtractor : ExtractorApi() {
             "Sec-Fetch-Site" to "cross-site",
             "DNT" to "1",
         )
+
+        internal fun ownsLink(link: ExtractorLink): Boolean =
+            link.extractorData?.startsWith(PLAYBACK_DATA_PREFIX) == true
+
+        internal fun videoInterceptor(link: ExtractorLink): Interceptor? {
+            if (!ownsLink(link)) return null
+            val targetUrl = link.extractorData?.removePrefix(PLAYBACK_DATA_PREFIX)
+                ?.toHttpUrlOrNull() ?: return null
+            if (link.url.toHttpUrlOrNull() == null) return null
+            val client = app.baseClient.newBuilder().callTimeout(15, TimeUnit.SECONDS).build()
+            return VidxGoHlsInterceptor(
+                initialUrl = link.url,
+                renewUrl = {
+                    runBlocking {
+                        withTimeout(15_000L) { resolvePlaylistUrl(targetUrl.toString(), link.referer) }
+                    }
+                },
+                fetchPlaylist = { url ->
+                    val request = Request.Builder().url(url)
+                    link.headers.forEach { (key, value) -> request.header(key, value) }
+                    request.header("Referer", link.referer)
+                        .header("Cache-Control", "no-cache")
+                        .header("Pragma", "no-cache")
+                    client.newCall(request.build()).execute()
+                },
+            )
+        }
+
+        private suspend fun resolvePlaylistUrl(targetUrl: String, referer: String): String? {
+            val response = app.get(
+                targetUrl,
+                headers = HTML_HEADERS + mapOf(
+                    "Referer" to referer,
+                    "Sec-Fetch-Dest" to if (targetUrl.contains("/t/")) "empty" else "iframe",
+                    "Cache-Control" to "no-cache",
+                    "Pragma" to "no-cache",
+                ),
+                cacheTime = 0,
+                timeout = 15L,
+            )
+            if (response.code !in 200..299) return null
+            return (extractM3u8FromJson(response.text) ?: extractM3u8FromHtml(response.text))
+                ?.takeIf { it.toHttpUrlOrNull() != null }
+        }
 
         private fun extractM3u8FromHtml(html: String): String? {
             val scripts = Regex("""<script\b[^>]*>([\s\S]*?)</script>""", RegexOption.IGNORE_CASE)
@@ -99,21 +150,9 @@ class StreamCenterVidxGoExtractor : ExtractorApi() {
             "Origin" to sourceBaseUrl,
             "Referer" to "$sourceBaseUrl/",
         )
-        val requestHeaders = HTML_HEADERS + mapOf(
-            "Referer" to "$sourceBaseUrl/",
-            "Sec-Fetch-Dest" to if (targetUrl.contains("/t/")) "empty" else "iframe",
-        )
-        val response = app.get(
-            targetUrl,
-            headers = requestHeaders,
-        )
-        val m3u8Url = extractM3u8FromJson(response.text) ?: extractM3u8FromHtml(response.text)
+        val m3u8Url = resolvePlaylistUrl(targetUrl, "$sourceBaseUrl/")
 
         if (m3u8Url != null) {
-            runCatching {
-                app.get(m3u8Url, headers = mediaHeaders)
-            }
-
             callback.invoke(
                 newExtractorLink(
                     source = name,
@@ -123,6 +162,7 @@ class StreamCenterVidxGoExtractor : ExtractorApi() {
                 ) {
                     this.headers = mediaHeaders
                     this.referer = "$sourceBaseUrl/"
+                    this.extractorData = PLAYBACK_DATA_PREFIX + targetUrl
                 },
             )
         }

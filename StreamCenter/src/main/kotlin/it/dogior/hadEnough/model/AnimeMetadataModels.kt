@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.model
 
 import com.lagradost.cloudstream3.ActorData
+import com.lagradost.cloudstream3.ShowStatus
 
 internal data class AnilistLoadMetadata(
     val anilistId: Int,
@@ -25,8 +26,6 @@ internal data class AnilistLoadMetadata(
     val isAdult: Boolean,
     val trailerUrl: String?,
     val characters: List<ActorData>,
-    val recommendations: List<AnilistRecommendation>,
-    val episodeMetadata: List<AnilistEpisodeMetadata>,
     val studios: List<String>,
     val source: String?,
     val season: String?,
@@ -66,20 +65,6 @@ internal data class AniZipEpisodeMetadata(
     val absoluteEpisodeNumber: Int?,
 )
 
-internal data class AnilistRecommendation(
-    val anilistId: Int,
-    val malId: Int?,
-    val title: String,
-    val format: String?,
-    val posterUrl: String?,
-)
-
-internal data class AnilistEpisodeMetadata(
-    val number: Int,
-    val title: String?,
-    val posterUrl: String?,
-)
-
 internal data class AniZipEpisodeCatalog(
     val titles: Map<String, String> = emptyMap(),
     val description: String? = null,
@@ -94,20 +79,46 @@ internal data class AniZipEpisodeCatalog(
 internal data class TmdbAnimeEpisodeMetadata(
     val title: String?,
     val description: String?,
+    val posterUrl: String? = null,
+    val airDate: String? = null,
+    val runTime: Int? = null,
+    val ratingPercent: Int? = null,
+    val tmdbSeason: Int? = null,
+    val tmdbEpisode: Int? = null,
 )
 
-internal data class MalEpisodeExtra(
+internal data class TmdbAnimeShowRef(
+    val tmdbId: Int,
+    val season: Int?,
+    val seasonAirDate: String? = null,
+    val episodes: Map<Int, TmdbAnimeEpisodeMetadata> = emptyMap(),
+    val seasonEpisodes: List<TmdbAnimeEpisodeMetadata> = emptyList(),
+)
+
+internal data class TmdbAnimeMetadata(
+    val tmdbId: Int,
+    val season: Int?,
     val title: String?,
-    val score: Double?,
-    val airedDate: String?,
-    val filler: Boolean,
-    val recap: Boolean,
-)
-
-internal data class KitsuEpisodeMetadata(
-    val name: String?,
-    val description: String?,
-    val posterUrl: String?,
-    val runTime: Int?,
-    val date: String?,
+    val englishTitle: String?,
+    val originalTitle: String?,
+    val poster: String?,
+    val background: String?,
+    val logo: String?,
+    val plot: String?,
+    val genres: List<String>,
+    val streamingPlatforms: String?,
+    val budget: String?,
+    val revenue: String?,
+    val airingSeasonLabel: String?,
+    val year: Int?,
+    val duration: Int?,
+    val score: String?,
+    val contentRating: String?,
+    val showStatus: ShowStatus?,
+    val comingSoon: Boolean,
+    val trailerUrl: String?,
+    val alternativeTitles: List<String>,
+    val episodes: Map<Int, TmdbAnimeEpisodeMetadata>,
+    val seasonEpisodes: List<TmdbAnimeEpisodeMetadata>,
+    val seasonName: String? = null,
 )

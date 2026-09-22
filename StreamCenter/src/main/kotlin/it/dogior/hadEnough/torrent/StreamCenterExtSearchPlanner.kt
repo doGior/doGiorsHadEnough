@@ -122,11 +122,6 @@ internal object StreamCenterExtSearchPlanner {
             .firstOrNull { coordinate ->
                 coordinate.kind == StreamCenterTorrentEpisodeCoordinateKind.ABSOLUTE
             }
-        val legacyCoordinates = episodeCoordinates
-            .filter { coordinate ->
-                coordinate.kind == StreamCenterTorrentEpisodeCoordinateKind.LEGACY
-            }
-            .take(MAX_ALTERNATIVE_EPISODES)
         val localEpisode = localCoordinate.episode
         val latinTitles = titles.filterNot(::containsJapaneseScript)
         val japaneseTitles = buildList {
@@ -244,13 +239,6 @@ internal object StreamCenterExtSearchPlanner {
                     batchSearch = false,
                 ))
             }
-            legacyCoordinates.forEach { coordinate ->
-                add(StreamCenterExtSearchPlan(
-                    "$primaryBaseTitle ${coordinate.episode}",
-                    "numerazione anime alternativa",
-                    batchSearch = false,
-                ))
-            }
             add(StreamCenterExtSearchPlan(
                 primaryBaseTitle,
                 "titolo anime base",
@@ -338,7 +326,6 @@ internal object StreamCenterExtSearchPlanner {
     private const val MAX_ANIME_TITLES = 8
     private const val MAX_TV_DIRECT_TITLES = 4
     private const val MAX_TV_FALLBACK_TITLES = 2
-    private const val MAX_ALTERNATIVE_EPISODES = 2
     private const val MAX_PRIMARY_BASE_VARIANTS = 2
     private const val MINIMUM_TITLE_LENGTH = 2
     private const val MAX_QUERY_LENGTH = 180

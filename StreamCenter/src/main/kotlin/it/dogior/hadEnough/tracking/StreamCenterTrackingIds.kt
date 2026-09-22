@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addMalId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addSimklId
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTMDbId
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
+import it.dogior.hadEnough.catalog.StreamCenterSimklIds
 import it.dogior.hadEnough.catalog.StreamCenterSimklMedia
 import it.dogior.hadEnough.util.StreamCenterLogger
 
@@ -20,9 +21,14 @@ internal data class StreamCenterTrackingIds(
     val tmdb: String? = null,
 )
 
+internal enum class TrackingIdService { MAL, ANILIST, KITSU, SIMKL, IMDB, TMDB }
+
+internal val ALL_TRACKING_ID_SERVICES: Set<TrackingIdService> = TrackingIdService.entries.toSet()
+
 internal fun LoadResponse.addStreamCenterTrackingIds(
     ids: StreamCenterTrackingIds,
     showAsTags: Boolean = false,
+    visibleServices: Set<TrackingIdService> = ALL_TRACKING_ID_SERVICES,
 ) {
     ids.anilist?.let { addAniListId(it) }
     ids.mal?.let { addMalId(it) }
@@ -30,7 +36,7 @@ internal fun LoadResponse.addStreamCenterTrackingIds(
     ids.simkl?.let { addSimklId(it) }
     ids.imdb?.let { addImdbId(it) }
     ids.tmdb?.let { addTMDbId(it) }
-    if (showAsTags) addStreamCenterTrackingIdTags(ids)
+    if (showAsTags) addStreamCenterTrackingIdTags(ids, visibleServices)
     StreamCenterLogger.logTab(
         tabName = name,
         action = "ID servizi di tracciamento associati",
@@ -67,24 +73,34 @@ private fun StreamCenterTrackingIds.toLogMetadata(): Map<String, String> = linke
 
 private fun Any?.orUnavailable(): String = this?.toString()?.takeIf(String::isNotBlank) ?: "Non disponibile"
 
-private fun LoadResponse.addStreamCenterTrackingIdTags(ids: StreamCenterTrackingIds) {
-    val idTags = listOfNotNull(
-        ids.mal?.let { "MAL: $it" },
-        ids.anilist?.let { "AniList: $it" },
-        ids.kitsu?.let { "Kitsu: $it" },
-        ids.simkl?.let { "Simkl: $it" },
-        ids.imdb?.takeIf(String::isNotBlank)?.let { "IMDb: $it" },
-    )
+private fun LoadResponse.addStreamCenterTrackingIdTags(
+    ids: StreamCenterTrackingIds,
+    visibleServices: Set<TrackingIdService>,
+) {
+    fun <T> T?.ifVisible(service: TrackingIdService): T? = this?.takeIf { service in visibleServices }
+    val animeTag = listOfNotNull(
+        ids.mal.ifVisible(TrackingIdService.MAL)?.let { "MAL $it" },
+        ids.anilist.ifVisible(TrackingIdService.ANILIST)?.let { "AniList $it" },
+        ids.kitsu.ifVisible(TrackingIdService.KITSU)?.let { "Kitsu $it" },
+    ).joinToString("/ ").takeIf(String::isNotBlank)
+    val generalTag = listOfNotNull(
+        ids.simkl.ifVisible(TrackingIdService.SIMKL)?.let { "Simkl $it" },
+        ids.imdb?.takeIf(String::isNotBlank).ifVisible(TrackingIdService.IMDB)?.let { "IMDb $it" },
+        ids.tmdb?.takeIf(String::isNotBlank).ifVisible(TrackingIdService.TMDB)?.let { "TMDB $it" },
+    ).joinToString("/ ").takeIf(String::isNotBlank)
+    val idTags = listOfNotNull(animeTag, generalTag)
     if (idTags.isNotEmpty()) {
         tags = (idTags + tags.orEmpty()).distinct()
     }
 }
 
-internal fun StreamCenterSimklMedia.trackingIds() = StreamCenterTrackingIds(
-    anilist = ids.anilist,
-    mal = ids.mal,
-    kitsu = ids.kitsu,
-    simkl = ids.simkl,
-    imdb = ids.imdb,
-    tmdb = ids.tmdb,
+internal fun StreamCenterSimklMedia.trackingIds() = ids.trackingIds()
+
+internal fun StreamCenterSimklIds.trackingIds() = StreamCenterTrackingIds(
+    anilist = anilist,
+    mal = mal,
+    kitsu = kitsu,
+    simkl = simkl,
+    imdb = imdb,
+    tmdb = tmdb,
 )

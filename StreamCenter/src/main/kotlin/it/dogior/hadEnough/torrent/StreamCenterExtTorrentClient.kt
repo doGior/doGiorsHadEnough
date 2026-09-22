@@ -1,11 +1,6 @@
 package it.dogior.hadEnough.torrent
 
-import android.content.Context
-import android.webkit.CookieManager
-import android.webkit.WebSettings
-import com.lagradost.api.getContext
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.network.WebViewResolver
 import com.lagradost.nicehttp.NiceResponse
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import kotlinx.coroutines.CancellationException
@@ -71,138 +66,12 @@ internal data class StreamCenterExtSearchOutcome(
         get() = partial || allowsAutomaticFallback || candidates.isEmpty()
 }
 
-internal object StreamCenterExtCloudflareSession {
-    @Volatile
-    private var userAgent: String? = null
-    private val responseCookies = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
-
-    fun updateUserAgent(value: String?) {
-        val resolvedUserAgent = value?.trim()?.takeIf(String::isNotBlank)
-        userAgent = resolvedUserAgent
-        if (resolvedUserAgent != null) {
-            WebViewResolver.webViewUserAgent = resolvedUserAgent
-            runCatching {
-                (getContext() as? Context)
-                    ?.getSharedPreferences(CLOUDFLARE_SESSION_PREFERENCES, Context.MODE_PRIVATE)
-                    ?.edit()
-                    ?.putString(CLOUDFLARE_USER_AGENT_KEY, resolvedUserAgent)
-                    ?.apply()
-            }
-        }
-    }
-
-    fun isReady(url: String): Boolean = hasVerifiedClearance(url)
-
-    fun hasVerifiedClearance(url: String): Boolean {
-        val hasWebViewClearance = parseCookiePairs(cookiesFor(url)).any { (name, _) ->
-            name.equals(CLOUDFLARE_CLEARANCE_COOKIE, ignoreCase = true)
-        }
-        val hasResponseClearance = responseCookies[cookieHost(url)]
-            ?.keys
-            ?.any { name -> name.equals(CLOUDFLARE_CLEARANCE_COOKIE, ignoreCase = true) }
-            ?: false
-        return hasWebViewClearance || hasResponseClearance
-    }
-
-    fun requestHeaders(url: String): Map<String, String> {
-        val resolvedUserAgent = userAgent
-            ?: storedUserAgent()?.also { storedUserAgent -> userAgent = storedUserAgent }
-            ?: WebViewResolver.webViewUserAgent?.trim()?.takeIf(String::isNotBlank)
-            ?: runCatching {
-                (getContext() as? Context)?.let(WebSettings::getDefaultUserAgent)
-            }.getOrNull()?.trim()?.takeIf(String::isNotBlank)
-            ?: FALLBACK_USER_AGENT
-        val cookies = linkedMapOf<String, String>()
-        parseCookiePairs(cookiesFor(url)).forEach { (name, value) -> cookies[name] = value }
-        responseCookies[cookieHost(url)]?.forEach { (name, value) -> cookies[name] = value }
-        return buildMap {
-            put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            put("Accept-Language", "it-IT,it;q=0.9,en;q=0.7")
-            put("User-Agent", resolvedUserAgent)
-            cookies.takeIf { pairs -> pairs.isNotEmpty() }?.let { pairs ->
-                put("Cookie", pairs.entries.joinToString("; ") { (name, value) -> "$name=$value" })
-            }
-        }
-    }
-
-    fun rememberResponseCookies(url: String, headers: Headers) {
-        val host = cookieHost(url)
-        val cookies = responseCookiePairs(headers)
-        if (cookies.isEmpty()) return
-        val hostCookies = responseCookies.computeIfAbsent(host) { ConcurrentHashMap() }
-        cookies.take(MAX_COOKIES_PER_HOST).forEach { (name, value) ->
-            if (value.isBlank()) hostCookies.remove(name)
-            else hostCookies[name] = value.take(MAX_COOKIE_VALUE_LENGTH)
-        }
-        if (hostCookies.size > MAX_COOKIES_PER_HOST) {
-            hostCookies.keys.drop(MAX_COOKIES_PER_HOST).forEach(hostCookies::remove)
-        }
-    }
-
-    fun headersWithResponseCookies(
-        requestHeaders: Map<String, String>,
-        responseHeaders: Headers,
-    ): Map<String, String> {
-        val cookies = linkedMapOf<String, String>()
-        parseCookiePairs(requestHeaders["Cookie"]).forEach { (name, value) -> cookies[name] = value }
-        responseCookiePairs(responseHeaders).forEach { (name, value) -> cookies[name] = value }
-        return requestHeaders.toMutableMap().apply {
-            if (cookies.isEmpty()) {
-                remove("Cookie")
-            } else {
-                put("Cookie", cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" })
-            }
-        }
-    }
-
-    private fun cookiesFor(url: String): String? = runCatching {
-        CookieManager.getInstance().getCookie(url)
-    }.getOrNull()?.trim()?.takeIf(String::isNotBlank)
-
-    private fun storedUserAgent(): String? = runCatching {
-        (getContext() as? Context)
-            ?.getSharedPreferences(CLOUDFLARE_SESSION_PREFERENCES, Context.MODE_PRIVATE)
-            ?.getString(CLOUDFLARE_USER_AGENT_KEY, null)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-    }.getOrNull()
-
-    private fun parseCookiePairs(value: String?): List<Pair<String, String>> = value
-        ?.split(';')
-        ?.mapNotNull { entry ->
-            val name = entry.substringBefore('=', "").trim()
-            val content = entry.substringAfter('=', "").trim()
-            name.takeIf(String::isNotBlank)?.let { cookieName -> cookieName to content }
-        }
-        .orEmpty()
-
-    private fun responseCookiePairs(headers: Headers): List<Pair<String, String>> = headers
-        .values("Set-Cookie")
-        .mapNotNull { header ->
-            val pair = header.substringBefore(';').trim()
-            val name = pair.substringBefore('=', "").trim()
-            val value = pair.substringAfter('=', "").trim()
-            name.takeIf(String::isNotBlank)?.let { cookieName -> cookieName to value }
-        }
-
-    private fun cookieHost(url: String): String = runCatching { URI(url).host }
-        .getOrNull()
-        ?.lowercase(Locale.ROOT)
-        .orEmpty()
-
-    private const val FALLBACK_USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 " +
-            "Chrome/124.0.0.0 Mobile Safari/537.36"
-    private const val CLOUDFLARE_SESSION_PREFERENCES = "streamcenter_ext_cloudflare_session"
-    private const val CLOUDFLARE_USER_AGENT_KEY = "verified_user_agent"
-    private const val CLOUDFLARE_CLEARANCE_COOKIE = "cf_clearance"
-    private const val MAX_COOKIES_PER_HOST = 32
-    private const val MAX_COOKIE_VALUE_LENGTH = 4_096
-}
-
 internal object StreamCenterExtTorrentClient {
     private val positiveSearchCache = ConcurrentHashMap<SearchCacheKey, CachedSearchOutcome>()
     private val searchFlights = ConcurrentHashMap<SearchCacheKey, SearchFlight>()
+
+    fun verificationUrl(domain: StreamCenterExtDomain): String =
+        "${domain.baseUrl.trimEnd('/')}/browse/?page_size=1"
 
     suspend fun checkAvailability(domain: StreamCenterExtDomain): StreamCenterExtDomainStatus {
         StreamCenterVpnGuard.requireInternetAccess()
@@ -215,7 +84,6 @@ internal object StreamCenterExtTorrentClient {
             )
         }
         val startedAt = System.currentTimeMillis()
-        val baseUrl = domain.baseUrl
         val response = try {
             retryTransientRequest {
                 StreamCenterTorrentRequestGate.rateLimited(
@@ -224,8 +92,8 @@ internal object StreamCenterExtTorrentClient {
                 ) {
                     StreamCenterVpnGuard.requireInternetAccess()
                     app.get(
-                        url = "$baseUrl/advanced/",
-                        headers = StreamCenterExtCloudflareSession.requestHeaders(baseUrl),
+                        url = verificationUrl(domain),
+                        headers = StreamCenterExtCloudflareSession.requestHeaders(verificationUrl(domain)),
                         cacheTime = 0,
                         timeout = AVAILABILITY_TIMEOUT_SECONDS,
                     )
@@ -241,15 +109,12 @@ internal object StreamCenterExtTorrentClient {
                 responseTimeMs = System.currentTimeMillis() - startedAt,
             )
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(baseUrl, response.headers)
         return classifyResponse(
             domain = domain,
             httpCode = response.code,
             headers = response.headers,
             html = response.text,
-            expectedMarkup = { document ->
-                document.selectFirst("input[name=q], select[name=contain_type]") != null
-            },
+            expectedMarkup = ::isSearchPage,
         ).copy(responseTimeMs = System.currentTimeMillis() - startedAt)
     }
 
@@ -580,7 +445,7 @@ internal object StreamCenterExtTorrentClient {
                     StreamCenterVpnGuard.requireInternetAccess()
                     app.get(
                         url = url,
-                        headers = requestHeaders,
+                        headers = StreamCenterExtCloudflareSession.refreshRequestHeaders(url, requestHeaders),
                         cacheTime = 0,
                         timeout = SEARCH_TIMEOUT_SECONDS,
                     )
@@ -597,7 +462,6 @@ internal object StreamCenterExtTorrentClient {
                 ),
             )
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(url, response.headers)
         val status = classifyResponse(
             domain = domain,
             httpCode = response.code,
@@ -614,6 +478,7 @@ internal object StreamCenterExtTorrentClient {
             document = document,
             refererUrl = url,
             sessionHeaders = StreamCenterExtCloudflareSession.headersWithResponseCookies(
+                url = url,
                 requestHeaders = requestHeaders,
                 responseHeaders = response.headers,
             ),
@@ -725,7 +590,7 @@ internal object StreamCenterExtTorrentClient {
                     StreamCenterVpnGuard.requireInternetAccess()
                     app.get(
                         url = url,
-                        headers = requestHeaders,
+                        headers = StreamCenterExtCloudflareSession.refreshRequestHeaders(url, requestHeaders),
                         cacheTime = 0,
                         timeout = SEARCH_TIMEOUT_SECONDS,
                     )
@@ -736,7 +601,6 @@ internal object StreamCenterExtTorrentClient {
         } catch (error: Throwable) {
             return null
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(url, response.headers)
         val status = classifyResponse(
             domain = domain,
             httpCode = response.code,
@@ -750,6 +614,7 @@ internal object StreamCenterExtTorrentClient {
             html = response.text,
             url = url,
             sessionHeaders = StreamCenterExtCloudflareSession.headersWithResponseCookies(
+                url = url,
                 requestHeaders = requestHeaders,
                 responseHeaders = response.headers,
             ),
@@ -797,7 +662,7 @@ internal object StreamCenterExtTorrentClient {
         filters: StreamCenterTorrentFilterSettings,
     ): Boolean {
         val metadata = toCandidateMetadata()
-        if (StreamCenterExtContainLocation.TITLE in locations && metadata.isEligibleFor(context, filters)) {
+        if (StreamCenterExtContainLocation.TITLE in locations && metadata.isEligibleForDiscovery(context, filters)) {
             return true
         }
         if (StreamCenterExtContainLocation.FILES !in locations || !filters.hasValidBounds()) return false
@@ -863,11 +728,11 @@ internal object StreamCenterExtTorrentClient {
             extReleaseSourceId = row.extReleaseSourceId,
             availableFiles = detail?.availableFiles,
         )
-        return if (needsFileInspection) {
-            StreamCenterTorrentBatchResolver.resolve(candidate, context).candidate
+        return (if (needsFileInspection) {
+            StreamCenterTorrentBatchResolver.resolve(candidate, context, filters).candidate
         } else {
             candidate
-        }
+        })?.takeIf { it.isEligibleFor(context, filters) }
     }
 
     private suspend fun loadDetails(
@@ -885,7 +750,7 @@ internal object StreamCenterExtTorrentClient {
                     StreamCenterVpnGuard.requireInternetAccess()
                     app.get(
                         url = row.detailUrl,
-                        headers = headers,
+                        headers = StreamCenterExtCloudflareSession.refreshRequestHeaders(row.detailUrl, headers),
                         cacheTime = 0,
                         timeout = DETAIL_TIMEOUT_SECONDS,
                     )
@@ -896,10 +761,10 @@ internal object StreamCenterExtTorrentClient {
         } catch (_: Throwable) {
             return null
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(row.detailUrl, response.headers)
         if (response.code !in 200..299) return null
         val document = Jsoup.parse(response.text, row.detailUrl)
         val detailHeaders = StreamCenterExtCloudflareSession.headersWithResponseCookies(
+            url = row.detailUrl,
             requestHeaders = headers,
             responseHeaders = response.headers,
         )
@@ -930,7 +795,9 @@ internal object StreamCenterExtTorrentClient {
                 StreamCenterVpnGuard.requireInternetAccess()
                 app.post(
                     url = "${domain.baseUrl}/ajax/getSearchMagnet.php",
-                    headers = headers + mapOf(
+                    headers = StreamCenterExtCloudflareSession.refreshRequestHeaders(
+                        "${domain.baseUrl}/ajax/getSearchMagnet.php", headers,
+                    ) + mapOf(
                         "Accept" to "application/json, text/javascript, */*; q=0.01",
                         "Referer" to session.refererUrl,
                         "X-Requested-With" to "XMLHttpRequest",
@@ -946,18 +813,18 @@ internal object StreamCenterExtTorrentClient {
                     cacheTime = 0,
                     timeout = DETAIL_TIMEOUT_SECONDS,
                 )
-            }
+            }.materializeBody()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
             return null
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(domain.baseUrl, response.headers)
         if (response.code !in 200..299) return null
         val magnetUrl = parseMagnetPayload(response.text) ?: return null
         return ExtMagnetResponse(
             url = magnetUrl,
             sessionHeaders = StreamCenterExtCloudflareSession.headersWithResponseCookies(
+                url = domain.baseUrl,
                 requestHeaders = headers,
                 responseHeaders = response.headers,
             ),
@@ -992,7 +859,9 @@ internal object StreamCenterExtTorrentClient {
                 StreamCenterVpnGuard.requireInternetAccess()
                 app.post(
                     url = "${domain.baseUrl}/ajax/getTorrentMagnet.php",
-                    headers = headers + mapOf(
+                    headers = StreamCenterExtCloudflareSession.refreshRequestHeaders(
+                        "${domain.baseUrl}/ajax/getTorrentMagnet.php", headers,
+                    ) + mapOf(
                         "Accept" to "application/json, text/javascript, */*; q=0.01",
                         "Referer" to detailUrl,
                         "X-Requested-With" to "XMLHttpRequest",
@@ -1007,13 +876,12 @@ internal object StreamCenterExtTorrentClient {
                     cacheTime = 0,
                     timeout = DETAIL_TIMEOUT_SECONDS,
                 )
-            }
+            }.materializeBody()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
             return null
         }
-        StreamCenterExtCloudflareSession.rememberResponseCookies(detailUrl, response.headers)
         if (response.code !in 200..299) return null
         return parseMagnetPayload(response.text)
     }
@@ -1199,10 +1067,16 @@ internal object StreamCenterExtTorrentClient {
             domain = domain,
             availability = availability,
             httpCode = httpCode,
-            detail = if (availability == StreamCenterExtAvailability.RATE_LIMITED) {
-                "retry_dopo_${StreamCenterTorrentRequestGate.remainingCooldownMs(requestGateKey(domain))}ms"
-            } else {
-                null
+            detail = when {
+                availability == StreamCenterExtAvailability.RATE_LIMITED ->
+                    "retry_dopo_${StreamCenterTorrentRequestGate.remainingCooldownMs(requestGateKey(domain))}ms"
+                availability == StreamCenterExtAvailability.VERIFICATION_REQUIRED ->
+                    if (StreamCenterExtCloudflareSession.hasClearanceCookie(domain.baseUrl)) {
+                        "cookie_cloudflare_presente_ma_accesso_rifiutato"
+                    } else {
+                        "verifica_cloudflare_richiesta"
+                    }
+                else -> null
             },
         )
     }
@@ -1252,7 +1126,7 @@ internal object StreamCenterExtTorrentClient {
         var lastFailure: Throwable? = null
         repeat(TRANSIENT_REQUEST_ATTEMPTS) { attempt ->
             try {
-                val response = block()
+                val response = block().materializeBody()
                 val retryableStatus = response.code == 408 || response.code in 500..599
                 if (!retryableStatus || attempt == TRANSIENT_REQUEST_ATTEMPTS - 1) return response
             } catch (cancelled: CancellationException) {
@@ -1264,6 +1138,11 @@ internal object StreamCenterExtTorrentClient {
             delay(RETRY_BASE_DELAY_MS * (attempt + 1))
         }
         throw lastFailure ?: IllegalStateException("Richiesta EXT non completata")
+    }
+
+    private fun NiceResponse.materializeBody(): NiceResponse = apply {
+        StreamCenterExtCloudflareSession.rememberResponseCookies(okhttpResponse)
+        text
     }
 
     private data class ExtSearchRequest(
