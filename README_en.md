@@ -1,6 +1,6 @@
 # [doGior](https://github.com/doGior)'s Had Enough
 
-Hi, I'm doGior, and I've had enough of searching for Cloudstream plugins that end up broken or
+Hi, I'm doGior, and I've had enough of searching for [Cloudstream](https://github.com/recloudstream/cloudstream) plugins that end up broken or
 abandoned, so I decided to create my own repository.
 
 ## Install
@@ -21,16 +21,16 @@ These are the plugins available at the moment:
 | AnimeUnity         | https://www.animeunity.so                              |                       Anime                        |     🇮🇹     |      ✅      |                                                                                                                  |
 | AnimeWorld         | https://www.animeworld.ac                              |                       Anime                        |     🇮🇹     |      ✅      |                                                                                                                  |
 | Arte               | https://www.arte.tv                                    |                   Documentaries                    |     🇮🇹     |      ✅      |                                                                                                                  |
-| CalcioStreaming    | https://vod.direttecommunity.online/                   |                     Sport Live                     |     🇮🇹     |      ✅      |                                                                                                                  |
+| CalcioStreaming    | https://goal.direttecommunity.online/                  |                     Sport Live                     |     🇮🇹     |      ✅      |                                                                                                                  |
 | CorsaroNero        | https://ilcorsaronero.link                             |                  Movies, Torrents                  |     🇮🇹     |      ❌      |                                                                                                                  |
 | IPTV               |                                                        |                        Live                        |     🇮🇹     |      ✅      | Add your iptv lists in the settings                                                                              |
 | Il Corsaro Viola   | https://icv.stremio.dpdns.org/                         | Movies, TV Show, Cartoons, Documentaries, Torrents |     🇮🇹     |      ✅      |                                                                                                                  |
 | Nebula             | https://nebula.tv                                      |                       Other                        |     🇬🇧     |      ✅      | Only free videos are available                                                                                   |
 | Simkl              | https://simkl.com                                      |                       Other                        |     🇬🇧     |      ✅      | This extension does not provide streaming. It's meant to only get the info of the elements in your Simkl library |
-| StreamingCommunity | https://streamingcommunityz.ooo/it                     |      Movies, TV Show, Cartoons, Documentaries      |     🇮🇹     |      ✅      |                                                                                                                  |
+| StreamingCommunity | https://streamingunity.fun/                            |      Movies, TV Show, Cartoons, Documentaries      |     🇮🇹     |      ✅      |                                                                                                                  |
 | TV                 | https://github.com/Free-TV/IPTV/blob/master/playlists/ |                      TV Live                       |     🇺🇳     |      ✅      |                                                                                                                  |
 | Vavoo              | https://vavoo.to/                                      |                      TV Live                       |     🇺🇳     |      ✅      | ⚠️ UNSTABLE ⚠️  If you experience issues try using an external player                                            |
-| YouTube            | https://www.youtube.com/                               |                       Other                        |     🇺🇳     |      ❌      | Customize the homepage in the settings                                                                           |
+| YouTube            | https://www.youtube.com/                               |                       Other                        |     🇺🇳     |      ✅      | Customize the homepage in the settings                                                                           |
 
 [All cloudstream repositories](https://rentry.org/cs3-repos)
 
