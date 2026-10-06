@@ -831,7 +831,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
     }
 
     private fun torrentCategoryCard(): LinearLayout {
-        val categoryKey = "torrent"
+        val categoryKey = "Torrent"
         val enabled = StreamCenterPlugin.isTorrentEnabled(sharedPref)
         val expanded = enabled && expandedCategoryKey == categoryKey
         return categoryContainer(COLOR_TORRENT, topMargin = 0).apply {
@@ -1359,7 +1359,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         val termsInput = input(filters.excludedTerms).apply {
             hint = "sample, trailer, cam"
             this.filters = arrayOf(InputFilter.LengthFilter(500))
-            contentDescription = "Parole o frasi da escludere dai risultati torrent"
+            contentDescription = "Parole o frasi da escludere dai risultati Torrent"
             layoutParams = verticalParams(top = 8)
         }
         content.addView(termsInput)

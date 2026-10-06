@@ -15,12 +15,16 @@ import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.normalizeAnimeEpisodeNumber
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
+import it.dogior.hadEnough.util.runCatchingCancellable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import okhttp3.MediaType.Companion.toMediaType
@@ -39,6 +43,8 @@ internal class AnimeUnitySourceClient(
     private val posterResolver: (String?) -> String?,
     private val ensureDomain: suspend () -> Unit,
 ) {
+    private val sessionMutex = Mutex()
+    @Volatile private var sessionBaseUrl: String? = null
     private val requestHeaders = mutableMapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
     )
@@ -189,11 +195,24 @@ internal class AnimeUnitySourceClient(
         val requestBody = buildArchiveBody(title, offset, filters)
             .toRequestBody("application/json;charset=utf-8".toMediaType())
         val text = try {
-            app.post(
+            val sentHeaders = sessionMutex.withLock { requestHeaders.toMap() }
+            var response = app.post(
                 "${baseUrl()}/archivio/get-animes",
-                headers = requestHeaders,
+                headers = sentHeaders,
                 requestBody = requestBody,
-            ).text
+                timeout = 5L,
+            )
+            if (response.code == 419) {
+                ensureHeaders(rejectedCookie = sentHeaders["Cookie"])
+                response = app.post(
+                    "${baseUrl()}/archivio/get-animes",
+                    headers = sessionMutex.withLock { requestHeaders.toMap() },
+                    requestBody = requestBody,
+                    timeout = 5L,
+                )
+            }
+            check(response.code in 200..299) { "AnimeUnity archivio HTTP ${response.code}" }
+            response.text
         } catch (error: Throwable) {
             AnimeSourceLog.warning(SOURCE_NAME, "Richiesta archivio non riuscita", error = error)
             throw error
@@ -219,7 +238,9 @@ internal class AnimeUnitySourceClient(
         val firstPage = fetchArchivePage(offset = 0)
         val firstPageSize = firstPage.rawRecordCount
             ?: throw IllegalStateException("Risposta archivio AnimeUnity non valida.")
-        val totalRecords = firstPage.totalRecords ?: discoverArchiveSize(firstPageSize)
+        val totalRecords = firstPage.totalRecords
+            ?: withTimeoutOrNull(1_500L) { discoverArchiveSize(firstPageSize) }
+            ?: return AnimeUnityArchiveExtent(firstPageSize, firstPage.records)
         archiveSizeCache[cacheKey] = AnimeUnityArchiveSizeCache(
             totalRecords = totalRecords,
             expiresAt = System.currentTimeMillis() + ARCHIVE_SIZE_CACHE_MS,
@@ -284,8 +305,8 @@ internal class AnimeUnitySourceClient(
     }
 
     fun resetSession() {
+        sessionBaseUrl = null
         sharedPref?.edit()?.remove(PREF_SESSION)?.apply()
-        applySession(cookie = "", csrfToken = "")
         AnimeSourceLog.info(SOURCE_NAME, "Sessione sorgente reimpostata")
     }
 
@@ -316,7 +337,7 @@ internal class AnimeUnitySourceClient(
             coroutineScope {
                 chunk.map { title ->
                     async(Dispatchers.IO) {
-                        runCatching { fetchArchive(title = title) }
+                        runCatchingCancellable { fetchArchive(title = title) }
                             .onFailure {
                                 AnimeSourceLog.warning(
                                     SOURCE_NAME,
@@ -404,7 +425,7 @@ internal class AnimeUnitySourceClient(
             coroutineScope {
                 chunk.map { query ->
                     async(Dispatchers.IO) {
-                        runCatching { fetchArchive(title = query) }
+                        runCatchingCancellable { fetchArchive(title = query) }
                             .onFailure {
                                 AnimeSourceLog.warning(
                                     SOURCE_NAME,
@@ -661,20 +682,24 @@ internal class AnimeUnitySourceClient(
         )
     }
 
-    private suspend fun ensureHeaders(forceRefresh: Boolean = false) {
+    private suspend fun ensureHeaders(rejectedCookie: String? = null) = sessionMutex.withLock {
         ensureDomain()
-        if (hasSessionHeaders() && !forceRefresh) return
-        if (!forceRefresh && restoreSession()) return
+        val currentBaseUrl = baseUrl().trimEnd('/')
+        val refresh = rejectedCookie != null && requestHeaders["Cookie"] == rejectedCookie
+        if (!refresh && sessionBaseUrl == currentBaseUrl && hasSessionHeaders()) return@withLock
+        if (!refresh && restoreSession()) return@withLock
 
-        requestHeaders["Host"] = hostOf(baseUrl())
-        val response = app.get("${baseUrl()}/archivio", headers = requestHeaders)
+        val response = app.get("$currentBaseUrl/archivio", headers = mapOf("User-Agent" to requestHeaders.getValue("User-Agent")), timeout = 5L)
+        check(response.code in 200..299) { "AnimeUnity sessione HTTP ${response.code}" }
         val csrfToken = response.document.head().select("meta[name=csrf-token]").attr("content")
         val cookies = listOfNotNull(
             response.cookies["XSRF-TOKEN"]?.let { "XSRF-TOKEN=$it" },
             response.cookies["animeunity_session"]?.let { "animeunity_session=$it" },
         ).joinToString("; ")
 
+        check(cookies.isNotBlank() && csrfToken.isNotBlank()) { "Sessione AnimeUnity priva di cookie o token CSRF" }
         applySession(cookies, csrfToken)
+        sessionBaseUrl = currentBaseUrl
         persistSession()
     }
 
@@ -698,16 +723,19 @@ internal class AnimeUnitySourceClient(
 
     private fun restoreSession(): Boolean {
         val json = readSessionPayload() ?: return false
+        if (json.optString("baseUrl") != baseUrl().trimEnd('/')) return false
         val cookie = json.optString("cookie")
         val csrfToken = json.optString("csrfToken")
         if (cookie.isBlank() || csrfToken.isBlank()) return false
         applySession(cookie, csrfToken)
+        sessionBaseUrl = baseUrl().trimEnd('/')
         return true
     }
 
     private fun persistSession() {
         if (!hasSessionHeaders()) return
         val payload = JSONObject()
+            .put("baseUrl", sessionBaseUrl)
             .put("cookie", requestHeaders["Cookie"].orEmpty())
             .put("csrfToken", requestHeaders["X-CSRF-Token"].orEmpty())
             .put("expiresAt", System.currentTimeMillis() + SESSION_TTL_MS)
@@ -737,7 +765,7 @@ internal class AnimeUnitySourceClient(
         const val SESSION_TTL_MS = 12L * 60L * 60L * 1000L
         const val ARCHIVE_SIZE_CACHE_MS = 6L * 60L * 60L * 1000L
         const val ARCHIVE_PAGE_SIZE = 30
-        const val MIN_RANDOM_PAGE_SAMPLES = 6
+        const val MIN_RANDOM_PAGE_SAMPLES = 3
         const val RANDOM_PAGE_CONCURRENCY = 3
         const val MAX_ARCHIVE_PAGE_INDEX = 16_384
         const val SEARCH_PARALLELISM = 4

@@ -43,7 +43,7 @@ class StreamCenterTorrentDetailsAction : VideoClickAction() {
             StreamCenterTorrentMagnet.infoHash(magnet)?.let { append("\n\nInfo hash: $it") }
         }
         return AlertDialog.Builder(context)
-            .setTitle("Dettagli torrent")
+            .setTitle("Dettagli Torrent")
             .setMessage(details)
             .setNeutralButton("Copia magnet") { _, _ ->
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager

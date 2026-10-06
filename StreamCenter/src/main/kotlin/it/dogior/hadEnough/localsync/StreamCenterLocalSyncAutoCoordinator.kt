@@ -2,6 +2,7 @@ package it.dogior.hadEnough.localsync
 
 import android.content.Context
 import it.dogior.hadEnough.util.StreamCenterLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -95,11 +96,12 @@ internal class StreamCenterLocalSyncAutoCoordinator(
         if (!passRunning.compareAndSet(false, true)) return
         val windowCancellation = StreamCenterLocalSyncCancellation()
         activeWindowCancellation = windowCancellation
-        val identity = StreamCenterLocalSyncTrust.localIdentity(appContext)
-        val identityKey = StreamCenterLocalSyncTrust.localPublicKey(appContext)
-        val name = StreamCenterLocalSyncStorage.deviceName()
-        val isTrusted: (String) -> Boolean = { key -> StreamCenterLocalSyncTrust.isTrusted(appContext, key) }
+        var failed = false
         try {
+            val identity = StreamCenterLocalSyncTrust.localIdentity(appContext)
+            val identityKey = StreamCenterLocalSyncTrust.localPublicKey(appContext)
+            val name = StreamCenterLocalSyncStorage.deviceName()
+            val isTrusted: (String) -> Boolean = { key -> StreamCenterLocalSyncTrust.isTrusted(appContext, key) }
             val openingMessage = if (targetPeerId == null) {
                 "Finestra automatica aperta"
             } else {
@@ -114,7 +116,7 @@ internal class StreamCenterLocalSyncAutoCoordinator(
             )
             coroutineScope {
                 val server = launch {
-                    runCatching {
+                    try {
                         StreamCenterLocalSyncNetwork.serveAuto(
                             localIdentity = identity,
                             localIdentityKey = identityKey,
@@ -124,7 +126,12 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                             listener = listener,
                             onSession = ::onSession,
                         )
-                    }.onFailure { error -> reportFailure("server automatico", error, windowCancellation) }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        failed = true
+                        reportFailure("server automatico", error, windowCancellation)
+                    }
                 }
                 delay(WINDOW_SERVER_READY_DELAY_MS)
                 runPass(
@@ -139,16 +146,21 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                 windowCancellation.close()
                 server.join()
             }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            failed = true
+            reportFailure("finestra di sincronizzazione", error, windowCancellation)
         } finally {
             windowCancellation.close()
             if (activeWindowCancellation === windowCancellation) activeWindowCancellation = null
             passRunning.set(false)
             if (!lifecycleCancellation.isCancelled) {
                 listener.onStateChanged(
-                    StreamCenterLocalSyncState.COMPLETED,
-                    "Finestra di sincronizzazione chiusa",
+                    if (failed) StreamCenterLocalSyncState.ERROR else StreamCenterLocalSyncState.COMPLETED,
+                    if (failed) "Finestra di sincronizzazione non riuscita" else "Finestra di sincronizzazione chiusa",
                 )
-                listener.onEvent(StreamCenterLocalSyncEvent("Finestra di sincronizzazione chiusa"))
+                if (!failed) listener.onEvent(StreamCenterLocalSyncEvent("Finestra di sincronizzazione chiusa"))
             }
         }
     }
@@ -185,7 +197,7 @@ internal class StreamCenterLocalSyncAutoCoordinator(
             val peerFingerprint = StreamCenterLocalSyncCrypto.fingerprint(peer.identityKey)
             if (targetPeerId != null && peerFingerprint != targetPeerId) return@forEach
             if (localFingerprint >= peerFingerprint) return@forEach
-            runCatching {
+            try {
                 StreamCenterLocalSyncNetwork.connectAuto(
                     peer = peer,
                     localIdentity = identity,
@@ -195,7 +207,11 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                     listener = listener,
                     onSession = ::onSession,
                 )
-            }.onFailure { error -> reportFailure("connessione a ${peer.name}", error, cancellation) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                reportFailure("connessione a ${peer.name}", error, cancellation)
+            }
         }
     }
 
@@ -228,26 +244,14 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                 detail = "$peerName · ${mode.title} · ${result.sent} inviate · ${result.received} ricevute",
             ),
         )
-        StreamCenterLocalSyncStorage.transferredMediaSummaries(appContext, result.sentKeys)
-            .takeIf { it.isNotEmpty() }
-            ?.let { entries ->
-                listener.onEvent(
-                    StreamCenterLocalSyncEvent(
-                        message = "Contenuti inviati",
-                        detail = entries.joinToString("\n"),
-                    ),
-                )
-            }
-        StreamCenterLocalSyncStorage.transferredMediaSummaries(appContext, result.receivedKeys)
-            .takeIf { it.isNotEmpty() }
-            ?.let { entries ->
-                listener.onEvent(
-                    StreamCenterLocalSyncEvent(
-                        message = "Contenuti ricevuti",
-                        detail = entries.joinToString("\n"),
-                    ),
-                )
-            }
+        val sentDetails = result.sentKeys.takeIf { it.isNotEmpty() }?.let { keys ->
+            StreamCenterLocalSyncStorage.transferLogDetails(appContext, keys, result.sentValues)
+        }
+        val receivedDetails = result.receivedKeys.takeIf { it.isNotEmpty() }?.let { keys ->
+            StreamCenterLocalSyncStorage.transferLogDetails(appContext, keys, result.receivedValues)
+        }
+        sentDetails?.let { listener.onEvent(StreamCenterLocalSyncEvent("Elementi inviati", it)) }
+        receivedDetails?.let { listener.onEvent(StreamCenterLocalSyncEvent("Elementi ricevuti", it)) }
         val changed = result.sent + result.received
         if (changed > 0) {
             StreamCenterLocalSyncNotifier.notifySync(
@@ -263,6 +267,8 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                 "modalita" to mode.wireValue,
                 "inviate" to result.sent,
                 "ricevute" to result.received,
+                "dettaglio_inviate" to sentDetails,
+                "dettaglio_ricevute" to receivedDetails,
             ),
         )
     }
@@ -278,6 +284,10 @@ internal class StreamCenterLocalSyncAutoCoordinator(
                 message = "Auto-sync: $action non riuscita",
                 detail = error.message?.take(160) ?: error.javaClass.simpleName,
             ),
+        )
+        StreamCenterLogger.logMenuError(
+            action = "Errore Sync Locale Auto · $action",
+            throwable = error,
         )
     }
 

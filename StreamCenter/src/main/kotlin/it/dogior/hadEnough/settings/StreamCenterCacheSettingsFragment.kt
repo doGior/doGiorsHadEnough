@@ -8,9 +8,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.StreamCenter
 import it.dogior.hadEnough.cache.CachedMediaEntry
 import it.dogior.hadEnough.cache.CachedMediaSummary
 import it.dogior.hadEnough.cache.StreamCenterMediaCache
@@ -25,6 +27,35 @@ import java.util.Date
 import java.util.Locale
 
 private const val DETAIL_EPISODE_LIMIT = 20
+
+private enum class CacheSortField(
+    val label: String,
+    val ascendingLabel: String,
+    val descendingLabel: String,
+    val defaultAscending: Boolean,
+) {
+    SAVED("Salvataggio", "Meno recenti", "Più recenti", false),
+    TITLE("Titolo", "A–Z", "Z–A", true),
+    EXPIRY("Scadenza", "Più vicine", "Più lontane", true),
+    SIZE("Dimensione", "Più piccole", "Più grandi", false),
+    EPISODES("Episodi", "Meno episodi", "Più episodi", false),
+}
+
+private data class CacheSortOrder(
+    val field: CacheSortField = CacheSortField.SAVED,
+    val ascending: Boolean = field.defaultAscending,
+) {
+    val directionLabel: String
+        get() = "${if (ascending) "↑" else "↓"} ${if (ascending) this.field.ascendingLabel else this.field.descendingLabel}"
+
+    fun nextField(): CacheSortOrder =
+        CacheSortOrder(CacheSortField.entries[(field.ordinal + 1) % CacheSortField.entries.size])
+}
+
+private data class CacheArchiveState(
+    val query: String = "",
+    val sortOrder: CacheSortOrder = CacheSortOrder(),
+)
 
 class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
     override val screenTitle: String = "Cache"
@@ -103,7 +134,53 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
             showLimitsDialog()
         }.view
 
-        addAdaptiveCardGrid(content, listOf(enabledRow, manageRow, limitsRow))
+        val durationLabel = bodyText(cacheDurationSummary(), 12)
+        val durationRow = settingsRow(
+            title = "Durata cache",
+            summaryView = durationLabel,
+            onReset = {
+                sharedPref?.edit()?.remove(StreamCenterPlugin.PREF_MEDIA_CACHE_COMPLETED_DAYS)?.apply()
+                durationLabel.text = cacheDurationSummary()
+                applyCacheDuration()
+            },
+            icon = "🕒",
+            accent = COLOR_CACHE,
+            fillColor = COLOR_CARD_ALT,
+            trailingViews = listOf(chevron(COLOR_CACHE)),
+        ) {
+            showDurationDialog(durationLabel)
+        }.view
+
+        val homeCalendarRow = switchRow(
+            title = "Cache calendario Home",
+            summary = "La sezione Anime - Calendario (Giorno) viene salvata in cache per un caricamento più rapido.",
+            checked = StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref),
+            defaultChecked = StreamCenterPlugin.isHomeCalendarCacheEnabled(null),
+            accent = COLOR_CACHE,
+            icon = "📅",
+        ) { enabled ->
+            val preferences = sharedPref
+            if (preferences == null) {
+                saveToast("Impossibile aggiornare l'impostazione della cache")
+            } else {
+                preferences.edit().putBoolean(StreamCenterPlugin.PREF_HOME_CALENDAR_CACHE_ENABLED, enabled).apply()
+                StreamCenter.clearHomeCalendarCache()
+                saveToast(if (enabled) "Cache calendario attivata" else "Cache calendario disattivata e svuotata")
+            }
+        }
+        val clearCalendarRow = settingsRow(
+            title = "Svuota cache calendario Home",
+            summary = "Ricarica il calendario alla prossima apertura della Home.",
+            icon = "🗑",
+            accent = COLOR_CACHE,
+            fillColor = COLOR_CARD_ALT,
+            fixedHeight = true,
+        ) {
+            StreamCenter.clearHomeCalendarCache()
+            saveToast("Cache calendario svuotata")
+        }.view
+
+        addAdaptiveCardGrid(content, listOf(enabledRow, manageRow, limitsRow, durationRow, homeCalendarRow, clearCalendarRow))
 
         val statsText = bodyText("", 12).apply {
             setPadding(dp(6), dp(14), dp(6), 0)
@@ -216,18 +293,65 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
     }
 
-    private fun showCacheArchive() {
+    private fun cacheDurationSummary(): String =
+        "Conclusi: ${StreamCenterPlugin.mediaCacheCompletedDays(sharedPref)} giorni · " +
+            "in corso: fino al prossimo episodio (24 ore se la data non è disponibile)"
+
+    private fun showDurationDialog(durationLabel: TextView) {
+        val ctx = context ?: return
+        val daysInput = input(StreamCenterPlugin.mediaCacheCompletedDays(sharedPref).toString(), widthDp = 130).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+            addView(bodyText("Durata per film, serie e anime conclusi (1–365 giorni):", 12))
+            addView(daysInput)
+        }
+        val dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("Durata cache"))
+            .setView(ScrollView(ctx).apply { addView(content) })
+            .setPositiveButton("Salva", null)
+            .setNegativeButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+                val days = daysInput.text.toString().trim().toIntOrNull()
+                val prefs = sharedPref
+                if (prefs == null || days == null || days !in 1..365) {
+                    daysInput.error = "Inserisci un valore da 1 a 365"
+                    return@setOnClickListener
+                }
+                prefs.edit().putInt(StreamCenterPlugin.PREF_MEDIA_CACHE_COMPLETED_DAYS, days).apply()
+                durationLabel.text = cacheDurationSummary()
+                applyCacheDuration()
+                saveToast("Durata cache aggiornata")
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun applyCacheDuration() {
+        viewScope?.launch(Dispatchers.IO) {
+            StreamCenterMediaCache.refreshCompletedExpiry()
+            withContext(Dispatchers.Main) { refreshStats() }
+        }
+    }
+
+    private fun showCacheArchive(initialState: CacheArchiveState = CacheArchiveState()) {
         val ctx = context ?: return
         viewScope?.launch(Dispatchers.IO) {
             val summaries = runCatching { StreamCenterMediaCache.listSummaries() }.getOrDefault(emptyList())
             withContext(Dispatchers.Main) {
                 if (!isAdded) return@withContext
-                showCacheArchiveDialog(summaries)
+                showCacheArchiveDialog(summaries, initialState)
             }
         }
     }
 
-    private fun showCacheArchiveDialog(summaries: List<CachedMediaSummary>) {
+    private fun showCacheArchiveDialog(summaries: List<CachedMediaSummary>, initialState: CacheArchiveState) {
         val ctx = context ?: return
         if (summaries.isEmpty()) {
             val dialog = AlertDialog.Builder(ctx)
@@ -247,6 +371,8 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
 
         lateinit var dialog: AlertDialog
+        lateinit var searchInput: EditText
+        var sortOrder = initialState.sortOrder
         val rowsContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -264,13 +390,15 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
                 )
                 return
             }
-            filtered.forEach { summary ->
+            sortCacheSummaries(filtered, sortOrder).forEach { summary ->
                 val arrow = chevron(COLOR_CACHE)
                 val deleteButton = deleteIconButton(
                     description = "Elimina la cache di ${summary.title}",
                     size = 34,
                 ) {
-                    showDeleteCacheConfirmation(summary, dialog)
+                    showDeleteCacheConfirmation(summary, dialog) {
+                        CacheArchiveState(searchInput.text?.toString().orEmpty(), sortOrder)
+                    }
                 }
                 rowsContainer.addView(
                     settingsRow(
@@ -288,8 +416,7 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
                 )
             }
         }
-        renderRows("")
-        val searchInput = input("").apply {
+        searchInput = input(initialState.query).apply {
             hint = "Cerca…"
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -303,10 +430,45 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
                 override fun afterTextChanged(s: android.text.Editable?) {}
             })
         }
+        lateinit var fieldButton: TextView
+        lateinit var directionButton: TextView
+        fun refreshSortControls() {
+            fieldButton.text = "↻ ${sortOrder.field.label}"
+            fieldButton.contentDescription = "Ordina per ${sortOrder.field.label}. Premi per cambiare criterio."
+            directionButton.text = sortOrder.directionLabel
+            directionButton.contentDescription = "${sortOrder.directionLabel}. Premi per invertire l'ordine."
+            renderRows(searchInput.text?.toString().orEmpty())
+        }
+        fieldButton = actionButton("Cambia criterio", COLOR_CACHE) {
+            sortOrder = sortOrder.nextField()
+            refreshSortControls()
+        }
+        directionButton = actionButton("Inverti ordine", COLOR_CACHE) {
+            sortOrder = sortOrder.copy(ascending = !sortOrder.ascending)
+            refreshSortControls()
+        }
+        val sortControls = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(8) }
+            listOf(fieldButton, directionButton).forEachIndexed { index, button ->
+                button.minimumHeight = dp(48)
+                button.setPadding(dp(8), dp(12), dp(8), dp(12))
+                button.maxLines = 2
+                addView(button, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                    if (index == 1) marginStart = dp(8)
+                })
+            }
+        }
+        refreshSortControls()
         val container = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(10), dp(20), dp(16))
             addView(searchInput)
+            addView(sortControls)
             addView(
                 ScrollView(ctx).apply {
                     addView(rowsContainer)
@@ -335,14 +497,31 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
                     withContext(Dispatchers.Main) {
                         if (!isAdded) return@withContext
                         saveToast(if (removed > 0) "Eliminate $removed voci scadute" else "Nessuna voce scaduta")
+                        val state = CacheArchiveState(searchInput.text?.toString().orEmpty(), sortOrder)
                         dialog.dismiss()
                         refreshStats()
-                        showCacheArchive()
+                        showCacheArchive(state)
                     }
                 }
             }
         }
         dialog.show()
+    }
+
+    private fun sortCacheSummaries(
+        summaries: List<CachedMediaSummary>,
+        order: CacheSortOrder,
+    ): List<CachedMediaSummary> {
+        val byTitle = compareBy<CachedMediaSummary> { it.title.lowercase(Locale.ROOT) }.thenBy { it.key }
+        val byField = when (order.field) {
+            CacheSortField.SAVED -> compareBy<CachedMediaSummary> { it.cachedAtMillis }
+            CacheSortField.TITLE -> byTitle
+            CacheSortField.EXPIRY -> compareBy<CachedMediaSummary> { it.expiresAtMillis }
+            CacheSortField.SIZE -> compareBy<CachedMediaSummary> { it.sizeBytes }
+            CacheSortField.EPISODES -> compareBy<CachedMediaSummary> { it.episodeCount }
+        }
+        val comparator = (if (order.ascending) byField else byField.reversed()).then(byTitle)
+        return summaries.sortedWith(comparator)
     }
 
     private fun showCacheDetail(summary: CachedMediaSummary) {
@@ -465,7 +644,11 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
     }
 
-    private fun showDeleteCacheConfirmation(summary: CachedMediaSummary, archiveDialog: AlertDialog) {
+    private fun showDeleteCacheConfirmation(
+        summary: CachedMediaSummary,
+        archiveDialog: AlertDialog,
+        archiveState: () -> CacheArchiveState,
+    ) {
         val ctx = context ?: return
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Elimina cache"))
@@ -475,9 +658,10 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
                     val deleted = StreamCenterMediaCache.deleteMedia(summary.key)
                     withContext(Dispatchers.Main) {
                         saveToast(if (deleted) "Cache di ${summary.title} eliminata" else "Cache non eliminata o già assente")
+                        val state = archiveState()
                         archiveDialog.dismiss()
                         refreshStats()
-                        showCacheArchive()
+                        showCacheArchive(state)
                     }
                 }
             }
@@ -554,7 +738,8 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
         val hours = minutes / 60L
         val days = hours / 24L
         return when {
-            days >= 2 -> "Scade tra $days giorni"
+            days >= 1 -> "Scade tra $days ${if (days == 1L) "giorno" else "giorni"}" +
+                (hours.rem(24).takeIf { it > 0 }?.let { " e $it ${if (it == 1L) "ora" else "ore"}" }.orEmpty())
             hours >= 1 -> "Scade tra $hours ore"
             else -> "Scade tra ${minutes.coerceAtLeast(1)} min"
         }

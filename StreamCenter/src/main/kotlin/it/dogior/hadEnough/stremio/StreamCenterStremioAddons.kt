@@ -40,6 +40,7 @@ internal data class StreamCenterStremioCatalogDescriptor(
     val name: String,
     val extra: List<String> = emptyList(),
     val requiredExtra: List<String> = emptyList(),
+    val pageSize: Int = 100,
 )
 
 internal data class StreamCenterStremioCatalogVideo(
@@ -220,7 +221,7 @@ internal object StreamCenterStremioAddonClient {
                 }
             if ((normalizedPage > 1 || catalog.requiresExtra("skip")) && catalog.supportsExtra("skip")) {
                 requestedExtra += "skip"
-                add("skip=${(normalizedPage - 1) * STREMIO_CATALOG_PAGE_SIZE}")
+                add("skip=${(normalizedPage - 1) * catalog.pageSize.coerceAtLeast(1)}")
             }
         }
         if (catalog.requiredExtra.any { name -> name.lowercase(Locale.ROOT) !in requestedExtra }) {
@@ -245,7 +246,7 @@ internal object StreamCenterStremioAddonClient {
         }.distinctBy { item -> item.id to item.type }
         return StreamCenterStremioCatalogPage(
             items = items,
-            hasNext = catalog.supportsExtra("skip") && items.size >= STREMIO_CATALOG_PAGE_SIZE,
+            hasNext = catalog.supportsExtra("skip") && metas.length() >= catalog.pageSize.coerceAtLeast(1),
         )
     }
 
@@ -389,6 +390,7 @@ internal object StreamCenterStremioAddonClient {
                             name = catalogName,
                             extra = extras.names,
                             requiredExtra = extras.requiredNames,
+                            pageSize = entry.optInt("pageSize", 100).takeIf { it > 0 } ?: 100,
                         ),
                     )
                 }
@@ -1368,5 +1370,4 @@ internal object StreamCenterStremioAddonClient {
     )
     private val HTTP_HEADER_NAME = Regex("^[A-Za-z0-9!#%&'*+.^_`|~-]{1,100}$")
     private const val MAX_HEADER_VALUE_LENGTH = 8_192
-    private const val STREMIO_CATALOG_PAGE_SIZE = 100
 }

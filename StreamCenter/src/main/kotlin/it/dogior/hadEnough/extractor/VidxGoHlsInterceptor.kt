@@ -11,7 +11,6 @@ internal class VidxGoHlsInterceptor(
     initialUrl: String,
     private val renewUrl: () -> String?,
     private val fetchPlaylist: (HttpUrl) -> Response,
-    private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : Interceptor {
     private data class Resource(val path: List<String>, val playlist: Boolean)
     private data class Attempt(val resource: Resource, val url: HttpUrl, val generation: Long)
@@ -70,7 +69,7 @@ internal class VidxGoHlsInterceptor(
     private fun recover(attempt: Attempt): Attempt? {
         try {
             if (attempt.generation == generation) {
-                val now = nowMillis()
+                val now = System.nanoTime() / 1_000_000
                 if (lastRenewal?.let { now - it < 5_000L } == true) return null
                 lastRenewal = now
                 val renewed = renewUrl()?.toHttpUrlOrNull() ?: return null

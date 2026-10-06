@@ -3,6 +3,20 @@ package it.dogior.hadEnough.model
 import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ShowStatus
 
+internal data class AnilistReleaseInfo(val year: Int?, val season: String?) {
+    val seasonLabel: String?
+        get() {
+            val label = when (season?.uppercase(java.util.Locale.ROOT)) {
+                "WINTER" -> "Inverno"
+                "SPRING" -> "Primavera"
+                "SUMMER" -> "Estate"
+                "FALL" -> "Autunno"
+                else -> return null
+            }
+            return year?.let { "$label $it" }
+        }
+}
+
 internal data class AnilistLoadMetadata(
     val anilistId: Int,
     val malId: Int?,
@@ -32,6 +46,8 @@ internal data class AnilistLoadMetadata(
     val nextAiringEpisode: Int?,
     val nextAiringAtSeconds: Long?,
 ) {
+    val releaseInfo: AnilistReleaseInfo get() = AnilistReleaseInfo(year, season)
+
     fun toStreamCenterMetadata(): StreamCenterMetadata = StreamCenterMetadata(
         title = title,
         originalTitle = originalTitle,
@@ -90,7 +106,6 @@ internal data class TmdbAnimeEpisodeMetadata(
 internal data class TmdbAnimeShowRef(
     val tmdbId: Int,
     val season: Int?,
-    val seasonAirDate: String? = null,
     val episodes: Map<Int, TmdbAnimeEpisodeMetadata> = emptyMap(),
     val seasonEpisodes: List<TmdbAnimeEpisodeMetadata> = emptyList(),
 )
@@ -109,8 +124,6 @@ internal data class TmdbAnimeMetadata(
     val streamingPlatforms: String?,
     val budget: String?,
     val revenue: String?,
-    val airingSeasonLabel: String?,
-    val year: Int?,
     val duration: Int?,
     val score: String?,
     val contentRating: String?,

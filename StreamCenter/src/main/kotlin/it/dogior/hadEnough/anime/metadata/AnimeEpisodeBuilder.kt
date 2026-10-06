@@ -12,6 +12,21 @@ import it.dogior.hadEnough.torrent.StreamCenterTorrentPlaybackContext
 import it.dogior.hadEnough.torrent.forEpisode
 import it.dogior.hadEnough.util.parseWholeAnimeEpisodeNumber
 
+internal fun futureTmdbEpisodes(
+    mappedEpisodes: Map<Int, TmdbAnimeEpisodeMetadata>,
+    seasonEpisodes: List<TmdbAnimeEpisodeMetadata>,
+    lastSourceNumber: Int,
+): List<Pair<Int, TmdbAnimeEpisodeMetadata>> {
+    val offset = mappedEpisodes.mapNotNull { (sourceNumber, meta) ->
+        meta.tmdbEpisode?.let { it - sourceNumber }
+    }.distinct().singleOrNull() ?: return emptyList()
+    return seasonEpisodes.mapNotNull { meta ->
+        meta.tmdbEpisode?.minus(offset)
+            ?.takeIf { it > lastSourceNumber }
+            ?.let { sourceNumber -> sourceNumber to meta }
+    }.distinctBy { it.first }.sortedBy { it.first }
+}
+
 @Suppress("DEPRECATION_ERROR", "DEPRECATION")
 internal fun MainAPI.buildAnimeEpisodes(
     animeUnitySources: List<AnimeUnityTitleSources>,
@@ -23,15 +38,12 @@ internal fun MainAPI.buildAnimeEpisodes(
     torrentContext: StreamCenterTorrentPlaybackContext?,
     displaySeason: Int? = null,
 ): List<Episode> {
-    val animeUnity = animeUnitySources.firstOrNull()
-    val animeWorld = animeWorldSources.firstOrNull()
-    val animeSaturn = animeSaturnSources.firstOrNull()
     val tmdbEpisodes = tmdb?.episodes.orEmpty()
     val seasonEpisodes = tmdb?.seasonEpisodes.orEmpty()
     val sourceNumbers = (
-        animeUnity?.episodeNumbers().orEmpty() +
-            animeWorld?.episodeNumbers().orEmpty() +
-            animeSaturn?.episodeNumbers().orEmpty()
+        animeUnitySources.flatMap { it.episodeNumbers() } +
+            animeWorldSources.flatMap { it.episodeNumbers() } +
+            animeSaturnSources.flatMap { it.episodeNumbers() }
         )
         .distinct()
         .sortedWith(compareBy({ it.toDoubleOrNull() ?: Double.POSITIVE_INFINITY }, { it }))
@@ -46,7 +58,7 @@ internal fun MainAPI.buildAnimeEpisodes(
             ).toJson(),
         ) {
             this.name = meta.title ?: "Episodio $displayNumber"
-            this.season = season
+            this.season = displaySeason ?: season
             this.episode = displayNumber
             this.posterUrl = meta.posterUrl ?: fallbackPoster
             this.description = meta.description
@@ -61,9 +73,11 @@ internal fun MainAPI.buildAnimeEpisodes(
 
     if (sourceNumbers.isNotEmpty()) {
         val played = sourceNumbers.mapNotNull { number ->
-            val playback = animeUnity?.playbackForEpisode(number)
-            val animeWorldPlaybacks = animeWorld?.playbacksForEpisode(number).orEmpty()
-            val animeSaturnPlaybacks = animeSaturn?.playbacksForEpisode(number).orEmpty()
+            val playback = animeUnitySources.firstNotNullOfOrNull { it.playbackForEpisode(number) }
+            val animeWorldPlaybacks = animeWorldSources.flatMap { it.playbacksForEpisode(number) }
+                .distinctBy { "${it.label}:${it.episodeToken}:${it.pageUrl}" }
+            val animeSaturnPlaybacks = animeSaturnSources.flatMap { it.playbacksForEpisode(number) }
+                .distinctBy { "${it.label}:${it.watchUrl}" }
             if (playback == null && animeWorldPlaybacks.isEmpty() && animeSaturnPlaybacks.isEmpty()) {
                 return@mapNotNull null
             }
@@ -83,7 +97,7 @@ internal fun MainAPI.buildAnimeEpisodes(
             ) {
                 this.name = meta?.title
                     ?: if (isSpecial) "Speciale $number" else "Episodio $number"
-                this.season = season
+                this.season = displaySeason ?: season
                 this.episode = whole?.takeIf { it > 0 }
                 this.posterUrl = meta?.posterUrl ?: fallbackPoster
                 this.description = meta?.description
@@ -95,19 +109,12 @@ internal fun MainAPI.buildAnimeEpisodes(
                 meta?.airDate?.let { addDate(it) }
             }
         }
-        val maxMappedTmdbEp = tmdbEpisodes.values.mapNotNull { it.tmdbEpisode }.maxOrNull()
         val lastSourceNum = sourceNumbers
             .mapNotNull(::parseWholeAnimeEpisodeNumber)
             .filter { it > 0 }
             .maxOrNull() ?: 0
-        val upcoming = if (maxMappedTmdbEp == null) {
-            emptyList()
-        } else {
-            seasonEpisodes
-                .filter { it.tmdbEpisode != null && it.tmdbEpisode > maxMappedTmdbEp }
-                .sortedBy { it.tmdbEpisode }
-                .mapIndexed { index, meta -> tmdbOnlyEpisode(lastSourceNum + index + 1, meta) }
-        }
+        val upcoming = futureTmdbEpisodes(tmdbEpisodes, seasonEpisodes, lastSourceNum)
+            .map { (sourceNumber, meta) -> tmdbOnlyEpisode(sourceNumber, meta) }
         return played + upcoming
     }
 

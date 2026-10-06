@@ -39,10 +39,10 @@ internal object StreamCenterLocalSyncTrust {
                 null
             }
             val identity = restored ?: StreamCenterLocalSyncCrypto.generateKeyPair().also { generated ->
-                preferences.edit()
+                check(preferences.edit()
                     .putString(KEY_IDENTITY_PUBLIC, StreamCenterLocalSyncCrypto.encodePublicKey(generated))
                     .putString(KEY_IDENTITY_PRIVATE, StreamCenterLocalSyncCrypto.encodePrivateKey(generated))
-                    .apply()
+                    .commit()) { "Impossibile salvare l'identità della sincronizzazione locale." }
             }
             cachedIdentity = identity
             identity
@@ -66,6 +66,7 @@ internal object StreamCenterLocalSyncTrust {
         return readPeers(prefs(context))[id]?.takeIf { peer -> peer.publicKey == publicKey }
     }
 
+    @Synchronized
     fun rememberPeer(context: Context, name: String, publicKey: String): StreamCenterLocalSyncTrustedPeer {
         val id = StreamCenterLocalSyncCrypto.fingerprint(publicKey)
         val preferences = prefs(context)
@@ -84,6 +85,7 @@ internal object StreamCenterLocalSyncTrust {
         return peer
     }
 
+    @Synchronized
     fun markSynced(context: Context, id: String, atMs: Long = System.currentTimeMillis()) {
         val preferences = prefs(context)
         val peers = readPeers(preferences).toMutableMap()
@@ -92,6 +94,7 @@ internal object StreamCenterLocalSyncTrust {
         writePeers(preferences, peers)
     }
 
+    @Synchronized
     fun forgetPeer(context: Context, id: String) {
         val preferences = prefs(context)
         val peers = readPeers(preferences).toMutableMap()
@@ -144,7 +147,9 @@ internal object StreamCenterLocalSyncTrust {
                     .put("lastSync", peer.lastSyncAtMs),
             )
         }
-        preferences.edit().putString(KEY_PEERS, array.toString()).apply()
+        check(preferences.edit().putString(KEY_PEERS, array.toString()).commit()) {
+            "Impossibile salvare i dispositivi associati."
+        }
     }
 
     private fun prefs(context: Context): SharedPreferences =

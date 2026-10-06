@@ -15,7 +15,6 @@ import it.dogior.hadEnough.stremio.StreamCenterStremioCatalogItem
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 internal class StreamCenterStremioCatalog(
@@ -31,12 +30,10 @@ internal class StreamCenterStremioCatalog(
         showScore: Boolean,
     ): StreamCenterCatalogPage {
         val descriptor = section.stremioCatalog ?: return StreamCenterCatalogPage(emptyList(), false)
-        val expectedType = stremioTvType(descriptor.type)
-            ?: return StreamCenterCatalogPage(emptyList(), false)
         val result = StreamCenterStremioAddonClient.loadCatalog(addon, descriptor, page)
         return StreamCenterCatalogPage(
             items = result.items.mapNotNull { item ->
-                item.takeIf { stremioTvType(it.type) == expectedType }
+                item.takeIf { stremioCatalogAcceptsItem(descriptor.type, it.type) }
                     ?.let { validItem -> searchResponse(api, validItem, showScore) }
             },
             hasNext = result.hasNext,
@@ -51,13 +48,12 @@ internal class StreamCenterStremioCatalog(
     ): StreamCenterCatalogPage {
         if (query.isBlank()) return StreamCenterCatalogPage(emptyList(), false)
         val descriptors = addon.catalogs.filter { descriptor ->
-            stremioTvType(descriptor.type) != null && descriptor.supportsExtra("search")
+            descriptor.type.isNotBlank() && descriptor.supportsExtra("search")
         }
         if (descriptors.isEmpty()) return StreamCenterCatalogPage(emptyList(), false)
         val items = linkedMapOf<String, SearchResponse>()
         var hasNext = false
         descriptors.forEach { descriptor ->
-            val expectedType = stremioTvType(descriptor.type) ?: return@forEach
             val result = StreamCenterStremioAddonClient.loadCatalog(
                 addon = addon,
                 catalog = descriptor,
@@ -66,7 +62,7 @@ internal class StreamCenterStremioCatalog(
             )
             hasNext = hasNext || result.hasNext
             result.items.forEach { item ->
-                if (stremioTvType(item.type) != expectedType) return@forEach
+                if (!stremioCatalogAcceptsItem(descriptor.type, item.type)) return@forEach
                 searchResponse(api, item, showScore)?.let { response ->
                     items.putIfAbsent(response.url, response)
                 }
@@ -91,7 +87,7 @@ internal class StreamCenterStremioCatalog(
         item: StreamCenterStremioCatalogItem,
         showScore: Boolean,
     ): SearchResponse? {
-        val type = stremioTvType(item.type) ?: return null
+        val type = stremioMediaTvType(item.type) ?: return null
         val url = mediaUrl(item.type, item.id)
         cards[url] = item
         val score = item.score?.takeIf { showScore }?.let { Score.from(it, 10) }
@@ -158,14 +154,6 @@ internal class StreamCenterStremioCatalog(
 
     private fun StreamCenterStremioCatalogDescriptor.supportsExtra(name: String): Boolean =
         extra.any { value -> value.equals(name, ignoreCase = true) }
-
-    private fun stremioTvType(type: String): TvType? = when (type.lowercase(Locale.ROOT)) {
-        "movie" -> TvType.Movie
-        "series" -> TvType.TvSeries
-        "anime" -> TvType.Anime
-        "tv", "channel" -> TvType.Live
-        else -> null
-    }
 
     private fun encode(value: String): String =
         URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20")

@@ -11,8 +11,6 @@ import it.dogior.hadEnough.anime.metadata.AnimeSeriesEntry
 import it.dogior.hadEnough.tracking.StreamCenterTrackingIds
 import it.dogior.hadEnough.util.StreamCenterLogger
 import java.io.File
-import java.util.Calendar
-import java.util.Locale
 
 internal data class CachedActor(
     val name: String = "",
@@ -121,7 +119,7 @@ internal data class CachedMediaSummary(
 )
 
 internal object StreamCenterMediaCache {
-    const val SCHEMA_VERSION = 6
+    const val SCHEMA_VERSION = 7
     const val TYPE_MOVIE = "movie"
     const val TYPE_SERIES = "series"
     const val TYPE_ANIME = "anime"
@@ -132,7 +130,8 @@ internal object StreamCenterMediaCache {
     @Volatile
     var generation: Long = 0L
         private set
-    private const val WEEK_MILLIS = 7L * 24L * 60L * 60L * 1000L
+    private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
+    private const val ANIME_RELATIONS_TTL_MILLIS = 12L * 60L * 60L * 1000L
     private val MEDIA_PATH_REGEX = Regex("/(movie|tv)/(\\d+)", RegexOption.IGNORE_CASE)
     private var recoveredDirectory: File? = null
 
@@ -194,7 +193,7 @@ internal object StreamCenterMediaCache {
         }.distinct().mapNotNull(::readByKey)
         val now = System.currentTimeMillis()
         val expiresAt = cachedReleases.filter { it.animeRelations == entries && it.animeRelationsExpiresAt > now }
-            .minOfOrNull { it.animeRelationsExpiresAt } ?: (now + 30 * 60_000L)
+            .minOfOrNull { it.animeRelationsExpiresAt } ?: (now + ANIME_RELATIONS_TTL_MILLIS)
         cachedReleases.forEach { cached ->
             if (cached.animeRelations != entries || cached.animeRelationsExpiresAt != expiresAt) {
                 writeMedia(cached.copy(animeRelations = entries, animeRelationsExpiresAt = expiresAt))
@@ -210,7 +209,7 @@ internal object StreamCenterMediaCache {
         val file = mediaFile(safeKey)?.takeIf(File::exists) ?: return null
         val entry = runCatching { parseJson<CachedMediaEntry>(AtomicTextFile.read(file)) }.getOrNull()
             ?: run { file.delete(); return null }
-        if (entry.schemaVersion != SCHEMA_VERSION || System.currentTimeMillis() >= entry.expiresAtMillis) {
+        if (entry.schemaVersion != SCHEMA_VERSION || System.currentTimeMillis() >= effectiveExpiry(entry)) {
             file.delete()
             return null
         }
@@ -283,7 +282,7 @@ internal object StreamCenterMediaCache {
                 type = entry.type,
                 episodeCount = entry.episodes.size,
                 cachedAtMillis = entry.cachedAtMillis,
-                expiresAtMillis = entry.expiresAtMillis,
+                expiresAtMillis = effectiveExpiry(entry),
                 sizeBytes = file.length(),
                 showStatus = entry.showStatus,
                 animeMovie = entry.animeMovie,
@@ -315,10 +314,10 @@ internal object StreamCenterMediaCache {
         directory.listFiles()?.forEach { file ->
             if (!file.isFile) return@forEach
             val stale = when {
-                file.name == POINTERS_FILE_NAME -> false
+                isReservedFile(file.name) -> false
                 file.name.endsWith(".json") -> {
                     val entry = runCatching { parseJson<CachedMediaEntry>(AtomicTextFile.read(file)) }.getOrNull()
-                    entry == null || entry.schemaVersion != SCHEMA_VERSION || now >= entry.expiresAtMillis
+                    entry == null || entry.schemaVersion != SCHEMA_VERSION || now >= effectiveExpiry(entry)
                 }
                 else -> true
             }
@@ -379,25 +378,54 @@ internal object StreamCenterMediaCache {
         prunePointers()
     }
 
-    fun computeMediaExpiry(now: Long, showStatus: String?, nextAirDateMillis: Long?): Long {
-        val ongoing = showStatus.equals("Ongoing", ignoreCase = true)
-        if (!ongoing) return now + WEEK_MILLIS
-        if (nextAirDateMillis != null && nextAirDateMillis > now) {
-            return minOf(nextAirDateMillis, now + WEEK_MILLIS)
-        }
-        return nextMidnightMillis(now)
+    private fun isCompleted(entry: CachedMediaEntry): Boolean =
+        entry.type == TYPE_MOVIE || entry.animeMovie || entry.showStatus.equals("Completed", ignoreCase = true)
+
+    private fun effectiveExpiry(entry: CachedMediaEntry): Long {
+        if (!isCompleted(entry) || entry.cachedAtMillis <= 0L) return entry.expiresAtMillis
+        return minOf(entry.expiresAtMillis, computeMediaExpiry(
+            entry.cachedAtMillis, entry.showStatus, null,
+            isMovie = entry.type == TYPE_MOVIE || entry.animeMovie,
+        ))
     }
 
-    fun nextMidnightMillis(now: Long): Long {
-        val calendar = Calendar.getInstance(Locale.getDefault()).apply {
-            timeInMillis = now
-            add(Calendar.DAY_OF_YEAR, 1)
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0)
-            set(Calendar.MILLISECOND, 0)
+    @Synchronized
+    fun refreshCompletedExpiry(): Int {
+        val files = directory()?.listFiles(::isMediaFile) ?: return 0
+        var updated = 0
+        files.forEach { file ->
+            val entry = runCatching { parseJson<CachedMediaEntry>(AtomicTextFile.read(file)) }.getOrNull()
+                ?: return@forEach
+            if (entry.schemaVersion != SCHEMA_VERSION || !isCompleted(entry) || entry.cachedAtMillis <= 0L) {
+                return@forEach
+            }
+            val expiry = computeMediaExpiry(
+                entry.cachedAtMillis, entry.showStatus, null,
+                isMovie = entry.type == TYPE_MOVIE || entry.animeMovie,
+            )
+            if (expiry != entry.expiresAtMillis && runCatching {
+                    AtomicTextFile.write(file, entry.copy(expiresAtMillis = expiry).toJson())
+                }.isSuccess) updated++
         }
-        return calendar.timeInMillis
+        cleanup()
+        return updated
+    }
+
+    fun computeMediaExpiry(
+        now: Long,
+        showStatus: String?,
+        nextAirDateMillis: Long?,
+        isMovie: Boolean = false,
+        completedDays: Int = StreamCenterPlugin.mediaCacheCompletedDays(StreamCenterPlugin.activeSharedPref),
+    ): Long {
+        if (isMovie || showStatus.equals("Completed", ignoreCase = true)) {
+            return now + completedDays.coerceIn(1, 365) * DAY_MILLIS
+        }
+        val dailyExpiry = now + DAY_MILLIS
+        return if (showStatus.equals("Ongoing", ignoreCase = true) &&
+            nextAirDateMillis != null && nextAirDateMillis > now) {
+            nextAirDateMillis
+        } else dailyExpiry
     }
 
     private fun mediaFile(key: String): File? {

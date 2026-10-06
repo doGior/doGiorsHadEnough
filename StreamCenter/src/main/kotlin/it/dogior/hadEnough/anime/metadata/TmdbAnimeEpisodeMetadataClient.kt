@@ -44,10 +44,10 @@ internal class TmdbAnimeEpisodeMetadataClient(
         }
         MetadataLog.info(SOURCE, "Risoluzione serie TMDB avviata", requestDetails)
 
-        resolveViaAniBridge(anilistId, episodeNumbers, requestDetails)
-            ?.let { return@withContext it }
+        val bridge = resolveViaAniBridge(anilistId, episodeNumbers, requestDetails)
+        if (bridge?.episodes?.isNotEmpty() == true) return@withContext bridge
 
-        val tmdbId = aniZipCatalog.tmdbId?.takeIf { it > 0 } ?: run {
+        val tmdbId = aniZipCatalog.tmdbId?.takeIf { it > 0 } ?: bridge?.tmdbId ?: run {
             MetadataLog.info(
                 SOURCE,
                 "Nessuna serie TMDB risolvibile",
@@ -96,30 +96,30 @@ internal class TmdbAnimeEpisodeMetadataClient(
                 ?.firstOrNull { it.episode == reference.episode }
                 ?.let { sourceEpisode to it.toMetadata() }
         }.toMap()
-        val dominant = references.values
+        val dominant = references.filterKeys { it in bySource }.values
             .groupingBy { it.tmdbId to it.season }
             .eachCount()
             .maxByOrNull { it.value }
             ?.key
-            ?: return null
+            ?: return references.values.map { it.tmdbId }.distinct().singleOrNull()
+                ?.let { TmdbAnimeShowRef(it, season = null) }
         val (tmdbId, season) = dominant
+        val matchedEpisodes = bySource.filterKeys { sourceEpisode -> references[sourceEpisode]?.tmdbId == tmdbId }
         val dominantSeasonEpisodes = seasonEpisodes[dominant].orEmpty()
-        val seasonAirDate = dominantSeasonEpisodes.mapNotNull(TmdbEpisode::airDate).minOrNull()
         MetadataLog.info(
             SOURCE,
             "Serie TMDB risolta tramite AniBridge",
             requestDetails + mapOf(
                 "id_tmdb" to tmdbId,
                 "stagione_tmdb" to season,
-                "episodi_risolti" to bySource.size,
+                "episodi_risolti" to matchedEpisodes.size,
                 "episodi_stagione_tmdb" to dominantSeasonEpisodes.size,
             ),
         )
         return TmdbAnimeShowRef(
             tmdbId = tmdbId,
             season = season,
-            seasonAirDate = seasonAirDate,
-            episodes = bySource,
+            episodes = matchedEpisodes,
             seasonEpisodes = dominantSeasonEpisodes.map { it.toMetadata() },
         )
     }
@@ -146,10 +146,6 @@ internal class TmdbAnimeEpisodeMetadataClient(
             ?.key
             ?: 1
         val dominantSeasonEpisodes = fetchSeason(tmdbId, dominantSeason)
-        val seasonAirDate = dominantSeasonEpisodes
-            .mapNotNull(TmdbEpisode::airDate)
-            .minOrNull()
-            ?: byDate.values.filter { it.season == dominantSeason }.mapNotNull(TmdbEpisode::airDate).minOrNull()
         MetadataLog.info(
             SOURCE,
             "Serie TMDB risolta tramite date di uscita",
@@ -163,7 +159,6 @@ internal class TmdbAnimeEpisodeMetadataClient(
         return TmdbAnimeShowRef(
             tmdbId = tmdbId,
             season = dominantSeason,
-            seasonAirDate = seasonAirDate,
             episodes = byDate.mapValues { it.value.toMetadata() },
             seasonEpisodes = dominantSeasonEpisodes.map { it.toMetadata() },
         )

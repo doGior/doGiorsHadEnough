@@ -68,7 +68,7 @@ internal data class AnimeSeasonInfo(
         fun resolve(tmdb: TmdbAnimeMetadata?, preferredTitle: String, titleCandidates: List<String>): AnimeSeasonInfo {
             val titles = listOf(preferredTitle) + titleCandidates
             return AnimeSeasonInfo(
-                season = tmdb?.season ?: titles.mapNotNull(::seasonNumber).distinct().singleOrNull(),
+                season = titles.mapNotNull(::seasonNumber).distinct().singleOrNull() ?: tmdb?.season,
                 part = partNumber(preferredTitle) ?: titles.mapNotNull(::partNumber).distinct().singleOrNull(),
                 seasonName = meaningfulName(tmdb?.seasonName),
                 seriesTitles = listOfNotNull(tmdb?.title, tmdb?.englishTitle, tmdb?.originalTitle),

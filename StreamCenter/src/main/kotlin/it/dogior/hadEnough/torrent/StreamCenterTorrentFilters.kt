@@ -354,7 +354,7 @@ internal object StreamCenterTorrentPreferences {
             add("EXT · $domains")
             add(settings.containLocation.title)
             add(settings.language.title)
-            add("${settings.resultLimit} torrent")
+            add("${settings.resultLimit} Torrent")
             add(
                 settings.minimumResolution
                     .takeIf { resolution -> resolution > 0 }

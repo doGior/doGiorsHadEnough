@@ -677,7 +677,7 @@ class StreamCenterMenuFragment : StreamCenterBaseSettingsFragment() {
         }
         val parts = mutableListOf("$activeSources fonti attive")
         if (activeAddons > 0) parts += "$activeAddons add-on"
-        if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) parts += "torrent"
+        if (StreamCenterPlugin.isTorrentEnabled(sharedPref)) parts += "Torrent"
         return parts.joinToString(" · ")
     }
 

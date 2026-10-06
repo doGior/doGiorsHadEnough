@@ -81,7 +81,15 @@ internal object StreamCenterLocalSyncStorage {
         val includeLibrary = StreamCenterLocalSyncCategory.LIBRARY in categories
         val includeStreamCenter = StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories
         val datastoreValues = if (includeCloudStream) cloudStreamConfigurationValues(datastore.all) else emptyMap()
-        val settingsValues = if (includeCloudStream) settings.all.filterKeys(::isTransferable) else emptyMap()
+
+        val settingsValues: Map<String, Any> = if (includeCloudStream) {
+            settings.all.mapNotNull { (key, value) ->
+                if (value != null && isTransferable(key)) key to value else null
+            }.toMap()
+        } else {
+            emptyMap()
+        }
+        
         val libraryValues = if (includeLibrary) libraryValues(datastore.all, account) else emptyMap()
         val streamCenterValues = if (includeStreamCenter) {
             StreamCenterConfigurationStore.snapshot(streamCenterPreferences)
@@ -120,6 +128,9 @@ internal object StreamCenterLocalSyncStorage {
             libraryItemCount = libraryItemCount,
             progressCount = progressCount,
             sourceAccount = account.takeIf { includeLibrary },
+            transferDetails = selectiveTransferLogDetails(
+                context, datastoreValues, settingsValues, libraryValues, streamCenterValues,
+            ),
         )
     }
 
@@ -148,16 +159,28 @@ internal object StreamCenterLocalSyncStorage {
             }
         }
         require(categories.isNotEmpty()) { "La selezione di sincronizzazione è vuota." }
+        require(StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories ||
+            (datastoreValues.isEmpty() && settingsValues.isEmpty())) {
+            "Il contenuto include impostazioni CloudStream non selezionate."
+        }
+        require(StreamCenterLocalSyncCategory.LIBRARY in categories || libraryValues.isEmpty()) {
+            "Il contenuto include dati della libreria non selezionati."
+        }
+        require(StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories || streamCenterValues.isEmpty()) {
+            "Il contenuto include impostazioni StreamCenter non selezionate."
+        }
         applySelective(context, categories, datastoreValues, settingsValues, libraryValues, streamCenterValues)
-        val stats = root.optJSONObject("stats")
         return StreamCenterLocalSyncResult(
             type = type,
             sent = false,
             entryCount = datastoreValues.size + settingsValues.size + libraryValues.size + streamCenterValues.size,
-            libraryItemCount = stats?.optInt("libraryItems", 0) ?: 0,
-            progressCount = stats?.optInt("progressEntries", 0) ?: 0,
+            libraryItemCount = libraryItemCount(libraryValues.keys),
+            progressCount = progressCount(libraryValues.keys),
             peerName = root.optString("sourceDevice", "Dispositivo remoto"),
             restartRequired = true,
+            transferDetails = selectiveTransferLogDetails(
+                context, datastoreValues, settingsValues, libraryValues, streamCenterValues,
+            ),
         )
     }
 
@@ -188,7 +211,10 @@ internal object StreamCenterLocalSyncStorage {
                 val root = JSONObject()
                 log.forEach { (key, version) ->
                     if (categoryOfKey(key)?.let { it in categories } != true) return@forEach
-                    root.put(key, JSONObject().put("t", version.timestampMs).put("d", if (version.deleted) 1 else 0))
+                    root.put(key, JSONObject()
+                        .put("t", version.timestampMs)
+                        .put("d", if (version.deleted) 1 else 0)
+                        .put("h", version.hash))
                 }
                 return root
             }
@@ -198,7 +224,7 @@ internal object StreamCenterLocalSyncStorage {
                 keys.forEach { key ->
                     val version = log[key] ?: return@forEach
                     if (categoryOfKey(key)?.let { it in categories } != true) return@forEach
-                    val entry = JSONObject().put("t", version.timestampMs)
+                    val entry = JSONObject().put("t", version.timestampMs).put("h", version.hash)
                     val value = live[key]
                     if (version.deleted || value == null) {
                         entry.put("d", 1)
@@ -216,36 +242,50 @@ internal object StreamCenterLocalSyncStorage {
             }
 
             override fun applyRemote(values: JSONObject): List<String> {
-                val appliedKeys = mutableListOf<String>()
-                val keys = values.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    val entry = values.optJSONObject(key) ?: continue
-                    val category = categoryOfKey(key) ?: continue
-                    if (category !in categories || !isAcceptableMergeKey(key)) continue
-                    val remoteTs = entry.optLong("t", 0L)
-                    val localTs = log[key]?.timestampMs ?: 0L
-                    if (remoteTs <= localTs) continue
-                    if (entry.optInt("d", 0) == 1) {
-                        writeMergeEntry(appContext, key, null)
-                        log[key] = StreamCenterLocalSyncVersion(remoteTs, true, "")
-                    } else {
-                        val value = decodeValue(entry) ?: continue
+                return synchronized(StreamCenterLocalSyncVersionLog) {
+                    val currentLog = StreamCenterLocalSyncVersionLog.load(appContext)
+                    val appliedKeys = mutableListOf<String>()
+                    val keys = values.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val entry = values.optJSONObject(key) ?: continue
+                        val category = categoryOfKey(key) ?: continue
+                        if (category !in categories || !isAcceptableMergeKey(key)) continue
+                        val remoteTs = entry.optLong("t", 0L)
+                        val deleted = entry.optInt("d", 0) == 1
+                        val value = if (deleted) null else (decodeValue(entry) ?: continue)
+                        val remoteVersion = StreamCenterLocalSyncVersion(
+                            timestampMs = remoteTs,
+                            deleted = deleted,
+                            hash = value?.let(::stableHash).orEmpty(),
+                        )
+                        if (!isNewerSyncVersion(remoteVersion, currentLog[key])) continue
+                        if (entry.has("h") && entry.optString("h") != remoteVersion.hash) continue
                         writeMergeEntry(appContext, key, value)
-                        log[key] = StreamCenterLocalSyncVersion(remoteTs, false, stableHash(value))
+                        currentLog[key] = remoteVersion
+                        appliedKeys += key
                     }
-                    appliedKeys += key
+                    if (appliedKeys.isNotEmpty()) StreamCenterLocalSyncVersionLog.save(appContext, currentLog)
+                    log.clear()
+                    log.putAll(currentLog)
+                    appliedKeys
                 }
-                if (appliedKeys.isNotEmpty()) StreamCenterLocalSyncVersionLog.save(appContext, log)
-                return appliedKeys
             }
         }
     }
 
-    fun transferredMediaSummaries(context: Context, mergeKeys: List<String>): List<String> {
+    fun transferLogDetails(context: Context, mergeKeys: List<String>, values: JSONObject): String {
         val preferences = datastore(context.applicationContext)
         val account = currentAccount(preferences)
-        return mergeKeys.asSequence()
+        val uniqueKeys = mergeKeys.distinct()
+        val transferredTitles = uniqueKeys.mapNotNull { key ->
+            val id = key.removePrefix("lib|result_watch_state_data/")
+            if (id == key) return@mapNotNull null
+            val raw = values.optJSONObject(key)?.optString("s") ?: return@mapNotNull null
+            val name = runCatching { JSONObject(raw).optString("name").trim() }.getOrDefault("")
+            name.takeIf(String::isNotBlank)?.let { id to it }
+        }.toMap()
+        val media = uniqueKeys.asSequence()
             .mapNotNull { mergeKey ->
                 if (!mergeKey.startsWith("lib|")) return@mapNotNull null
                 val relative = mergeKey.removePrefix("lib|")
@@ -253,10 +293,13 @@ internal object StreamCenterLocalSyncStorage {
                 if (folder !in TRANSFERRED_MEDIA_FOLDERS) return@mapNotNull null
                 val id = relative.substringAfter('/', "")
                 if (id.isBlank()) return@mapNotNull null
-                val value = preferences.all["$account/$relative"] as? String
-                val json = value?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+                val entry = values.optJSONObject(mergeKey) ?: return@mapNotNull null
+                val deleted = entry.optInt("d", 0) == 1
+                val json = entry.optString("s").takeIf(String::isNotBlank)
+                    ?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
                 val parentId = json?.optInt("parentId", -1)?.takeIf { it >= 0 }?.toString() ?: id
                 val title = json?.optString("name")?.trim().orEmpty()
+                    .ifBlank { transferredTitles[parentId].orEmpty() }
                     .ifBlank { libraryTitle(preferences, account, parentId) }
                     .ifBlank { "Contenuto $parentId" }
                 val details = buildList {
@@ -269,17 +312,57 @@ internal object StreamCenterLocalSyncStorage {
                     if (position >= 0L && duration > 0L) {
                         add("${formatDuration(position)} / ${formatDuration(duration)}")
                     }
-                    if (isEmpty() && folder == "result_watch_state_data") add("Libreria")
+                    if (deleted) add("rimosso")
+                    else if (isEmpty()) add(TRANSFERRED_MEDIA_FOLDERS.getValue(folder))
                 }
-                "$title${details.takeIf { it.isNotEmpty() }?.joinToString(" · ", " · ").orEmpty()}"
+                "${title.replace('\n', ' ').replace('\r', ' ').take(100)}${details.joinToString(" · ", " · ")}"
             }
             .distinct()
-            .take(MAX_TRANSFERRED_MEDIA_SUMMARIES)
             .toList()
+            .sortedWith(String.CASE_INSENSITIVE_ORDER)
+        val groups = listOf(
+            "libreria" to uniqueKeys.count { it.startsWith("lib|") },
+            "CloudStream" to uniqueKeys.count { it.startsWith("ds|") || it.startsWith("st|") },
+            "StreamCenter" to uniqueKeys.count { it.startsWith("sc|") },
+        ).filter { it.second > 0 }
+        val removedCount = uniqueKeys.count { values.optJSONObject(it)?.optInt("d", 0) == 1 }
+        return buildString {
+            append("${uniqueKeys.size} voci")
+            if (removedCount > 0) append(" · $removedCount rimosse")
+            if (groups.isNotEmpty()) append(" · ${groups.joinToString(" · ") { "${it.first}: ${it.second}" }}")
+            if (media.isNotEmpty()) {
+                append("\nContenuti (${media.size}):")
+                media.take(MAX_TRANSFERRED_MEDIA_SUMMARIES).forEach { append("\n• ").append(it) }
+                val remaining = media.size - MAX_TRANSFERRED_MEDIA_SUMMARIES
+                if (remaining > 0) append("\n… e altri $remaining contenuti")
+            }
+        }
+    }
+
+    private fun selectiveTransferLogDetails(
+        context: Context,
+        datastoreValues: Map<String, Any>,
+        settingsValues: Map<String, Any>,
+        libraryValues: Map<String, Any>,
+        streamCenterValues: Map<String, Any>,
+    ): String {
+        val entries = JSONObject()
+        libraryValues.forEach { (key, value) ->
+            if (key.substringBefore('/') in TRANSFERRED_MEDIA_FOLDERS) {
+                entries.put("lib|$key", encodeValue(value))
+            }
+        }
+        val keys = buildList {
+            datastoreValues.keys.forEach { add("ds|$it") }
+            settingsValues.keys.forEach { add("st|$it") }
+            libraryValues.keys.forEach { add("lib|$it") }
+            streamCenterValues.keys.forEach { add("sc|$it") }
+        }
+        return transferLogDetails(context, keys, entries)
     }
 
     private fun libraryTitle(preferences: SharedPreferences, account: String, id: String): String {
-        val raw = preferences.getString("$account/result_watch_state_data/$id", null) ?: return ""
+        val raw = preferences.all["$account/result_watch_state_data/$id"] as? String ?: return ""
         return runCatching { JSONObject(raw).optString("name").trim() }.getOrDefault("")
     }
 
@@ -353,7 +436,7 @@ internal object StreamCenterLocalSyncStorage {
         }
         val editor = preferences.edit()
         if (value == null) editor.remove(targetKey) else put(editor, targetKey, value)
-        editor.apply()
+        check(editor.commit()) { "Non è stato possibile salvare una voce della sincronizzazione." }
     }
 
     private fun encodeValue(value: Any): JSONObject = JSONObject().apply {
@@ -407,11 +490,15 @@ internal object StreamCenterLocalSyncStorage {
         val streamCenter = StreamCenterConfigurationStore.preferences(context)
         if (StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories) {
             validateCloudStreamConfiguration(datastoreValues, settingsValues)
+        }
+        if (StreamCenterLocalSyncCategory.LIBRARY in categories) {
+            require(libraryValues.keys.all(::isValidLibraryPayloadKey)) { "La libreria contiene chiavi non valide." }
+        }
+        if (StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG in categories) {
             replaceTransferable(settings, settingsValues)
             replaceCloudStreamConfiguration(datastore, datastoreValues)
         }
         if (StreamCenterLocalSyncCategory.LIBRARY in categories) {
-            require(libraryValues.keys.all(::isValidLibraryPayloadKey)) { "La libreria contiene chiavi non valide." }
             replaceLibrary(datastore, libraryValues)
         }
         if (StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories) {
@@ -655,11 +742,14 @@ internal object StreamCenterLocalSyncStorage {
         return output.toByteArray()
     }
 
-    private val TRANSFERRED_MEDIA_FOLDERS = setOf(
-        "result_resume_watching_2",
-        "result_resume_watching",
-        "result_watch_state_data",
-        "video_pos_dur",
+    private val TRANSFERRED_MEDIA_FOLDERS = mapOf(
+        "result_resume_watching_2" to "Riprendi",
+        "result_resume_watching" to "Riprendi",
+        "result_watch_state_data" to "Libreria",
+        "result_favorites_state_data" to "Preferiti",
+        "result_subscribed_state_data" to "Seguiti",
+        "video_pos_dur" to "Progresso",
+        "video_watch_state" to "Visto",
     )
-    private const val MAX_TRANSFERRED_MEDIA_SUMMARIES = 12
+    private const val MAX_TRANSFERRED_MEDIA_SUMMARIES = 30
 }

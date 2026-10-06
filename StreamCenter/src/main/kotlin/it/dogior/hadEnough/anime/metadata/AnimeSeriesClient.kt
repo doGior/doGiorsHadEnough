@@ -18,8 +18,11 @@ internal data class AnimeSeriesEntry(
     val date: Int?,
     val poster: String?,
     val relations: List<Int>,
+    val nextAiringAtSeconds: Long? = null,
 ) {
     val isSeries: Boolean get() = format in setOf("TV", "TV_SHORT", "ONA", "OVA", "SPECIAL")
+    fun containsEpisode(number: Int?): Boolean = number != null && number > 0 &&
+        (episodeCount == null || number <= episodeCount)
     val availableEpisodes: Int get() = when (status) {
         "FINISHED" -> episodeCount ?: 0
         "RELEASING" -> nextEpisode?.minus(1)?.coerceAtMost(episodeCount ?: Int.MAX_VALUE) ?: 0
@@ -27,13 +30,17 @@ internal data class AnimeSeriesEntry(
     }.coerceIn(0, 3000)
 }
 
+internal data class AnimeSeriesResolution(val entries: List<AnimeSeriesEntry>, val complete: Boolean)
+
 internal class AnimeSeriesClient(
     private val execute: suspend (String, JSONObject) -> JSONObject?,
     private val cacheEnabled: () -> Boolean = { StreamCenterMediaCache.isEnabled() },
 ) {
-    suspend fun resolve(anilistId: Int?, malId: Int?): List<AnimeSeriesEntry> {
-        if (cacheEnabled()) StreamCenterMediaCache.readAnimeRelations(anilistId, malId)?.let { return it }
-        if (anilistId == null && malId == null) return emptyList()
+    suspend fun resolve(anilistId: Int?, malId: Int?): AnimeSeriesResolution {
+        if (cacheEnabled()) StreamCenterMediaCache.readAnimeRelations(anilistId, malId)?.let {
+            return AnimeSeriesResolution(it, complete = true)
+        }
+        if (anilistId == null && malId == null) return AnimeSeriesResolution(emptyList(), complete = false)
         val entries = linkedMapOf<Int, AnimeSeriesEntry>()
         fun addNode(media: JSONObject?) {
             val entry = parse(media) ?: return
@@ -70,7 +77,7 @@ internal class AnimeSeriesClient(
         }
         val sorted = entries.values.sortedWith(compareBy<AnimeSeriesEntry> { it.date ?: Int.MAX_VALUE }.thenBy { it.id })
         if (complete && cacheEnabled()) StreamCenterMediaCache.rememberAnimeRelations(sorted)
-        return if (complete) sorted else emptyList()
+        return AnimeSeriesResolution(sorted, complete)
     }
 
     private suspend fun request(query: String, variables: JSONObject): JSONObject? =
@@ -83,7 +90,7 @@ internal class AnimeSeriesClient(
             title { romaji english native }
             startDate { year month day }
             coverImage { large }
-            nextAiringEpisode { episode }
+            nextAiringEpisode { episode airingAt }
         """.trimIndent()
         private val NEIGHBOUR_FIELDS = "$BASE_FIELDS relations { edges { relationType node { id type } } }"
         private val FIELDS = "$BASE_FIELDS relations { edges { relationType node { $NEIGHBOUR_FIELDS } } }"
@@ -115,7 +122,8 @@ internal class AnimeSeriesClient(
             return AnimeSeriesEntry(id, media.optNullableInt("idMal"), title,
                 media.optNullableString("format"), media.optNullableString("status"),
                 media.optNullableInt("episodes"), media.optJSONObject("nextAiringEpisode")?.optNullableInt("episode"),
-                date, media.optJSONObject("coverImage")?.optNullableString("large"), relations)
+                date, media.optJSONObject("coverImage")?.optNullableString("large"), relations,
+                media.optJSONObject("nextAiringEpisode")?.optLong("airingAt")?.takeIf { it > 0L })
         }
     }
 }

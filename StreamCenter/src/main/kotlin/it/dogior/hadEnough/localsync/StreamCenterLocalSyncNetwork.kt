@@ -191,7 +191,7 @@ internal object StreamCenterLocalSyncNetwork {
     private const val MAX_DISCOVERY_BYTES = 8 * 1024
     private const val MAX_CONTROL_BYTES = 64 * 1024
     private const val MAX_TRANSFER_BYTES = 16 * 1024 * 1024
-    private const val MAX_FAILED_AUTHENTICATIONS = 5
+    private const val MAX_FAILED_CONNECTIONS = 5
     private const val TRANSFER_CHUNK_BYTES = 64 * 1024
 
     suspend fun send(
@@ -243,7 +243,7 @@ internal object StreamCenterLocalSyncNetwork {
             broadcastOffer(endpoint, offer, cancellation, listener)
         }
         val deadline = System.currentTimeMillis() + SESSION_TIMEOUT_MS
-        var failedAuthentications = 0
+        var failedConnections = 0
         try {
             while (!cancellation.isCancelled && System.currentTimeMillis() < deadline) {
                 ensureActive()
@@ -256,7 +256,7 @@ internal object StreamCenterLocalSyncNetwork {
                     throw error
                 }
                 cancellation.track(socket)
-                var rejected = false
+                var connectionFailed = false
                 try {
                     val remoteAddress = socket.inetAddress
                     require(StreamCenterLocalNetworkPolicy.isSameSubnet(endpoint, remoteAddress)) {
@@ -280,29 +280,29 @@ internal object StreamCenterLocalSyncNetwork {
                         rememberPeer = rememberPeer,
                     )
                     if (result != null) return@coroutineScope result
-                    rejected = true
+                    connectionFailed = true
                 } catch (error: Exception) {
                     if (cancellation.isCancelled) throw error
-                    rejected = true
+                    connectionFailed = true
                     listener.onEvent(
                         StreamCenterLocalSyncEvent(
-                            message = "Connessione ricevente rifiutata",
+                            message = "Trasferimento non riuscito",
                             detail = error.message?.take(160) ?: error.javaClass.simpleName,
                         ),
                     )
                 } finally {
                     cancellation.close(socket)
                 }
-                if (rejected) {
-                    failedAuthentications += 1
+                if (connectionFailed) {
+                    failedConnections += 1
                     listener.onEvent(
                         StreamCenterLocalSyncEvent(
-                            message = "Autenticazione rifiutata",
-                            detail = "Tentativo $failedAuthentications di $MAX_FAILED_AUTHENTICATIONS",
+                            message = "Connessione non riuscita",
+                            detail = "Tentativo $failedConnections di $MAX_FAILED_CONNECTIONS",
                         ),
                     )
-                    check(failedAuthentications < MAX_FAILED_AUTHENTICATIONS) {
-                        "Troppi tentativi di associazione non validi."
+                    check(failedConnections < MAX_FAILED_CONNECTIONS) {
+                        "Troppi tentativi di connessione non riusciti."
                     }
                 }
             }
@@ -433,9 +433,6 @@ internal object StreamCenterLocalSyncNetwork {
                 StreamCenterLocalSyncCrypto.proofsMatch(expectedServerProof, serverProof),
             ) { "L'identità crittografica del mittente non è valida." }
 
-            offer.senderIdentityKey.takeIf(String::isNotBlank)?.let { identity ->
-                rememberPeer(offer.senderName, identity)
-            }
             listener.onEvent(
                 StreamCenterLocalSyncEvent(
                     message = "Associazione verificata",
@@ -464,7 +461,13 @@ internal object StreamCenterLocalSyncNetwork {
                 ),
             )
             listener.onStateChanged(StreamCenterLocalSyncState.APPLYING, "Applicazione della configurazione")
-            val application = runCatching { applyPayload(compressedPayload, offer.type) }
+            val application = runCatching {
+                applyPayload(compressedPayload, offer.type).also {
+                    offer.senderIdentityKey.takeIf(String::isNotBlank)?.let { identity ->
+                        rememberPeer(offer.senderName, identity)
+                    }
+                }
+            }
             val acknowledgement = application.fold(
                 onSuccess = { result ->
                     JSONObject()
@@ -736,13 +739,14 @@ internal object StreamCenterLocalSyncNetwork {
             JSONObject()
         }
         var receivedKeys = emptyList<String>()
+        val receivedValues: JSONObject
         if (isInitiator) {
             writeSecureJson(output, keys, valuesForPeer, "values")
-            val received = readSecureJson(input, keys, "values")
-            if (allowReceive) receivedKeys = source.applyRemote(received)
+            receivedValues = readSecureJson(input, keys, "values")
+            if (allowReceive) receivedKeys = source.applyRemote(receivedValues)
         } else {
-            val received = readSecureJson(input, keys, "values")
-            if (allowReceive) receivedKeys = source.applyRemote(received)
+            receivedValues = readSecureJson(input, keys, "values")
+            if (allowReceive) receivedKeys = source.applyRemote(receivedValues)
             writeSecureJson(output, keys, valuesForPeer, "values")
         }
         listener.onEvent(
@@ -756,7 +760,9 @@ internal object StreamCenterLocalSyncNetwork {
             sent = valuesForPeer.length(),
             received = receivedKeys.size,
             sentKeys = objectKeys(valuesForPeer),
+            sentValues = valuesForPeer,
             receivedKeys = receivedKeys,
+            receivedValues = receivedValues,
         )
     }
 
@@ -772,12 +778,19 @@ internal object StreamCenterLocalSyncNetwork {
         val keys = peer.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            val peerTs = peer.optJSONObject(key)?.optLong("t", 0L) ?: 0L
-            val localTs = local.optJSONObject(key)?.optLong("t", 0L) ?: 0L
-            if (peerTs > localTs) result.add(key)
+            val peerVersion = peer.optJSONObject(key)?.let(::manifestVersion) ?: continue
+            val localVersion = local.optJSONObject(key)?.let(::manifestVersion)
+            if (isNewerSyncVersion(peerVersion, localVersion)) result.add(key)
         }
         return result
     }
+
+    private fun manifestVersion(entry: JSONObject): StreamCenterLocalSyncVersion =
+        StreamCenterLocalSyncVersion(
+            timestampMs = entry.optLong("t", 0L),
+            deleted = entry.optInt("d", 0) == 1,
+            hash = entry.optString("h", ""),
+        )
 
     private fun stringList(array: JSONArray?): List<String> {
         if (array == null) return emptyList()
@@ -962,7 +975,6 @@ internal object StreamCenterLocalSyncNetwork {
         writeFrame(output, serverProof)
         output.flush()
 
-        clientIdentityKey?.let { identity -> rememberPeer(receiverName, identity) }
         listener.onEvent(
             StreamCenterLocalSyncEvent(
                 message = "Ricevitore autenticato",
@@ -1004,6 +1016,7 @@ internal object StreamCenterLocalSyncNetwork {
         check(acknowledgement.optString("status") == "applied") {
             "Il dispositivo ricevente non ha applicato la configurazione."
         }
+        clientIdentityKey?.let { identity -> rememberPeer(receiverName, identity) }
         listener.onEvent(
             StreamCenterLocalSyncEvent(
                 message = "Applicazione confermata dal ricevitore",
@@ -1019,6 +1032,7 @@ internal object StreamCenterLocalSyncNetwork {
             progressCount = payload.progressCount,
             peerName = receiverName,
             restartRequired = false,
+            transferDetails = payload.transferDetails,
         )
     }
 

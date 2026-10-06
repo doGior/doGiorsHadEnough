@@ -29,6 +29,17 @@ internal data class StreamingCommunitySeason(
 internal data class StreamingCommunityEpisode(
     val id: Int,
     val number: Int,
+    val name: String? = null,
+    val plot: String? = null,
+    val runtime: Int? = null,
+    val airDate: String? = null,
+    val score: String? = null,
+    val posterFilename: String? = null,
+)
+
+internal data class StreamingCommunityEpisodeDetails(
+    val playback: StreamingCommunityPlaybackData,
+    val metadata: StreamingCommunityEpisode,
 )
 
 internal data class StreamingCommunityPlaybackData(

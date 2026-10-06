@@ -5,10 +5,13 @@ import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.app
 import it.dogior.hadEnough.model.StreamCenterMetadata
 import it.dogior.hadEnough.model.StreamingCommunityEpisode
+import it.dogior.hadEnough.model.StreamingCommunityEpisodeDetails
 import it.dogior.hadEnough.model.StreamingCommunityPlaybackData
 import it.dogior.hadEnough.model.StreamingCommunitySeason
 import it.dogior.hadEnough.model.StreamingCommunityTitle
 import it.dogior.hadEnough.util.cleanText
+import it.dogior.hadEnough.util.cleanMetadataEpisodeTitle
+import it.dogior.hadEnough.util.parseMetadataDate
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
 import it.dogior.hadEnough.util.StreamCenterLogger
@@ -197,7 +200,13 @@ internal class StreamingCommunityClient(
 
     suspend fun episodePayloads(
         title: StreamingCommunityTitle,
-    ): Map<Pair<Int, Int>, StreamingCommunityPlaybackData> {
+    ): Map<Pair<Int, Int>, StreamingCommunityPlaybackData> =
+        episodeDetails(title, includeMetadata = false).mapValues { it.value.playback }
+
+    suspend fun episodeDetails(
+        title: StreamingCommunityTitle,
+        includeMetadata: Boolean = true,
+    ): Map<Pair<Int, Int>, StreamingCommunityEpisodeDetails> {
         if (title.type != "tv") {
             warning("Recupero episodi ignorato: tipo non televisivo")
             return emptyMap()
@@ -209,9 +218,13 @@ internal class StreamingCommunityClient(
                 "stagioni_disponibili" to title.seasons.size,
             ),
         )
-        val episodes = linkedMapOf<Pair<Int, Int>, StreamingCommunityPlaybackData>()
+        val episodes = linkedMapOf<Pair<Int, Int>, StreamingCommunityEpisodeDetails>()
         for (season in title.seasons) {
-            val seasonWithEpisodes = if (season.episodes.isNotEmpty()) {
+            val hasMetadata = season.episodes.any {
+                it.name != null || it.plot != null || it.runtime != null || it.airDate != null ||
+                    it.score != null || it.posterFilename != null
+            }
+            val seasonWithEpisodes = if (season.episodes.isNotEmpty() && (!includeMetadata || hasMetadata)) {
                 season
             } else {
                 log(
@@ -221,13 +234,17 @@ internal class StreamingCommunityClient(
                 fetchSeason(title, season.number) ?: season
             }
             seasonWithEpisodes.episodes.forEach { episode ->
-                episodes[seasonWithEpisodes.number to episode.number] = StreamingCommunityPlaybackData(
+                val playback = StreamingCommunityPlaybackData(
                     iframeUrl = "${mainUrl()}/iframe/${title.id}?episode_id=${episode.id}&canPlayFHD=1",
                     type = "tv",
                     tmdbId = title.tmdbId,
                     imdbId = title.imdbId,
                     seasonNumber = seasonWithEpisodes.number,
                     episodeNumber = episode.number,
+                )
+                episodes[seasonWithEpisodes.number to episode.number] = StreamingCommunityEpisodeDetails(
+                    playback = playback,
+                    metadata = episode,
                 )
             }
         }
@@ -607,9 +624,20 @@ internal class StreamingCommunityClient(
     }
 
     private fun JSONObject.toEpisode(): StreamingCommunityEpisode? {
+        val images = optJSONArray("images")
         return StreamingCommunityEpisode(
             id = optNullableInt("id") ?: return null,
             number = optNullableInt("number") ?: return null,
+            name = cleanMetadataEpisodeTitle(optNullableString("name")),
+            plot = cleanText(optNullableString("plot") ?: optNullableString("description")),
+            runtime = (optNullableInt("duration") ?: optNullableInt("runtime"))?.takeIf { it > 0 },
+            airDate = parseMetadataDate(
+                (optNullableString("air_date") ?: optNullableString("release_date"))?.substringBefore('T'),
+            ),
+            score = optNullableString("score"),
+            posterFilename = images?.imageFilename("cover")
+                ?: images?.imageFilename("backdrop")
+                ?: images?.imageFilename("poster"),
         )
     }
 

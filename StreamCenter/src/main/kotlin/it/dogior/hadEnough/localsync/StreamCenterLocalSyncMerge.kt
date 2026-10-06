@@ -10,11 +10,28 @@ internal data class StreamCenterLocalSyncVersion(
     val hash: String,
 )
 
+internal fun isNewerSyncVersion(candidate: StreamCenterLocalSyncVersion, current: StreamCenterLocalSyncVersion?): Boolean {
+    if (candidate.timestampMs <= 0L) return false
+    if (current == null) return true
+    if (candidate.timestampMs != current.timestampMs) return candidate.timestampMs > current.timestampMs
+    if (candidate.deleted != current.deleted) return candidate.deleted
+    return candidate.hash > current.hash
+}
+
+internal fun nextLocalSyncVersionTimestamp(now: Long, previous: StreamCenterLocalSyncVersion?): Long {
+    val previousTimestamp = previous?.timestampMs ?: return now
+    if (previousTimestamp < now) return now
+    check(previousTimestamp < Long.MAX_VALUE) { "Timestamp di sincronizzazione non valido." }
+    return previousTimestamp + 1L
+}
+
 internal data class StreamCenterLocalSyncMergeResult(
     val sent: Int,
     val received: Int,
     val sentKeys: List<String>,
+    val sentValues: JSONObject,
     val receivedKeys: List<String>,
+    val receivedValues: JSONObject,
 )
 
 internal interface StreamCenterLocalSyncMergeSource {
@@ -57,9 +74,12 @@ internal object StreamCenterLocalSyncVersionLog {
                     .put("h", version.hash),
             )
         }
-        prefs(context).edit().putString(KEY_VERSIONS, root.toString()).apply()
+        check(prefs(context).edit().putString(KEY_VERSIONS, root.toString()).commit()) {
+            "Non è stato possibile salvare le versioni della sincronizzazione."
+        }
     }
 
+    @Synchronized
     fun reconcile(
         context: Context,
         currentHashes: Map<String, String>,
@@ -67,19 +87,24 @@ internal object StreamCenterLocalSyncVersionLog {
     ): MutableMap<String, StreamCenterLocalSyncVersion> {
         val now = System.currentTimeMillis()
         val log = load(context)
+        var changed = false
         currentHashes.forEach { (key, hash) ->
             val existing = log[key]
             if (existing == null || existing.deleted || existing.hash != hash) {
-                log[key] = StreamCenterLocalSyncVersion(now, false, hash)
+                val timestamp = nextLocalSyncVersionTimestamp(now, existing)
+                log[key] = StreamCenterLocalSyncVersion(timestamp, false, hash)
+                changed = true
             }
         }
         log.keys.toList().forEach { key ->
             val version = log.getValue(key)
             if (!version.deleted && key !in currentHashes && inScope(key)) {
-                log[key] = StreamCenterLocalSyncVersion(now, true, "")
+                val timestamp = nextLocalSyncVersionTimestamp(now, version)
+                log[key] = StreamCenterLocalSyncVersion(timestamp, true, "")
+                changed = true
             }
         }
-        save(context, log)
+        if (changed) save(context, log)
         return log
     }
 

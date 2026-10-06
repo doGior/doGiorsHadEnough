@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.ActorData
 import com.lagradost.cloudstream3.ActorRole
 import com.lagradost.cloudstream3.app
 import it.dogior.hadEnough.cache.ExpiringCache
+import it.dogior.hadEnough.model.AnilistReleaseInfo
 import it.dogior.hadEnough.model.AnilistLoadMetadata
 import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.normalizeTrailerUrl
@@ -28,6 +29,7 @@ internal class AniListMetadataClient(
     private val minRequestIntervalMs: () -> Long,
 ) {
     private val charactersCache = ExpiringCache<String, List<ActorData>>(128, 30 * 60_000L)
+    private val scoresCache = ExpiringCache<Int, String>(512, 30 * 60_000L)
 
     suspend fun fetchCharacters(anilistId: Int?, malId: Int?): List<ActorData>? {
         if (anilistId == null && malId == null) return null
@@ -43,6 +45,24 @@ internal class AniListMetadataClient(
             interactive = true,
         )?.optJSONObject("Media") ?: return null
         return parseCharacters(media.optJSONObject("characters")).also { charactersCache.put(key, it) }
+    }
+
+    suspend fun fetchReleaseInfo(anilistId: Int?, malId: Int?): AnilistReleaseInfo? {
+        if (anilistId == null && malId == null) return null
+        val variables = JSONObject().apply {
+            if (anilistId != null) put("id", anilistId) else put("idMal", malId)
+        }
+        val media = graphQL(
+            query = RELEASE_INFO_QUERY,
+            variables = variables,
+            operation = "Stagione e anno anime AniList",
+            requestDetails = mapOf("id_anilist" to anilistId, "id_myanimelist" to malId),
+            interactive = true,
+        )?.optJSONObject("Media") ?: return null
+        return AnilistReleaseInfo(
+            year = media.optNullableInt("seasonYear") ?: media.optJSONObject("startDate")?.optNullableInt("year"),
+            season = media.optNullableString("season"),
+        )
     }
 
     suspend fun fetchMetadata(
@@ -111,13 +131,14 @@ internal class AniListMetadataClient(
             MetadataLog.info(SOURCE, "Recupero punteggi ignorato", mapOf("motivo" to "nessun_id"))
             return emptyMap()
         }
-        val chunks = distinctIds.chunked(SCORE_PAGE_SIZE)
+        val result = mutableMapOf<Int, String>()
+        distinctIds.forEach { id -> scoresCache[id]?.let { result[id] = it } }
+        val chunks = distinctIds.filterNot { it in result }.chunked(SCORE_PAGE_SIZE)
         MetadataLog.info(
             SOURCE,
             "Recupero punteggi avviato",
-            mapOf("id_richiesti" to distinctIds.size, "richieste_previste" to chunks.size),
+            mapOf("id_richiesti" to distinctIds.size, "id_in_cache" to result.size, "richieste_previste" to chunks.size),
         )
-        val result = mutableMapOf<Int, String>()
         chunks.forEachIndexed { index, chunk ->
             val scores = requestScores(chunk, index + 1, chunks.size)
             if (scores == null) {
@@ -129,7 +150,10 @@ internal class AniListMetadataClient(
                 return@forEachIndexed
             }
             chunk.forEach { id ->
-                scores[id]?.takeIf(String::isNotBlank)?.let { result[id] = it }
+                scores[id]?.takeIf(String::isNotBlank)?.let {
+                    result[id] = it
+                    scoresCache.put(id, it)
+                }
             }
         }
         MetadataLog.info(
@@ -646,6 +670,16 @@ internal class AniListMetadataClient(
             }
         """.trimIndent()
 
+        val RELEASE_INFO_QUERY = """
+            query (${'$'}id: Int, ${'$'}idMal: Int) {
+              Media(id: ${'$'}id, idMal: ${'$'}idMal, type: ANIME) {
+                season
+                seasonYear
+                startDate { year }
+              }
+            }
+        """.trimIndent()
+
         val MEDIA_QUERY = """
             query (${'$'}id: Int, ${'$'}idMal: Int) {
               Media(id: ${'$'}id, idMal: ${'$'}idMal, type: ANIME) {
@@ -691,6 +725,9 @@ internal class AniListMetadataClient(
                 id
                 idMal
                 format
+                season
+                seasonYear
+                startDate { year }
                 title { romaji english native }
                 synonyms
               }

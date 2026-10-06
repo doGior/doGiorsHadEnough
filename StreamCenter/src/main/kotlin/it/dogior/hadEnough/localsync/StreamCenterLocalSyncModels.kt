@@ -21,6 +21,7 @@ internal data class StreamCenterLocalSyncPayload(
     val libraryItemCount: Int,
     val progressCount: Int,
     val sourceAccount: String?,
+    val transferDetails: String,
 )
 
 internal data class StreamCenterLocalSyncOffer(
@@ -65,6 +66,7 @@ internal data class StreamCenterLocalSyncResult(
     val progressCount: Int,
     val peerName: String,
     val restartRequired: Boolean,
+    val transferDetails: String? = null,
 )
 
 internal interface StreamCenterLocalSyncListener {

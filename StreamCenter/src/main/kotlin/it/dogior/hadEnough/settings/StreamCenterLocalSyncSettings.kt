@@ -42,6 +42,7 @@ import java.util.Locale
 
 private const val AUTO_SYNC_ROW_HEIGHT_DP = 80
 private const val IDLE_SESSION_STATUS = "Nessuna sessione attiva al momento"
+private const val MAX_SESSION_LOG_CHARS = 40_000
 
 internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsFragment(), StreamCenterLocalSyncListener {
     override val screenTitle: String = "Sync locale"
@@ -897,7 +898,9 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         )
         event.detail?.takeIf(String::isNotBlank)?.let { detail ->
             val detailStart = eventLog.length
-            eventLog.append("\n    ").append(detail)
+            detail.lineSequence().forEach { line ->
+                eventLog.append("\n    ").append(line)
+            }
             eventLog.setSpan(
                 ForegroundColorSpan(Color.parseColor(tint(COLOR_TEXT, "D6"))),
                 detailStart,
@@ -916,8 +919,25 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             )
         }
         eventLog.append('\n')
+        var removedChars = 0
+        if (eventLog.length > MAX_SESSION_LOG_CHARS) {
+            val start = eventLog.indexOf("\n", eventLog.length - MAX_SESSION_LOG_CHARS)
+            if (start >= 0) {
+                removedChars = start + 1
+                eventLog.delete(0, removedChars)
+            }
+        }
         logText.text = eventLog
-        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        if (event.message.startsWith("Elementi ")) {
+            val eventStart = (timestampStart - removedChars).coerceAtLeast(0)
+            logScroll.post {
+                val layout = logText.layout ?: return@post
+                val line = layout.getLineForOffset(eventStart.coerceAtMost(logText.text.length))
+                logScroll.scrollTo(0, layout.getLineTop(line))
+            }
+        } else {
+            logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
     }
 
     private fun eventColor(event: StreamCenterLocalSyncEvent): String = when {

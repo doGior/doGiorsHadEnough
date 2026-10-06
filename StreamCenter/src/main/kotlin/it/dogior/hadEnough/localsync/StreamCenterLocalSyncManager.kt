@@ -218,6 +218,9 @@ internal class StreamCenterLocalSyncManager(
             }
 
             override fun onCompleted(result: StreamCenterLocalSyncResult) {
+                result.transferDetails?.let { details ->
+                    onEvent(StreamCenterLocalSyncEvent("Elementi sincronizzati", details))
+                }
                 log(
                     "Trasferimento completato",
                     mapOf(
@@ -227,6 +230,7 @@ internal class StreamCenterLocalSyncManager(
                         "elementi_libreria" to result.libraryItemCount,
                         "progressi" to result.progressCount,
                         "dispositivo" to result.peerName,
+                        "elementi" to result.transferDetails,
                     ),
                 )
                 listener.onCompleted(result)

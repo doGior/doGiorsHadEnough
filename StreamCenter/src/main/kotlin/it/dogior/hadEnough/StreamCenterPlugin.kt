@@ -9,6 +9,7 @@ import it.dogior.hadEnough.settings.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.cache.StreamCenterMediaCache
+import it.dogior.hadEnough.cache.StreamCenterHomeCalendarCache
 import it.dogior.hadEnough.torrent.StreamCenterExtCloudflareSession
 import it.dogior.hadEnough.torrent.StreamCenterTorrentPreferences
 import it.dogior.hadEnough.util.StreamCenterLogger
@@ -56,11 +57,20 @@ data class StreamCenterTrackingService(
     val title: String,
     val syncIdName: SyncIdName,
     val statuses: List<StreamCenterTrackingListStatus>,
-)
+) {
+    fun statusesFor(mediaCategory: StreamCenterTrackingMediaCategory): List<StreamCenterTrackingListStatus> {
+        if (key != "simkl") return statuses
+        val order = listOf("watching", "plan_to_watch", "completed", "on_hold", "dropped")
+        return statuses.filter { mediaCategory.supportsStatus(it.key) }
+            .sortedBy { order.indexOf(it.key) }
+            .map { it.copy(title = mediaCategory.statusTitle(it.key, it.title)) }
+    }
+}
 
 data class StreamCenterTrackingListConfig(
     val service: StreamCenterTrackingService,
     val status: StreamCenterTrackingListStatus,
+    val mediaCategory: StreamCenterTrackingMediaCategory = StreamCenterTrackingMediaCategory.ALL,
 )
 
 data class StreamCenterAnimeArchiveFilters(
@@ -134,10 +144,13 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_REQUIRE_VPN = "requireVpn"
         const val PREF_FORCE_TV_MODE = "forceTvMode"
         const val PREF_MEDIA_CACHE_ENABLED = "mediaCacheEnabled"
+        const val PREF_HOME_CALENDAR_CACHE_ENABLED = "homeCalendarCacheEnabled"
         const val PREF_MEDIA_CACHE_MAX_ENTRIES = "mediaCacheMaxEntries"
         const val PREF_MEDIA_CACHE_MAX_MB = "mediaCacheMaxMb"
+        const val PREF_MEDIA_CACHE_COMPLETED_DAYS = "mediaCacheCompletedDays"
         const val MEDIA_CACHE_DEFAULT_MAX_ENTRIES = 300
         const val MEDIA_CACHE_DEFAULT_MAX_MB = 30
+        const val MEDIA_CACHE_DEFAULT_COMPLETED_DAYS = 30
         const val PREF_GROUP_ANIME_DUB_SUB = "groupAnimeDubSub"
         const val PREF_GROUP_ANIME_SEASONS = "groupAnimeSeasons"
         const val PREF_HOME_ORDER = "homeOrder"
@@ -181,7 +194,7 @@ class StreamCenterPlugin : Plugin() {
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.photos"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.photography"
         const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
@@ -467,6 +480,9 @@ class StreamCenterPlugin : Plugin() {
             return sharedPref?.getBoolean(PREF_MEDIA_CACHE_ENABLED, false) ?: false
         }
 
+        fun isHomeCalendarCacheEnabled(sharedPref: SharedPreferences?): Boolean =
+            sharedPref?.getBoolean(PREF_HOME_CALENDAR_CACHE_ENABLED, false) ?: false
+
         fun mediaCacheMaxEntries(sharedPref: SharedPreferences?): Int =
             (sharedPref?.getInt(PREF_MEDIA_CACHE_MAX_ENTRIES, MEDIA_CACHE_DEFAULT_MAX_ENTRIES)
                 ?: MEDIA_CACHE_DEFAULT_MAX_ENTRIES).coerceIn(10, 5000)
@@ -474,6 +490,10 @@ class StreamCenterPlugin : Plugin() {
         fun mediaCacheMaxMb(sharedPref: SharedPreferences?): Int =
             (sharedPref?.getInt(PREF_MEDIA_CACHE_MAX_MB, MEDIA_CACHE_DEFAULT_MAX_MB)
                 ?: MEDIA_CACHE_DEFAULT_MAX_MB).coerceIn(1, 2000)
+
+        fun mediaCacheCompletedDays(sharedPref: SharedPreferences?): Int =
+            (sharedPref?.getInt(PREF_MEDIA_CACHE_COMPLETED_DAYS, MEDIA_CACHE_DEFAULT_COMPLETED_DAYS)
+                ?: MEDIA_CACHE_DEFAULT_COMPLETED_DAYS).coerceIn(1, 365)
 
         fun isForceTvModeEnabled(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_FORCE_TV_MODE, false) ?: false
@@ -566,6 +586,7 @@ class StreamCenterPlugin : Plugin() {
                                                 name = catalogName,
                                                 extra = catalog.optStringList("extra"),
                                                 requiredExtra = catalog.optStringList("requiredExtra"),
+                                                pageSize = catalog.optInt("pageSize", 100).takeIf { it > 0 } ?: 100,
                                             ),
                                         )
                                     }
@@ -804,6 +825,7 @@ class StreamCenterPlugin : Plugin() {
                                 put("name", catalog.name)
                                 put("extra", JSONArray(catalog.extra))
                                 put("requiredExtra", JSONArray(catalog.requiredExtra))
+                                put("pageSize", catalog.pageSize)
                             },
                         )
                     }
@@ -1408,11 +1430,20 @@ class StreamCenterPlugin : Plugin() {
         ): StreamCenterTrackingListConfig? {
             if (!sectionKey.startsWith(TRACKING_CUSTOM_SECTION_PREFIX)) return null
             val values = sharedPref?.getString(trackingSelectionKey(sectionKey), null)
-                ?.split("|", limit = 2)
+                ?.split("|")
                 ?: return null
             val service = trackingServices.firstOrNull { it.key == values.getOrNull(0) } ?: return null
             val status = service.statuses.firstOrNull { it.key == values.getOrNull(1) } ?: return null
-            return StreamCenterTrackingListConfig(service, status)
+            val mediaCategory = if (service.key == "simkl") {
+                StreamCenterTrackingMediaCategory.fromKey(values.getOrNull(2))
+            } else {
+                StreamCenterTrackingMediaCategory.ALL
+            }
+            return StreamCenterTrackingListConfig(
+                service,
+                status.copy(title = mediaCategory.statusTitle(status.key, status.title)),
+                mediaCategory,
+            )
         }
 
         fun createTrackingCustomSection(
@@ -1420,17 +1451,24 @@ class StreamCenterPlugin : Plugin() {
             service: StreamCenterTrackingService,
             status: StreamCenterTrackingListStatus,
             name: String,
+            mediaCategory: StreamCenterTrackingMediaCategory = StreamCenterTrackingMediaCategory.ALL,
         ): String? {
             val prefs = sharedPref ?: return null
-            if (status !in service.statuses) return null
+            val selectedStatus = service.statusesFor(mediaCategory)
+                .firstOrNull { it.key == status.key && it.watchType == status.watchType } ?: return null
+            if (service.key != "simkl" && mediaCategory != StreamCenterTrackingMediaCategory.ALL) return null
             val counter = prefs.getInt(PREF_TRACKING_CUSTOM_SECTION_COUNTER, 0) + 1
             val sectionKey = "$TRACKING_CUSTOM_SECTION_PREFIX$counter"
             val keys = getTrackingCustomSectionKeys(prefs) + sectionKey
-            val defaultName = "${service.title} - ${status.title}"
+            val defaultName = listOfNotNull(
+                service.title,
+                mediaCategory.takeUnless { it == StreamCenterTrackingMediaCategory.ALL }?.title,
+                selectedStatus.title,
+            ).joinToString(" - ")
             prefs.edit()
                 .putInt(PREF_TRACKING_CUSTOM_SECTION_COUNTER, counter)
                 .putString(PREF_TRACKING_CUSTOM_SECTIONS, keys.joinToString(","))
-                .putString(trackingSelectionKey(sectionKey), "${service.key}|${status.key}")
+                .putString(trackingSelectionKey(sectionKey), "${service.key}|${status.key}|${mediaCategory.key}")
                 .putString(
                     sectionTitleKey(sectionKey),
                     name.trim().takeIf { it.isNotBlank() } ?: defaultName,
@@ -1439,6 +1477,19 @@ class StreamCenterPlugin : Plugin() {
                 .putBoolean(sectionEnabledKey(sectionKey), true)
                 .apply()
             return sectionKey
+        }
+
+        fun updateTrackingMediaCategory(
+            sharedPref: SharedPreferences?,
+            sectionKey: String,
+            mediaCategory: StreamCenterTrackingMediaCategory,
+        ) {
+            val config = getTrackingListConfig(sharedPref, sectionKey) ?: return
+            if (config.service.key != "simkl") return
+            if (!mediaCategory.supportsStatus(config.status.key)) return
+            sharedPref?.edit()
+                ?.putString(trackingSelectionKey(sectionKey), "${config.service.key}|${config.status.key}|${mediaCategory.key}")
+                ?.apply()
         }
 
         fun deleteTrackingCustomSection(sharedPref: SharedPreferences?, sectionKey: String) {
@@ -1989,6 +2040,7 @@ class StreamCenterPlugin : Plugin() {
         sharedPref = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         activeSharedPref = sharedPref
         activeContext = context.applicationContext
+        StreamCenterHomeCalendarCache.initialize(context.filesDir, isHomeCalendarCacheEnabled(sharedPref))
         activePlugin = this
         StreamCenterLogger.startSession(
             context = context,
@@ -2015,7 +2067,7 @@ class StreamCenterPlugin : Plugin() {
         registerConfiguredCatalogs()
 
         if (StreamCenterMediaCache.isEnabled(sharedPref)) {
-            Thread { runCatching { StreamCenterMediaCache.cleanup() } }.start()
+            Thread { runCatching { StreamCenterMediaCache.refreshCompletedExpiry() } }.start()
         }
         registerVideoClickAction(it.dogior.hadEnough.torrent.StreamCenterLibreTorrentAction())
         registerVideoClickAction(it.dogior.hadEnough.torrent.StreamCenterTorrentDetailsAction())

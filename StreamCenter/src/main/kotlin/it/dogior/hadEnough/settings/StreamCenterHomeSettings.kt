@@ -493,7 +493,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             } else if (isAnimeCalendarRow) {
                 "Anime: calendario"
             } else if (trackingConfig != null) {
-                "${trackingConfig.service.title} · ${trackingConfig.status.title}"
+                listOfNotNull(
+                    trackingConfig.service.title,
+                    trackingConfig.mediaCategory.takeUnless { it == StreamCenterTrackingMediaCategory.ALL }?.title,
+                    trackingConfig.status.title,
+                ).joinToString(" · ")
             } else {
                 StreamCenterPlugin.getDefaultHomeSectionTitle(row.section).substringBefore(" (")
             }
@@ -682,6 +686,16 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
                 }
                 if (isTrackingCustomRow) {
+                    if (trackingConfig?.service?.key == "simkl") {
+                        controls.addView(iconButton("\u270E", "Modifica il tipo di contenuto", accent) {
+                            promptTrackingMediaCategory(trackingConfig.service, trackingConfig.status) { category ->
+                                StreamCenterPlugin.updateTrackingMediaCategory(sharedPref, row.section.key, category)
+                                loadRows()
+                                renderRows()
+                                saveToast("Tipo di contenuto aggiornato")
+                            }
+                        }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
+                    }
                     controls.addView(deleteIconButton("Elimina la lista") {
                         confirmDeleteTrackingSection(row.section.key)
                     }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
@@ -2337,7 +2351,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 onClick = if (connected) {
                     {
                         dialog.dismiss()
-                        promptTrackingListType(service)
+                        if (service.key == "simkl") {
+                            promptTrackingMediaCategory(service)
+                        } else {
+                            promptTrackingListType(service)
+                        }
                     }
                 } else {
                     null
@@ -2366,7 +2384,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         )
     }
 
-    private fun promptTrackingListType(service: StreamCenterTrackingService) {
+    private fun promptTrackingListType(
+        service: StreamCenterTrackingService,
+        mediaCategory: StreamCenterTrackingMediaCategory = StreamCenterTrackingMediaCategory.ALL,
+    ) {
         val ctx = context ?: return
         val accent = categoryAccent("tracking")
         val content = LinearLayout(ctx).apply {
@@ -2374,7 +2395,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             setPadding(dp(20), dp(8), dp(20), dp(8))
         }
         lateinit var dialog: AlertDialog
-        service.statuses.forEach { status ->
+        service.statusesFor(mediaCategory).forEach { status ->
             val arrow = chevron(accent)
             val row = settingsRow(
                 title = status.title,
@@ -2387,14 +2408,19 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 touchTarget = arrow,
             ) {
                     dialog.dismiss()
-                    promptTrackingSectionName(service, status)
+                    promptTrackingSectionName(service, status, mediaCategory)
                 }
             content.addView(row.view)
         }
         dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle(service.title, accent))
+            .setCustomTitle(dialogTitle(
+                if (service.key == "simkl") "${service.title} · ${mediaCategory.title}" else service.title,
+                accent,
+            ))
             .setView(content)
-            .setNegativeButton("Indietro", null)
+            .setNegativeButton("Indietro") { _, _ ->
+                if (service.key == "simkl") promptTrackingMediaCategory(service) else promptCreateTrackingSection()
+            }
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
@@ -2412,12 +2438,64 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         }
     }
 
+    private fun promptTrackingMediaCategory(
+        service: StreamCenterTrackingService,
+        status: StreamCenterTrackingListStatus? = null,
+        onSelected: ((StreamCenterTrackingMediaCategory) -> Unit)? = null,
+    ) {
+        val ctx = context ?: return
+        val accent = categoryAccent("tracking")
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        lateinit var dialog: AlertDialog
+        StreamCenterTrackingMediaCategory.entries
+            .filter { status == null || it.supportsStatus(status.key) }
+            .forEach { category ->
+                val arrow = chevron(accent)
+                content.addView(settingsRow(
+                    title = category.title,
+                    accent = accent,
+                    fillColor = COLOR_CARD_ALT,
+                    strokeColor = tint(accent, "66"),
+                    trailingViews = listOf(arrow),
+                    topMargin = 8,
+                    touchTarget = arrow,
+                ) {
+                    dialog.dismiss()
+                    if (onSelected != null) {
+                        onSelected(category)
+                    } else {
+                        promptTrackingListType(service, category)
+                    }
+                }.view)
+            }
+        dialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle(
+                if (status == null) "SIMKL · Tipo di contenuto" else "SIMKL · ${status.title}",
+                accent,
+            ))
+            .setView(content)
+            .setNegativeButton(if (onSelected == null) "Indietro" else "Chiudi") { _, _ ->
+                if (onSelected == null) promptCreateTrackingSection()
+            }
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
+    }
+
     private fun promptTrackingSectionName(
         service: StreamCenterTrackingService,
         status: StreamCenterTrackingListStatus,
+        mediaCategory: StreamCenterTrackingMediaCategory = StreamCenterTrackingMediaCategory.ALL,
     ) {
         val ctx = context ?: return
-        val defaultName = "${service.title} - ${status.title}"
+        val defaultName = listOfNotNull(
+            service.title,
+            mediaCategory.takeUnless { it == StreamCenterTrackingMediaCategory.ALL }?.title,
+            status.title,
+        ).joinToString(" - ")
         val nameInput = input(defaultName).apply {
             hint = "Nome della sezione"
             filters = arrayOf(InputFilter.LengthFilter(58))
@@ -2459,6 +2537,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 service,
                 status,
                 sectionName,
+                mediaCategory,
             )
             if (sectionKey == null) {
                 saveToast("Impossibile creare la lista")

@@ -65,6 +65,7 @@ internal class StreamCenterSettingsRestartState {
         values[PREF_MEDIA_CACHE_ENABLED] = isMediaCacheEnabled(preferences)
         values[PREF_MEDIA_CACHE_MAX_ENTRIES] = mediaCacheMaxEntries(preferences)
         values[PREF_MEDIA_CACHE_MAX_MB] = mediaCacheMaxMb(preferences)
+        values[PREF_MEDIA_CACHE_COMPLETED_DAYS] = mediaCacheCompletedDays(preferences)
         values[PREF_ANILIST_RPM] = getAnilistRequestsPerMinute(preferences)
         values[PREF_VISUAL_EFFECTS_ANIMATIONS] = areVisualAnimationsEnabled(preferences)
         values[PREF_VISUAL_EFFECTS_BLUR] = areVisualBlursEnabled(preferences)
