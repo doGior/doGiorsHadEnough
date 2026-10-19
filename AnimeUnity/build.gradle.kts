@@ -58,7 +58,7 @@ cloudstream {
     language = "it"
     requiresResources = true
 
-    iconUrl = "https://www.animeunity.so/apple-touch-icon.png"
+    iconUrl = "https://www.animeunity.to/apple-touch-icon.png"
 }
 
 android {
