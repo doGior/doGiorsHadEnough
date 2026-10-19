@@ -56,7 +56,7 @@ class AnimeUnity(
 
     companion object {
         @Suppress("ConstPropertyName")
-        const val mainUrl = "https://www.animeunity.so"
+        const val mainUrl = "https://www.animeunity.to"
         const val ARCHIVE_BATCH_SIZE = 30
         const val advancedSearchSectionName = "Ricerca avanzata"
         const val latestEpisodesSectionName = "Ultimi Episodi"
@@ -600,7 +600,7 @@ class AnimeUnity(
     private fun getImageCdnHost(): String {
         val host = mainUrl.toHttpUrl().host
         return when {
-            host == "animeunity.so" -> "img.animeunity.so"
+            host == "animeunity.to" -> "img.animeunity.to"
             host.startsWith("www.") -> host.replaceFirst("www.", "img.")
             host.startsWith("img.") -> host
             else -> "img.$host"
