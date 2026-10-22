@@ -59,7 +59,7 @@ class AnimeUnityPlugin : Plugin() {
         const val PREF_CACHE_MAX_ENTRIES = "cacheMaxEntries"
         const val PREF_CACHE_MAX_SIZE_MB = "cacheMaxSizeMb"
 
-        const val DEFAULT_SITE_URL = "https://www.animeunity.to/"
+        const val DEFAULT_SITE_URL = "https://www.animeunity.co/"
         const val DEFAULT_SECTION_COUNT = 30
         const val MAX_SECTION_COUNT = 100
         const val DEFAULT_ADVANCED_SEARCH_COUNT = MAX_SECTION_COUNT
