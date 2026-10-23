@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.app
 import it.dogior.hadEnough.cache.ExpiringCache
 import it.dogior.hadEnough.model.AnilistReleaseInfo
 import it.dogior.hadEnough.model.AnilistLoadMetadata
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.normalizeTrailerUrl
 import it.dogior.hadEnough.util.youtubeTrailerUrl
@@ -237,12 +238,14 @@ internal class AniListMetadataClient(
             )
             MetadataLog.info(SOURCE, "Richiesta GraphQL avviata", attemptDetails)
             val responseResult = runCatching {
-                app.post(
-                    API_URL,
-                    headers = JSON_HEADERS,
-                    requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
-                    cacheTime = 0,
-                )
+                StreamCenterHostGate.request(API_URL) {
+                    app.post(
+                        API_URL,
+                        headers = JSON_HEADERS,
+                        requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
+                        cacheTime = 0,
+                    )
+                }
             }
             val response = responseResult.getOrNull()
             if (response == null) {
@@ -326,12 +329,14 @@ internal class AniListMetadataClient(
         )
         val requestResult = runCatching {
             throttle("Punteggi AniList", interactive = false)
-            val text = app.post(
-                API_URL,
-                headers = JSON_HEADERS,
-                requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
-                cacheTime = 0,
-            ).text
+            val text = StreamCenterHostGate.request(API_URL) {
+                app.post(
+                    API_URL,
+                    headers = JSON_HEADERS,
+                    requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
+                    cacheTime = 0,
+                )
+            }.text
             val media = JSONObject(text)
                 .optJSONObject("data")
                 ?.optJSONObject("Page")
@@ -384,12 +389,14 @@ internal class AniListMetadataClient(
         )
         val requestResult = runCatching {
             throttle("Titoli alternativi AniList", interactive = false)
-            val text = app.post(
-                API_URL,
-                headers = JSON_HEADERS,
-                requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
-                cacheTime = 0,
-            ).text
+            val text = StreamCenterHostGate.request(API_URL) {
+                app.post(
+                    API_URL,
+                    headers = JSON_HEADERS,
+                    requestBody = body.toRequestBody(JSON_MEDIA_TYPE),
+                    cacheTime = 0,
+                )
+            }.text
             val media = JSONObject(text)
                 .optJSONObject("data")
                 ?.optJSONObject("Page")

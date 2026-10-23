@@ -68,22 +68,14 @@ internal data class AnilistLoadMetadata(
 }
 
 internal data class AniZipEpisodeMetadata(
-    val title: String?,
-    val summary: String?,
-    val overview: String?,
-    val posterUrl: String?,
-    val runTime: Int?,
     val airDate: String?,
     val fallbackAirDate: String?,
-    val rating: Double?,
     val seasonNumber: Int?,
     val episodeNumber: Int?,
     val absoluteEpisodeNumber: Int?,
 )
 
 internal data class AniZipEpisodeCatalog(
-    val titles: Map<String, String> = emptyMap(),
-    val description: String? = null,
     val episodes: Map<Int, AniZipEpisodeMetadata> = emptyMap(),
     val anilistId: Int? = null,
     val malId: Int? = null,

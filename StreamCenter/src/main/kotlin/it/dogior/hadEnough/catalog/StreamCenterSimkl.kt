@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.catalog
 
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.youtubeTrailerUrl
 
 import com.lagradost.cloudstream3.Actor
@@ -336,32 +337,38 @@ internal class StreamCenterSimklCatalog : StreamCenterCatalog {
     }
 
     private suspend fun requestArray(path: String, extraParams: Map<String, String> = emptyMap()): JSONArray {
-        val response = app.get(
-            "$API_URL/${path.trimStart('/')}",
-            params = API_PARAMS + extraParams,
-            headers = HEADERS,
-            cacheTime = 0,
-        ).text
+        val response = StreamCenterHostGate.request("$API_URL/${path.trimStart('/')}") {
+            app.get(
+                "$API_URL/${path.trimStart('/')}",
+                params = API_PARAMS + extraParams,
+                headers = HEADERS,
+                cacheTime = 0,
+            )
+        }.text
         return runCatching { JSONArray(response) }.getOrDefault(JSONArray())
     }
 
     private suspend fun requestTrendingMovies(): JSONArray {
-        val response = app.get(
-            "$DATA_URL/discover/trending/movies/today_100.json",
-            params = API_PARAMS,
-            headers = HEADERS,
-            cacheTime = 0,
-        ).text
+        val response = StreamCenterHostGate.request("$DATA_URL/discover/trending/movies/today_100.json") {
+            app.get(
+                "$DATA_URL/discover/trending/movies/today_100.json",
+                params = API_PARAMS,
+                headers = HEADERS,
+                cacheTime = 0,
+            )
+        }.text
         return runCatching { JSONArray(response) }.getOrDefault(JSONArray())
     }
 
     private suspend fun requestObject(path: String, extraParams: Map<String, String>): JSONObject? {
-        val response = app.get(
-            "$API_URL/${path.trimStart('/')}",
-            params = API_PARAMS + extraParams,
-            headers = HEADERS,
-            cacheTime = 0,
-        ).text
+        val response = StreamCenterHostGate.request("$API_URL/${path.trimStart('/')}") {
+            app.get(
+                "$API_URL/${path.trimStart('/')}",
+                params = API_PARAMS + extraParams,
+                headers = HEADERS,
+                cacheTime = 0,
+            )
+        }.text
         return runCatching { JSONObject(response) }.getOrNull()
     }
 

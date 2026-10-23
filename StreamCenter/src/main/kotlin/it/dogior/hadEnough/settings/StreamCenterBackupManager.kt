@@ -11,9 +11,7 @@ import android.provider.DocumentsContract
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 internal data class StreamCenterBackupFile(
@@ -41,10 +39,14 @@ internal object StreamCenterBackupManager {
         RegexOption.IGNORE_CASE,
     )
 
-    fun defaultFileName(): String {
-        val timestamp = SimpleDateFormat("dd-MM-yyyy-HH-mm-ss", Locale.ITALY).format(Date())
-        return "StreamCenter_${timestamp}-V${BuildConfig.PLUGIN_VERSION}"
-    }
+    const val DEFAULT_FILE_NAME_TEMPLATE =
+        "StreamCenter_%dd%-%mm%-%yyyy%-%ora%-%minuti%-%secondi%-V%versione%"
+
+    val fileNamePlaceholders = listOf(
+        "%data%", "%giorno%", "%dd%", "%mm%", "%yyyy%", "%ora%", "%minuti%", "%secondi%", "%versione%",
+    )
+
+    fun defaultFileName(): String = resolveFileNameTemplate(DEFAULT_FILE_NAME_TEMPLATE)
 
     fun resolveFileNameTemplate(template: String): String {
         val calendar = Calendar.getInstance(Locale.ITALY).apply {
@@ -110,7 +112,7 @@ internal object StreamCenterBackupManager {
 
     fun locationLabel(context: Context): String {
         val treeUri = selectedTreeUri(context)
-            ?: return "Archivio privato dell'app › Documents › StreamCenter · predefinito"
+            ?: return "Archivio privato dell'app › Documents › StreamCenter, predefinito"
         val documentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return "Cartella personalizzata"
         val volume = documentId.substringBefore(':', "")

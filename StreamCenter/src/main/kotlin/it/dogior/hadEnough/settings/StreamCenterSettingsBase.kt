@@ -11,7 +11,9 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import android.animation.ArgbEvaluator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.DialogInterface
 import android.content.Intent
 import android.content.SharedPreferences
@@ -31,6 +33,7 @@ import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.net.Uri
@@ -52,10 +55,13 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.doOnAttach
+import androidx.core.view.doOnLayout
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.utils.AppContextUtils
 import com.lagradost.cloudstream3.utils.ImageLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,85 +71,68 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
-private class SettingsCardBackgroundDrawable(
+internal class SettingsSurfaceDrawable(
     private var fillColor: Int,
-    private val accentColor: Int,
     private val strokeColor: Int,
     private val radius: Float,
+    private val joinedRadius: Float,
     private val strokeWidth: Float,
 ) : Drawable() {
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
-    private val topLightPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
-    private val accentBloomPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG).apply { style = Paint.Style.STROKE }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val path = Path()
+    private val radii = FloatArray(8)
+    private val rect = RectF()
     private var drawableAlpha = 255
     private var drawableColorFilter: ColorFilter? = null
+    private var joinTop = false
+    private var joinBottom = false
 
     fun setColor(color: Int) {
         fillColor = color
         invalidateSelf()
     }
 
-    override fun draw(canvas: Canvas) {
-        val card = RectF(bounds)
-        if (card.isEmpty) return
-        val accent = ColorUtils.setAlphaComponent(accentColor, 255)
-        val fillStart = ColorUtils.blendARGB(fillColor, accent, 0.045f)
-        val fillEnd = ColorUtils.blendARGB(fillColor, Color.BLACK, 0.05f)
-        fillPaint.shader = LinearGradient(
-            card.left,
-            card.top,
-            card.right,
-            card.bottom,
-            intArrayOf(fillStart, fillColor, fillEnd),
-            floatArrayOf(0f, 0.48f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        fillPaint.alpha = drawableAlpha
-        fillPaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(card, radius, radius, fillPaint)
-
-        topLightPaint.shader = LinearGradient(
-            0f,
-            card.top,
-            0f,
-            card.top + minOf(card.height() * 0.42f, radius * 3f),
-            intArrayOf(withAlpha(accent, 24), Color.TRANSPARENT),
-            null,
-            Shader.TileMode.CLAMP,
-        )
-        topLightPaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(card, radius, radius, topLightPaint)
-
-        accentBloomPaint.shader = LinearGradient(
-            card.left,
-            card.centerY(),
-            card.right,
-            card.centerY(),
-            intArrayOf(withAlpha(accent, 14), withAlpha(accent, 6), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.5f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        accentBloomPaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(card, radius, radius, accentBloomPaint)
-
-        strokePaint.strokeWidth = strokeWidth
-        strokePaint.color = withAlpha(strokeColor, Color.alpha(strokeColor))
-        strokePaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(
-            card.left + strokeWidth / 2f,
-            card.top + strokeWidth / 2f,
-            card.right - strokeWidth / 2f,
-            card.bottom - strokeWidth / 2f,
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            strokePaint,
-        )
-
-        fillPaint.shader = null
-        topLightPaint.shader = null
-        accentBloomPaint.shader = null
+    fun setJoined(top: Boolean, bottom: Boolean) {
+        if (joinTop == top && joinBottom == bottom) return
+        joinTop = top
+        joinBottom = bottom
+        invalidateSelf()
     }
+
+    override fun draw(canvas: Canvas) {
+        rect.set(bounds)
+        if (rect.isEmpty) return
+        drawShape(canvas, fillPaint.apply {
+            color = scaledAlpha(fillColor)
+            colorFilter = drawableColorFilter
+        }, 0f)
+        if (strokeWidth <= 0f || Color.alpha(strokeColor) == 0) return
+        strokePaint.strokeWidth = strokeWidth
+        strokePaint.color = scaledAlpha(strokeColor)
+        strokePaint.colorFilter = drawableColorFilter
+        drawShape(canvas, strokePaint, strokeWidth / 2f)
+    }
+
+    private fun drawShape(canvas: Canvas, paint: Paint, inset: Float) {
+        val top = ((if (joinTop) joinedRadius else radius) - inset).coerceAtLeast(0f)
+        val bottom = ((if (joinBottom) joinedRadius else radius) - inset).coerceAtLeast(0f)
+        radii[0] = top; radii[1] = top; radii[2] = top; radii[3] = top
+        radii[4] = bottom; radii[5] = bottom; radii[6] = bottom; radii[7] = bottom
+        path.reset()
+        path.addRoundRect(
+            rect.left + inset,
+            rect.top + inset,
+            rect.right - inset,
+            rect.bottom - inset,
+            radii,
+            Path.Direction.CW,
+        )
+        canvas.drawPath(path, paint)
+    }
+
+    private fun scaledAlpha(color: Int): Int =
+        ColorUtils.setAlphaComponent(color, Color.alpha(color) * drawableAlpha / 255)
 
     override fun setAlpha(alpha: Int) {
         drawableAlpha = alpha
@@ -157,9 +146,71 @@ private class SettingsCardBackgroundDrawable(
 
     @Deprecated("Deprecated in Android SDK")
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+}
 
-    private fun withAlpha(color: Int, alpha: Int): Int {
-        return ColorUtils.setAlphaComponent(color, (alpha * drawableAlpha / 255f).toInt())
+internal class SettingsRowLayout(context: Context) : LinearLayout(context) {
+    private val surfaces = mutableListOf<SettingsSurfaceDrawable>()
+    private val fillSurfaces = mutableListOf<SettingsSurfaceDrawable>()
+    private var requestedTopMargin: Int? = null
+    private var appliedTopMargin: Int? = null
+
+    fun bindSurfaces(all: List<SettingsSurfaceDrawable>, fills: List<SettingsSurfaceDrawable>) {
+        surfaces.clear()
+        surfaces += all
+        fillSurfaces.clear()
+        fillSurfaces += fills
+    }
+
+    fun setSurfaceFill(color: Int) {
+        fillSurfaces.forEach { it.setColor(color) }
+    }
+
+    fun joinsPrevious(spacingLimit: Int): Boolean = currentRequestedTopMargin() <= spacingLimit
+
+    fun applyJoin(top: Boolean, bottom: Boolean, hairline: Int) {
+        surfaces.forEach { it.setJoined(top, bottom) }
+        val params = layoutParams as? MarginLayoutParams ?: return
+        val target = if (top) hairline else currentRequestedTopMargin()
+        if (params.topMargin != target) params.topMargin = target
+        appliedTopMargin = target
+    }
+
+    private fun currentRequestedTopMargin(): Int {
+        val params = layoutParams as? MarginLayoutParams ?: return 0
+        if (requestedTopMargin == null || params.topMargin != appliedTopMargin) {
+            requestedTopMargin = params.topMargin
+            appliedTopMargin = params.topMargin
+        }
+        return requestedTopMargin ?: 0
+    }
+}
+
+internal class SettingsGroupColumn(
+    context: Context,
+    private val spacingLimit: Int,
+    private val hairline: Int,
+) : LinearLayout(context) {
+    init {
+        orientation = VERTICAL
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        regroup()
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+    }
+
+    private fun regroup() {
+        val visible = (0 until childCount).map(::getChildAt).filter { it.visibility != View.GONE }
+        visible.forEachIndexed { index, child ->
+            val row = child as? SettingsRowLayout ?: return@forEachIndexed
+            val previous = visible.getOrNull(index - 1) as? SettingsRowLayout
+            val next = visible.getOrNull(index + 1) as? SettingsRowLayout
+            row.applyJoin(
+                top = previous != null && row.joinsPrevious(spacingLimit),
+                bottom = next != null && next.joinsPrevious(spacingLimit),
+                hairline = hairline,
+            )
+        }
     }
 }
 
@@ -248,52 +299,19 @@ private class HeaderInfoBadgeShineDrawable(
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
-private class SettingsIconBadgeDrawable(
-    private val accentColor: Int,
+private class SettingsIconTileDrawable(
+    private val fillColor: Int,
     private val radius: Float,
-    private val strokeWidth: Float,
 ) : Drawable() {
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rect = RectF()
     private var drawableAlpha = 255
-    private var drawableColorFilter: ColorFilter? = null
 
     override fun draw(canvas: Canvas) {
-        val badge = RectF(bounds)
-        if (badge.isEmpty) return
-        val accent = ColorUtils.setAlphaComponent(accentColor, 255)
-        val centerX = badge.centerX()
-        val centerY = badge.centerY()
-        val glowRadius = maxOf(badge.width(), badge.height()) * 0.78f
-        glowPaint.shader = RadialGradient(
-            centerX,
-            centerY,
-            glowRadius,
-            intArrayOf(withAlpha(accent, 76), withAlpha(accent, 14), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.54f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        glowPaint.colorFilter = drawableColorFilter
-        canvas.drawCircle(centerX, centerY, glowRadius, glowPaint)
-
-        badgePaint.color = withAlpha(accent, 30)
-        badgePaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(badge, radius, radius, badgePaint)
-
-        strokePaint.strokeWidth = strokeWidth
-        strokePaint.color = withAlpha(accent, 82)
-        strokePaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(
-            badge.left + strokeWidth / 2f,
-            badge.top + strokeWidth / 2f,
-            badge.right - strokeWidth / 2f,
-            badge.bottom - strokeWidth / 2f,
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            strokePaint,
-        )
-        glowPaint.shader = null
+        rect.set(bounds)
+        if (rect.isEmpty) return
+        paint.color = ColorUtils.setAlphaComponent(fillColor, Color.alpha(fillColor) * drawableAlpha / 255)
+        canvas.drawRoundRect(rect, radius, radius, paint)
     }
 
     override fun setAlpha(alpha: Int) {
@@ -302,112 +320,37 @@ private class SettingsIconBadgeDrawable(
     }
 
     override fun setColorFilter(colorFilter: ColorFilter?) {
-        drawableColorFilter = colorFilter
+        paint.colorFilter = colorFilter
         invalidateSelf()
     }
 
     @Deprecated("Deprecated in Android SDK")
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-
-    private fun withAlpha(color: Int, alpha: Int): Int {
-        return ColorUtils.setAlphaComponent(color, (alpha * drawableAlpha / 255f).toInt())
-    }
-}
-
-private class HeroScreenPanelDrawable(
-    private val glowColor: Int,
-    private val frameColor: Int,
-    private val radius: Float,
-    private val strokeWidth: Float,
-) : Drawable() {
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val panelColor = Color.parseColor("#150E0B")
-    private var drawableAlpha = 255
-    private var drawableColorFilter: ColorFilter? = null
-
-    override fun draw(canvas: Canvas) {
-        val panel = RectF(bounds)
-        if (panel.isEmpty) return
-        fillPaint.color = ColorUtils.setAlphaComponent(panelColor, drawableAlpha)
-        fillPaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(panel, radius, radius, fillPaint)
-
-        val glowRadius = maxOf(panel.width(), panel.height()) * 0.64f
-        glowPaint.shader = RadialGradient(
-            panel.centerX(),
-            panel.top + panel.height() * 0.30f,
-            glowRadius,
-            intArrayOf(withAlpha(glowColor, 58), withAlpha(glowColor, 18), Color.TRANSPARENT),
-            floatArrayOf(0f, 0.55f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        glowPaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(panel, radius, radius, glowPaint)
-        glowPaint.shader = null
-
-        strokePaint.strokeWidth = strokeWidth
-        strokePaint.color = withAlpha(frameColor, 150)
-        strokePaint.colorFilter = drawableColorFilter
-        canvas.drawRoundRect(
-            panel.left + strokeWidth / 2f,
-            panel.top + strokeWidth / 2f,
-            panel.right - strokeWidth / 2f,
-            panel.bottom - strokeWidth / 2f,
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            (radius - strokeWidth / 2f).coerceAtLeast(0f),
-            strokePaint,
-        )
-    }
-
-    override fun setAlpha(alpha: Int) {
-        drawableAlpha = alpha
-        invalidateSelf()
-    }
-
-    override fun setColorFilter(colorFilter: ColorFilter?) {
-        drawableColorFilter = colorFilter
-        invalidateSelf()
-    }
-
-    @Deprecated("Deprecated in Android SDK")
-    override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-
-    private fun withAlpha(color: Int, alpha: Int): Int {
-        return ColorUtils.setAlphaComponent(color, (alpha * drawableAlpha / 255f).toInt())
-    }
 }
 
 private class SettingsParticleBackground(
     context: Context,
-    private val showOrbitalDecoration: Boolean,
+    private val showGlow: Boolean,
 ) : View(context) {
     private data class Particle(
         var x: Float,
         var y: Float,
         val radius: Float,
         val alpha: Int,
-        val color: Int,
-        val twinkleSpeed: Float,
-        val twinkleOffset: Float,
-        val driftRadius: Float,
-        val driftSpeed: Float,
+        val useAccent: Boolean,
+        val speed: Float,
+        val phase: Float,
+        val sway: Float,
     )
 
     private val random = Random(481516)
+    private val density = resources.displayMetrics.density
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val colors = intArrayOf(
-        Color.parseColor("#F2C066"),
-        Color.parseColor("#E7B285"),
-        Color.parseColor("#F6E2B4"),
-    )
-    private val particles = MutableList(46) { newParticle() }
+    private val particles = MutableList(28) { newParticle() }
     private var active = false
     private var motionPhase = 0f
-    private var blueNebula: Shader? = null
-    private var violetNebula: Shader? = null
-    private var planetShader: Shader? = null
+    private var glowShader: Shader? = null
+    private var glowColor = 0
     private val animationFrame = object : Runnable {
         override fun run() {
             if (!active || !isAttachedToWindow) return
@@ -446,99 +389,40 @@ private class SettingsParticleBackground(
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         seedParticles()
-        createCosmicShaders()
+        glowShader = null
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (!active) return
-        drawNebulae(canvas)
-        if (showOrbitalDecoration) {
-            drawPlanet(canvas)
-        }
+        if (!active || width == 0 || height == 0) return
+        val accent = Color.parseColor(COLOR_ACCENT)
+        val text = Color.parseColor(COLOR_TEXT)
+        if (showGlow) drawGlow(canvas, accent)
         particles.forEach { particle ->
-            val twinkle = ((sin(motionPhase * particle.twinkleSpeed + particle.twinkleOffset) + 1f) / 2f)
-            val driftPhase = motionPhase * particle.driftSpeed + particle.twinkleOffset
-            val x = particle.x + cos(driftPhase) * particle.driftRadius
-            val y = particle.y + sin(driftPhase) * particle.driftRadius * 0.58f
-            paint.color = particle.color
-            paint.alpha = (particle.alpha * (0.18f + twinkle * 0.20f)).toInt().coerceAtLeast(1)
-            canvas.drawCircle(x, y, particle.radius * 3.2f, paint)
-            paint.alpha = (particle.alpha * (0.55f + twinkle * 0.45f)).toInt()
-            canvas.drawCircle(x, y, particle.radius * (0.72f + twinkle * 0.36f), paint)
+            val y = (particle.y - motionPhase * particle.speed * height).mod(height.toFloat())
+            val x = particle.x + sin(motionPhase * 6f + particle.phase) * particle.sway
+            val pulse = (sin(motionPhase * 9f + particle.phase) + 1f) / 2f
+            paint.color = if (particle.useAccent) accent else text
+            paint.alpha = (particle.alpha * (0.55f + pulse * 0.45f)).toInt()
+            canvas.drawCircle(x, y, particle.radius, paint)
         }
     }
 
-    private fun createCosmicShaders() {
-        if (width <= 0 || height <= 0) return
-        val scale = minOf(width, height).toFloat()
-        blueNebula = RadialGradient(
-            width * 0.80f,
-            height * 0.10f,
-            scale * 0.86f,
-            intArrayOf(
-                Color.argb(60, 244, 196, 108),
-                Color.argb(20, 206, 150, 82),
-                Color.TRANSPARENT,
-            ),
-            floatArrayOf(0f, 0.52f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        violetNebula = RadialGradient(
-            width * 0.24f,
-            height * 0.78f,
-            scale * 0.72f,
-            intArrayOf(
-                Color.argb(46, 214, 132, 84),
-                Color.argb(16, 150, 92, 62),
-                Color.TRANSPARENT,
-            ),
-            floatArrayOf(0f, 0.54f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-        planetShader = RadialGradient(
-            width * 0.82f,
-            height * 0.12f,
-            scale * 0.17f,
-            intArrayOf(
-                Color.argb(122, 250, 216, 150),
-                Color.argb(80, 216, 150, 88),
-                Color.argb(0, 40, 26, 16),
-            ),
-            floatArrayOf(0f, 0.45f, 1f),
-            Shader.TileMode.CLAMP,
-        )
-    }
-
-    private fun drawNebulae(canvas: Canvas) {
-        val blueShiftX = sin(motionPhase * 0.035f) * width * 0.028f
-        val blueShiftY = cos(motionPhase * 0.029f) * height * 0.018f
-        val violetShiftX = cos(motionPhase * 0.031f) * width * 0.024f
-        val violetShiftY = sin(motionPhase * 0.026f) * height * 0.022f
-
-        canvas.save()
-        canvas.translate(blueShiftX, blueShiftY)
-        paint.shader = blueNebula
-        paint.alpha = (226f + sin(motionPhase * 0.041f) * 18f).toInt()
-        canvas.drawRect(-width * 0.08f, -height * 0.08f, width * 1.08f, height * 1.08f, paint)
-        canvas.restore()
-
-        canvas.save()
-        canvas.translate(violetShiftX, violetShiftY)
-        paint.shader = violetNebula
-        paint.alpha = (224f + cos(motionPhase * 0.037f) * 20f).toInt()
-        canvas.drawRect(-width * 0.08f, -height * 0.08f, width * 1.08f, height * 1.08f, paint)
-        canvas.restore()
-
+    private fun drawGlow(canvas: Canvas, accent: Int) {
+        if (glowShader == null || glowColor != accent) {
+            glowColor = accent
+            glowShader = RadialGradient(
+                width * 0.85f,
+                0f,
+                maxOf(width, height) * 0.7f,
+                intArrayOf(ColorUtils.setAlphaComponent(accent, 30), Color.TRANSPARENT),
+                null,
+                Shader.TileMode.CLAMP,
+            )
+        }
+        paint.shader = glowShader
         paint.alpha = 255
-        paint.shader = null
-    }
-
-    private fun drawPlanet(canvas: Canvas) {
-        val scale = minOf(width, height).toFloat()
-        paint.shader = planetShader
-        paint.alpha = 255
-        canvas.drawCircle(width * 0.82f, height * 0.12f, scale * 0.17f, paint)
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
         paint.shader = null
     }
 
@@ -546,13 +430,12 @@ private class SettingsParticleBackground(
         return Particle(
             x = 0f,
             y = 0f,
-            radius = random.nextInt(1, 5).toFloat(),
-            alpha = random.nextInt(32, 92),
-            color = colors[random.nextInt(colors.size)],
-            twinkleSpeed = random.nextFloat() * 1.1f + 0.35f,
-            twinkleOffset = random.nextFloat() * (Math.PI * 2).toFloat(),
-            driftRadius = resources.displayMetrics.density * (random.nextFloat() * 4.5f + 1.5f),
-            driftSpeed = random.nextFloat() * 0.45f + 0.18f,
+            radius = density * (random.nextFloat() * 1.2f + 0.8f),
+            alpha = random.nextInt(40, 110),
+            useAccent = random.nextInt(3) == 0,
+            speed = random.nextFloat() * 0.35f + 0.15f,
+            phase = random.nextFloat() * (Math.PI * 2).toFloat(),
+            sway = density * (random.nextFloat() * 6f + 2f),
         )
     }
 
@@ -565,7 +448,7 @@ private class SettingsParticleBackground(
     }
 
     private fun advanceParticles() {
-        motionPhase += 0.012f
+        motionPhase += 0.0006f
     }
 
     private fun startAnimation() {
@@ -637,25 +520,28 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     companion object {
         private val restartState = StreamCenterSettingsRestartState()
         private var activeSettingsToast: Toast? = null
-        private const val SETTINGS_ROW_HEIGHT_DP = 72
-        private const val SETTINGS_ROW_RADIUS_DP = 16
-        private const val SETTINGS_ROW_ICON_DP = 42
+        private const val SETTINGS_ROW_HEIGHT_DP = 64
+        private const val SETTINGS_ROW_RADIUS_DP = 14
+        private const val SETTINGS_ROW_JOINED_RADIUS_DP = 4
+        private const val SETTINGS_ROW_ICON_DP = 36
         private const val SETTINGS_ROW_SPACING_DP = 10
-        private const val SETTINGS_ROW_DISABLED_ALPHA = 0.52f
+        private const val SETTINGS_ROW_DISABLED_ALPHA = 0.5f
         private const val GRID_CARD_SPACING_DP = 10
         private const val TV_SHEET_WIDTH_FRACTION = 0.94f
         private const val TV_DIALOG_WIDTH_FRACTION = 0.86f
         private const val SETTINGS_CATEGORY_HEIGHT_DP = 64
         private const val SETTINGS_CATEGORY_RADIUS_DP = 14
-        private const val SETTINGS_CATEGORY_ICON_DP = 40
+        private const val SETTINGS_CATEGORY_ICON_DP = 36
         private const val SETTINGS_DIALOG_TILE_HEIGHT_DP = 126
-        private const val SUBMENU_HEIGHT_DP = 625
-        private const val SUBMENU_SCREEN_HEIGHT_RATIO = 0.88f
+        private const val SUBMENU_SCREEN_HEIGHT_RATIO = 0.94f
         private const val CHEVRON_INITIAL_DELAY_MS = 1_800L
         private const val CHEVRON_INTERVAL_MS = 1_600L
         private const val CHEVRON_FORWARD_DURATION_MS = 240L
         private const val CHEVRON_RETURN_DURATION_MS = 360L
         private const val HEADER_INFO_SHINE_CYCLE_MS = 12_000L
+        private const val DISPLAY_FONT_FAMILY = "sans-serif-condensed"
+        const val OVERFLOW_SYMBOL = "⋮"
+        private const val MEDIUM_FONT_FAMILY = "sans-serif-medium"
         private fun dismissActiveSettingsToast() {
             activeSettingsToast?.cancel()
             activeSettingsToast = null
@@ -783,7 +669,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     open val screenIcon: String? = null
 
-    open val screenAccent: String = COLOR_ACCENT
+    open val screenAccent: String get() = COLOR_ACCENT
 
     open fun screenAction(): SettingsScreenAction? = null
 
@@ -796,6 +682,41 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         if (parentFragmentManager.findFragmentByTag(tag) == null) {
             fragment.show(parentFragmentManager, tag)
         }
+    }
+
+    protected fun openSearchResult(card: SearchResponse) {
+        val activity = activity ?: return
+        val ownWindows = setOfNotNull(dialog?.window?.decorView, settingsHost?.dialog?.window?.decorView)
+        (settingsHost ?: this).dismissAllowingStateLoss()
+        closeUnderlyingSheets(activity, ownWindows)
+        AppContextUtils.run { activity.loadSearchResult(card) }
+    }
+
+    private fun closeUnderlyingSheets(activity: Activity, ownWindows: Set<View>) {
+        windowRootViews()
+            .filter { it !in ownWindows && it.isAttachedToWindow && it.context.hostActivity() === activity }
+            .mapNotNull { it.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet) }
+            .forEach { sheet ->
+                runCatching {
+                    BottomSheetBehavior.from(sheet).apply {
+                        isHideable = true
+                        state = BottomSheetBehavior.STATE_HIDDEN
+                    }
+                }
+            }
+    }
+
+    private fun windowRootViews(): List<View> = runCatching {
+        val global = Class.forName("android.view.WindowManagerGlobal")
+        val instance = global.getMethod("getInstance").invoke(null)
+        val views = global.getDeclaredField("mViews").apply { isAccessible = true }.get(instance) as List<*>
+        views.toList().filterIsInstance<View>()
+    }.getOrDefault(emptyList())
+
+    private tailrec fun Context.hostActivity(): Activity? = when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext?.hostActivity()
+        else -> null
     }
 
     protected fun applyTitleEffect(target: TextView, title: String, accent: String) {
@@ -832,10 +753,10 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
         target.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         target.setShadowLayer(
-            dp(7).toFloat(),
+            dp(5).toFloat(),
             0f,
-            dp(1).toFloat(),
-            Color.parseColor(tint(accent, "A8")),
+            0f,
+            Color.parseColor(tint(accent, "66")),
         )
         if (target.width == 0) return
         startTitleGradientAnimation(target, title)
@@ -889,19 +810,19 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             Shader.TileMode.CLAMP,
         )
         val glowColor = ColorUtils.blendARGB(transition.fromColor, transition.toColor, phase)
-        val glowAlpha = (104f + sin(phase * Math.PI.toFloat()) * 72f).toInt()
+        val glowAlpha = (60f + sin(phase * Math.PI.toFloat()) * 50f).toInt()
         target.setShadowLayer(
-            dp(7).toFloat(),
+            dp(5).toFloat(),
             0f,
-            dp(1).toFloat(),
+            0f,
             ColorUtils.setAlphaComponent(glowColor, glowAlpha),
         )
         target.invalidate()
     }
 
     private fun nextTitleColorTransition(target: TextView): TitleColorTransition {
-        val emberColor = Color.parseColor("#F2C066")
-        val screenColor = Color.parseColor("#F8E9C8")
+        val emberColor = Color.parseColor(COLOR_ACCENT)
+        val screenColor = Color.parseColor(COLOR_TEXT)
         val fromColor = titleColorTransitions[target]?.toColor ?: emberColor
         return TitleColorTransition(
             fromColor = fromColor,
@@ -953,24 +874,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     private fun headerInfoBadgePalette(style: HeaderInfoEffectStyle): HeaderInfoBadgePalette {
-        return when (style) {
-            HeaderInfoEffectStyle.COMMIT -> HeaderInfoBadgePalette(
-                start = Color.parseColor("#2A1D10"),
-                end = Color.parseColor("#190F08"),
-                stroke = Color.parseColor("#F2C066"),
-                label = Color.parseColor("#E7C48A"),
-                value = Color.parseColor("#F7E8CB"),
-                shine = Color.parseColor("#FBE9BE"),
-            )
-            HeaderInfoEffectStyle.BUILD -> HeaderInfoBadgePalette(
-                start = Color.parseColor("#2A1810"),
-                end = Color.parseColor("#1B0F08"),
-                stroke = Color.parseColor("#E29A62"),
-                label = Color.parseColor("#E6B084"),
-                value = Color.parseColor("#F6E3CE"),
-                shine = Color.parseColor("#F4C79A"),
-            )
-        }
+        val accent = Color.parseColor(COLOR_ACCENT)
+        return HeaderInfoBadgePalette(
+            start = Color.parseColor(COLOR_CARD),
+            end = Color.parseColor(COLOR_GROUP),
+            stroke = if (style == HeaderInfoEffectStyle.COMMIT) accent else Color.parseColor(COLOR_STROKE),
+            label = Color.parseColor(COLOR_MUTED),
+            value = Color.parseColor(COLOR_TEXT),
+            shine = accent,
+        )
     }
 
     private fun startHeaderInfoShineAnimation() {
@@ -1059,6 +971,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         }
     }
 
+    protected fun releaseEffectTargets() {
+        titleGradientAnimations.values.forEach { it.cancel() }
+        titleGradientAnimations.clear()
+        titleColorTransitions.clear()
+        titleEffectTargets.clear()
+        stopHeaderInfoShineAnimation()
+        headerInfoEffectTargets.clear()
+    }
+
     protected open fun refreshVisualEffectBackdrops() {
         dialogBackdropLayers.forEach { layer ->
             layer.backdrop?.apply {
@@ -1118,6 +1039,19 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         onDismiss: (() -> Unit)? = null,
     ) {
         var layer: DialogBackdropLayer? = null
+        alertDialog.create()
+        alertDialog.window?.apply {
+            setBackgroundDrawable(
+                InsetDrawable(outlined(COLOR_STROKE, COLOR_GROUP, 22), dp(16), dp(24), dp(16), dp(24)),
+            )
+            if (isTvLikeDevice()) {
+                setLayout(
+                    (resources.displayMetrics.widthPixels * TV_DIALOG_WIDTH_FRACTION).toInt(),
+                    attributes.height,
+                )
+            }
+        }
+        styleDialogActionButtons(alertDialog)
         alertDialog.setOnShowListener {
             val backdrop = dialogBackdropLayers.lastOrNull()?.dialog?.window?.decorView
                 ?: settingsHost?.view
@@ -1139,16 +1073,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                     )
                 }
             }
-            styleDialogActionButtons(alertDialog)
             onShow?.invoke()
-            if (isTvLikeDevice()) {
-                alertDialog.window?.let { window ->
-                    window.setLayout(
-                        (resources.displayMetrics.widthPixels * TV_DIALOG_WIDTH_FRACTION).toInt(),
-                        window.attributes.height,
-                    )
-                }
-            }
         }
         alertDialog.setOnDismissListener {
             layer?.let { dismissedLayer ->
@@ -1174,8 +1099,33 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         alertDialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.let { button ->
             styleDialogActionButton(button, COLOR_MUTED, filled = false)
         }
-        (alertDialog.getButton(DialogInterface.BUTTON_POSITIVE)?.parent as? androidx.appcompat.widget.ButtonBarLayout)
-            ?.setAllowStacking(false)
+        val bar = listOf(DialogInterface.BUTTON_POSITIVE, DialogInterface.BUTTON_NEGATIVE, DialogInterface.BUTTON_NEUTRAL)
+            .firstNotNullOfOrNull { alertDialog.getButton(it)?.parent as? androidx.appcompat.widget.ButtonBarLayout }
+            ?: return
+        bar.setAllowStacking(false)
+        bar.doOnLayout { stackDialogButtonsIfCrowded(bar) }
+    }
+
+    private fun stackDialogButtonsIfCrowded(bar: LinearLayout) {
+        val buttons = listOf(android.R.id.button1, android.R.id.button3, android.R.id.button2)
+            .mapNotNull { id -> bar.findViewById<View>(id)?.takeIf { it.visibility == View.VISIBLE } }
+        if (buttons.size < 2) return
+        val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        val needed = buttons.sumOf { button ->
+            button.measure(unspecified, unspecified)
+            val margins = button.layoutParams as? ViewGroup.MarginLayoutParams
+            button.measuredWidth + (margins?.marginStart ?: 0) + (margins?.marginEnd ?: 0)
+        }
+        if (needed <= bar.width - bar.paddingLeft - bar.paddingRight) return
+        (0 until bar.childCount).map(bar::getChildAt).filterNot { it in buttons }.forEach { it.visibility = View.GONE }
+        buttons.forEach(bar::removeView)
+        bar.orientation = LinearLayout.VERTICAL
+        buttons.forEachIndexed { index, button ->
+            bar.addView(button, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { if (index > 0) topMargin = dp(8) })
+        }
     }
 
     private fun styleDialogActionButton(button: android.widget.Button, accent: String, filled: Boolean) {
@@ -1225,33 +1175,31 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     ) {
         applyDialogBackdrop(
             alertDialog = alertDialog,
-            onShow = {
-                listOf(
-                    DialogInterface.BUTTON_POSITIVE,
-                    DialogInterface.BUTTON_NEUTRAL,
-                    DialogInterface.BUTTON_NEGATIVE,
-                ).forEach { buttonId ->
-                    alertDialog.getButton(buttonId)?.apply {
-                        minWidth = 0
-                        minHeight = 0
-                        minimumHeight = dp(40)
-                        setPadding(dp(10), dp(4), dp(10), dp(4))
-                        textSize = 12f
-                        setAllCaps(false)
-                    }
-                }
-                (alertDialog.getButton(DialogInterface.BUTTON_POSITIVE)?.parent as? androidx.appcompat.widget.ButtonBarLayout)
-                    ?.apply {
-                        setAllowStacking(false)
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.END
-                        minimumHeight = 0
-                        setPadding(paddingLeft, dp(2), paddingRight, dp(2))
-                        requestLayout()
-                    }
-            },
             onDismiss = onDismiss,
         )
+        listOf(
+            DialogInterface.BUTTON_POSITIVE,
+            DialogInterface.BUTTON_NEUTRAL,
+            DialogInterface.BUTTON_NEGATIVE,
+        ).forEach { buttonId ->
+            alertDialog.getButton(buttonId)?.apply {
+                minWidth = 0
+                minHeight = 0
+                minimumHeight = dp(40)
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                textSize = 12f
+                setAllCaps(false)
+            }
+        }
+        (alertDialog.getButton(DialogInterface.BUTTON_POSITIVE)?.parent as? androidx.appcompat.widget.ButtonBarLayout)
+            ?.apply {
+                setAllowStacking(false)
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.END
+                minimumHeight = 0
+                setPadding(paddingLeft, dp(2), paddingRight, dp(2))
+                requestLayout()
+            }
         alertDialog.show()
     }
 
@@ -1297,12 +1245,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         view?.animate()?.cancel()
         particleBackgrounds.forEach { it.setActive(false) }
         particleBackgrounds.clear()
-        titleGradientAnimations.values.forEach { it.cancel() }
-        titleGradientAnimations.clear()
-        titleColorTransitions.clear()
-        stopHeaderInfoShineAnimation()
-        titleEffectTargets.clear()
-        headerInfoEffectTargets.clear()
+        releaseEffectTargets()
         stopChevronAnimations()
         chevronTargets.clear()
         nextChevronIndex = 0
@@ -1357,15 +1300,14 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     protected fun standardSubmenuMinimumHeight(): Int {
         if (isEmbedded) return 0
-        return minOf(
-            dp(SUBMENU_HEIGHT_DP),
-            (resources.displayMetrics.heightPixels * SUBMENU_SCREEN_HEIGHT_RATIO).toInt(),
-        )
+        return (resources.displayMetrics.heightPixels * SUBMENU_SCREEN_HEIGHT_RATIO).toInt()
     }
 
+    protected fun groupColumn(): LinearLayout =
+        SettingsGroupColumn(requireContext(), dp(SETTINGS_ROW_SPACING_DP), dp(1))
+
     protected fun rootContainer(): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
+        return groupColumn().apply {
             clipChildren = false
             clipToPadding = false
             if (isTvLikeDevice()) {
@@ -1407,7 +1349,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             ViewGroup.LayoutParams.WRAP_CONTENT
         }
         val frameBackground = sheetFrameBackground()
-        val particleBackground = createParticleBackground(showOrbitalDecoration = !fixedSubmenuHeight)
+        val particleBackground = createParticleBackground(showGlow = !fixedSubmenuHeight)
         val scrollView = ScrollView(requireContext()).apply {
             isFocusable = false
             isFocusableInTouchMode = false
@@ -1449,21 +1391,15 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun sheetFrameBackground(): GradientDrawable {
-        return GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(
-                Color.parseColor("#191210"),
-                Color.parseColor("#120D0B"),
-                Color.parseColor("#0C0908"),
-            ),
-        ).apply {
+        return GradientDrawable().apply {
+            setColor(Color.parseColor(COLOR_BACKGROUND))
             val radius = dp(22).toFloat()
             cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
         }
     }
 
-    protected fun createParticleBackground(showOrbitalDecoration: Boolean): View {
-        val background = SettingsParticleBackground(requireContext(), showOrbitalDecoration)
+    protected fun createParticleBackground(showGlow: Boolean): View {
+        val background = SettingsParticleBackground(requireContext(), showGlow)
         particleBackgrounds += background
         background.setActive(visualParticlesEnabled)
         return background
@@ -1561,15 +1497,6 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             val texts = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = if (centered) Gravity.CENTER else Gravity.START
-                if (titleEffect) {
-                    setPadding(dp(22), dp(15), dp(22), dp(16))
-                    background = HeroScreenPanelDrawable(
-                        glowColor = Color.parseColor(accent),
-                        frameColor = Color.parseColor(tint(accent, "80")),
-                        radius = dp(18).toFloat(),
-                        strokeWidth = dp(1).toFloat(),
-                    )
-                }
                 layoutParams = LinearLayout.LayoutParams(
                     if (centered) ViewGroup.LayoutParams.MATCH_PARENT else 0,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -1579,25 +1506,17 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
             eyebrow?.let {
-                texts.addView(counterText(it, 10).apply {
-                    typeface = Typeface.DEFAULT_BOLD
-                    letterSpacing = 0.02f
-                    setTextColor(Color.parseColor(tint(accent, "C4")))
+                texts.addView(counterText(it, 12).apply {
+                    typeface = Typeface.create(MEDIUM_FONT_FAMILY, Typeface.NORMAL)
+                    setTextColor(Color.parseColor(COLOR_MUTED))
                     setPadding(0, 0, 0, dp(2))
                     if (centered) gravity = Gravity.CENTER
                 })
             }
-            val headerTitle = titleText(title, if (titleEffect) 30 else 23, true, display = true).apply {
+            val headerTitle = titleText(title, if (titleEffect) 28 else 23, true, display = true).apply {
                 if (centered) gravity = Gravity.CENTER
             }
-            if (titleEffect) {
-                headerTitle.apply {
-                    includeFontPadding = false
-                    letterSpacing = 0.025f
-                    setPadding(dp(14), dp(4), dp(14), dp(5))
-                }
-                applyTitleEffect(headerTitle, title, accent)
-            }
+            if (titleEffect) applyTitleEffect(headerTitle, title, accent)
             texts.addView(headerTitle)
             subtitle?.let {
                 texts.addView(bodyText(it, 12).apply {
@@ -1651,14 +1570,11 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             textSize = tvScaledTextSize(size)
             setTextColor(Color.parseColor(COLOR_TEXT))
             typeface = when {
-                display -> Typeface.create(Typeface.SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
-                bold -> Typeface.DEFAULT_BOLD
+                display -> Typeface.create(DISPLAY_FONT_FAMILY, if (bold) Typeface.BOLD else Typeface.NORMAL)
+                bold -> Typeface.create(MEDIUM_FONT_FAMILY, Typeface.NORMAL)
                 else -> Typeface.DEFAULT
             }
-            if (display) {
-                letterSpacing = 0.01f
-                includeFontPadding = false
-            }
+            if (display) includeFontPadding = false
         }
     }
 
@@ -1679,12 +1595,10 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun sectionLabel(value: String): TextView {
-        return bodyText(value, 12).apply {
-            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
-            letterSpacing = 0.01f
+        return bodyText(value, 13).apply {
+            typeface = Typeface.create(MEDIUM_FONT_FAMILY, Typeface.NORMAL)
             includeFontPadding = false
-            setTextColor(Color.parseColor(COLOR_TEXT))
-            alpha = 0.88f
+            setTextColor(Color.parseColor(COLOR_MUTED))
         }
     }
 
@@ -1696,17 +1610,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(topMargin), dp(4), dp(6))
+            setPadding(dp(6), dp(topMargin + 6), dp(6), dp(8))
             addView(sectionLabel(label))
-            addView(View(requireContext()).apply {
-                background = GradientDrawable(
-                    GradientDrawable.Orientation.LEFT_RIGHT,
-                    intArrayOf(Color.parseColor(tint(accent, "3C")), Color.TRANSPARENT),
-                )
-                layoutParams = LinearLayout.LayoutParams(0, dp(1), 1f).apply {
-                    marginStart = dp(12)
-                }
-            })
         }
     }
 
@@ -1730,13 +1635,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     ): TextView {
         return TextView(requireContext()).apply {
             text = emoji
-            textSize = if (size >= 44) 20f else 16f
+            textSize = if (size >= 44) 20f else 15f
             gravity = Gravity.CENTER
             includeFontPadding = false
-            background = SettingsIconBadgeDrawable(
-                accentColor = Color.parseColor(accent),
-                radius = dp(13).toFloat(),
-                strokeWidth = dp(1).toFloat(),
+            background = SettingsIconTileDrawable(
+                fillColor = Color.parseColor(if (accent == COLOR_ACCENT) COLOR_ACCENT_TILE else tint(accent, "2E")),
+                radius = dp(10).toFloat(),
             )
             layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply {
                 this.marginEnd = dp(marginEnd)
@@ -1747,14 +1651,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     protected fun chevron(accent: String): TextView {
         return TextView(requireContext()).apply {
             text = "›"
-            textSize = 26f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor(tint(accent, "C8")))
+            textSize = 24f
+            setTextColor(ColorStateList(
+                arrayOf(intArrayOf(android.R.attr.state_pressed), intArrayOf()),
+                intArrayOf(Color.parseColor(accent), Color.parseColor(tint(COLOR_MUTED, "B0"))),
+            ))
             gravity = Gravity.CENTER
             includeFontPadding = false
             contentDescription = "Apri sezione"
-            layoutParams = LinearLayout.LayoutParams(dp(36), dp(40)).apply {
-                marginStart = dp(6)
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(40)).apply {
+                marginStart = dp(4)
             }
         }.also(chevronTargets::add)
     }
@@ -1818,7 +1724,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         val stremioCatalog = catalog.stremioAddon != null
         return siteIconBadge(
             fallback = if (stremioCatalog) "🔌" else catalog.title.take(1),
-            accent = if (stremioCatalog) COLOR_STREMIO else COLOR_CATALOGS,
+            accent = if (stremioCatalog) COLOR_STREMIO else COLOR_ACCENT,
             contentDescription = "Icona di ${catalog.title}",
             iconUrl = catalog.iconUrl,
             websiteUrl = catalog.websiteUrl.takeUnless { stremioCatalog },
@@ -1829,7 +1735,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     internal fun installedExtensionBadge(extension: InstalledExtension): FrameLayout = siteIconBadge(
         fallback = "\uD83E\uDDE9",
-        accent = COLOR_SOURCES,
+        accent = COLOR_ACCENT,
         contentDescription = "Logo di ${extension.name}",
         iconResolver = { InstalledExtensionLogos.resolve(extension) },
         showOnlyLoadedImage = true,
@@ -1841,7 +1747,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         contentDescription: String,
         iconUrl: String? = null,
         websiteUrl: String? = null,
-        size: Int = 42,
+        size: Int = 36,
         marginEnd: Int = 12,
         iconResolver: (suspend () -> String?)? = null,
         showOnlyLoadedImage: Boolean = false,
@@ -1882,6 +1788,12 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
             addView(logoView)
+            StreamCenterBundledLogos.bitmap(websiteUrl, iconUrl)?.let { bundled ->
+                logoView.setImageBitmap(bundled)
+                logoView.visibility = View.VISIBLE
+                fallbackView.visibility = View.INVISIBLE
+                return@apply
+            }
             fun loadIcon(url: String) {
                 if (showOnlyLoadedImage) {
                     ImageLoader.run {
@@ -1912,23 +1824,17 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             } else {
                 null
             }
+            val remoteResolver = iconResolver
+                ?: websiteUrl?.let { site -> suspend { StreamCenterSiteIcons.resolve(site) } }
             if (resolvedIcon != null) {
                 loadIcon(resolvedIcon)
-            } else if (iconResolver != null && canUseInternet) {
+            } else if (remoteResolver != null && canUseInternet) {
                 logoView.doOnAttach {
                     viewLifecycleOwner.lifecycleScope.launch {
                         val remoteIcon = withContext(Dispatchers.IO) {
-                            runCatchingCancellable { iconResolver() }.getOrNull()
+                            runCatchingCancellable { remoteResolver() }.getOrNull()
                         }
                         if (logoView.isAttachedToWindow && remoteIcon != null) loadIcon(remoteIcon)
-                    }
-                }
-            } else if (websiteUrl != null && canUseInternet) {
-                CoroutineScope(Dispatchers.IO).launch {
-                    val remoteIcon = StreamCenterSiteIcons.resolve(websiteUrl)
-                    withContext(Dispatchers.Main) {
-                        if (!isAdded || logoView.parent == null || remoteIcon == null) return@withContext
-                        ImageLoader.run { logoView.loadImage(remoteIcon) }
                     }
                 }
             }
@@ -2016,7 +1922,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                     intArrayOf(android.R.attr.state_focused),
                     outlined(tint(accent, "D9"), tint(accent, "20"), 999, strokeWidth = 2),
                 )
-                addState(intArrayOf(), solid("#00000000", 999))
+                addState(intArrayOf(), solid(COLOR_TRANSPARENT, 999))
             }
             setPadding(dp(4), dp(2), dp(4), dp(2))
             layoutParams = LinearLayout.LayoutParams(
@@ -2031,6 +1937,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             }
         }
     }
+
+    protected fun SwitchCompat.drivenByRow(): SwitchCompat = apply { isFocusable = false }
 
     protected fun resetOnLongPress(view: View, title: String, reset: () -> Unit) {
         StreamCenterSettingReset.bind(view) {
@@ -2078,7 +1986,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             playToggleFeedback(views.view, views.badge, accent, isChecked)
             if (dimWhenOff) animateRowEnabledAppearance(views.view, isChecked)
             onChanged(isChecked)
-        }
+        }.drivenByRow()
         views = settingsRow(
             title = title,
             summary = summary,
@@ -2108,14 +2016,20 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         get() = SETTINGS_ROW_DISABLED_ALPHA
 
     protected fun animateRowEnabledAppearance(row: View, enabled: Boolean) {
-        val target = if (enabled) 1f else SETTINGS_ROW_DISABLED_ALPHA
-        row.animate().cancel()
+        animateViewAlpha(row, if (enabled) 1f else SETTINGS_ROW_DISABLED_ALPHA)
+    }
+
+    protected fun animateViewAlpha(view: View, target: Float) {
         if (reduceMotion) {
-            row.alpha = target
+            view.alpha = target
+            view.scaleX = 1f
+            view.scaleY = 1f
             return
         }
-        row.animate()
+        view.animate()
             .alpha(target)
+            .scaleX(1f)
+            .scaleY(1f)
             .setDuration(220L)
             .start()
     }
@@ -2142,13 +2056,20 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         onClick: (() -> Unit)? = null,
     ): SettingsRowViews {
         val rowHeight = settingsRowHeightDp()
-        val row = LinearLayout(requireContext()).apply {
+        val row = SettingsRowLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(rowHeight)
-            val verticalPadding = if (fixedHeight) 9 else 12
-            setPadding(dp(14), dp(verticalPadding), dp(10), dp(verticalPadding))
-            background = interactiveBackground(fillColor, accent, SETTINGS_ROW_RADIUS_DP, strokeColor)
+            val verticalPadding = if (fixedHeight) 9 else 11
+            setPadding(dp(12), dp(verticalPadding), dp(8), dp(verticalPadding))
+            val surfaces = interactiveSurfaces(
+                fill = fillColor,
+                accent = accent,
+                radius = SETTINGS_ROW_RADIUS_DP,
+                strokeColor = if (strokeColor == COLOR_STROKE) COLOR_TRANSPARENT else strokeColor,
+            )
+            background = surfaces.drawable
+            bindSurfaces(surfaces.all, surfaces.fills)
             layoutParams = verticalParams(top = topMargin)
             clipChildren = false
             clipToPadding = false
@@ -2220,6 +2141,28 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return SettingsRowViews(row, badge, titleView, resolvedSummary)
     }
 
+    protected fun navigationRow(
+        title: String,
+        summary: String,
+        icon: String,
+        accent: String = COLOR_ACCENT,
+        onSummaryReady: ((TextView) -> Unit)? = null,
+        onClick: () -> Unit,
+    ): LinearLayout {
+        val arrow = chevron(accent)
+        val row = settingsRow(
+            title = title,
+            summary = summary,
+            icon = icon,
+            accent = accent,
+            trailingViews = listOf(arrow),
+            touchTarget = arrow,
+            onClick = onClick,
+        )
+        row.summary?.let { onSummaryReady?.invoke(it) }
+        return row.view
+    }
+
     protected fun <T> showSettingsChoiceDialog(
         title: String,
         options: List<SettingsChoiceOption<T>>,
@@ -2229,8 +2172,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         defaultValue: T? = null,
         onSelected: (SettingsChoiceOption<T>) -> Unit,
     ) {
-        val content = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
+        val content = groupColumn().apply {
             setPadding(dp(20), dp(12), dp(20), dp(20))
         }
         lateinit var dialog: AlertDialog
@@ -2244,17 +2186,17 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 title = option.label,
                 accent = accent,
                 fillColor = COLOR_CARD_ALT,
-                strokeColor = if (selected) accent else tint(accent, "55"),
+                strokeColor = if (selected) accent else COLOR_STROKE,
                 leadingView = option.badgeWebsiteUrl?.takeIf(String::isNotBlank)?.let { site ->
                     siteIconBadge(
                         fallback = option.badge,
                         accent = accent,
                         contentDescription = option.label,
                         websiteUrl = site,
-                        size = 38,
+                        size = 36,
                         marginEnd = 12,
                     )
-                } ?: iconBadge(option.badge, accent, size = 38, marginEnd = 12),
+                } ?: iconBadge(option.badge, accent, size = 36, marginEnd = 12),
                 trailingViews = listOf(selectedBadge),
                 topMargin = 8,
                 accessibilityState = { if (selected) "Selezionata" else "Non selezionata" },
@@ -2286,6 +2228,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         dialog = builder.create()
         applyDialogBackdrop(dialog)
         dialog.show()
+        rowViews.firstOrNull { it.isSelected }?.let { selectedRow -> selectedRow.post { selectedRow.requestFocus() } }
     }
 
     protected fun categoryHeaderRow(
@@ -2295,7 +2238,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         accent: String,
         trailingViews: List<View>,
         titleCompanion: View? = null,
-        strokeColor: String = tint(accent, "66"),
+        strokeColor: String = COLOR_TRANSPARENT,
         enabledAppearance: Boolean = true,
         leadingBadge: View? = null,
         onClick: () -> Unit,
@@ -2367,15 +2310,14 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     protected fun categoryContainer(
         accent: String,
-        fillColor: String = COLOR_CARD_ALT,
-        strokeColor: String = tint(accent, "88"),
-        topMargin: Int = 8,
+        fillColor: String = COLOR_GROUP,
+        strokeColor: String = COLOR_STROKE,
+        topMargin: Int = 10,
     ): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
+        return groupColumn().apply {
             clipChildren = false
             clipToPadding = false
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             background = cardBackground(fillColor, strokeColor, 18)
             layoutParams = verticalParams(top = topMargin)
         }
@@ -2476,108 +2418,48 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun playToggleFeedback(row: View, badge: View?, accent: String, enabled: Boolean) {
-        if (reduceMotion) return
+        if (reduceMotion || !enabled) return
         badge?.apply {
             animate().cancel()
             scaleX = 1f
             scaleY = 1f
-            rotation = 0f
-            val targetScale = if (enabled) 1.35f else 0.82f
             animate()
-                .scaleX(targetScale)
-                .scaleY(targetScale)
-                .rotation(if (enabled) 14f else 0f)
-                .setDuration(150L)
+                .scaleX(1.08f)
+                .scaleY(1.08f)
+                .setDuration(110L)
                 .withEndAction {
-                    animate()
-                        .scaleX(1f)
-                        .scaleY(1f)
-                        .rotation(0f)
-                        .setDuration(220L)
-                        .start()
+                    animate().scaleX(1f).scaleY(1f).setDuration(160L).start()
                 }
                 .start()
-        }
-        val background = row.background as? GradientDrawable ?: return
-        val base = Color.parseColor(COLOR_CARD_ALT)
-        val flash = if (enabled) {
-            ColorUtils.blendARGB(base, Color.parseColor(accent), 0.30f)
-        } else {
-            ColorUtils.blendARGB(base, Color.parseColor(COLOR_THUMB_OFF), 0.25f)
-        }
-        ValueAnimator.ofObject(ArgbEvaluator(), base, flash, base).apply {
-            duration = 550L
-            addUpdateListener { animator -> background.setColor(animator.animatedValue as Int) }
-            start()
         }
     }
 
     protected fun animateCategoryExpansion(content: View, targetAlpha: Float = 1f) {
+        content.animate().cancel()
         if (reduceMotion) {
             content.alpha = targetAlpha
             return
         }
         content.alpha = 0f
-        content.translationY = -dp(8).toFloat()
-        content.post {
-            val targetHeight = content.height
-            val layoutParams = content.layoutParams
-            if (targetHeight <= 0 || layoutParams == null) {
-                content.alpha = targetAlpha
-                content.translationY = 0f
-                return@post
-            }
-            layoutParams.height = 0
-            content.layoutParams = layoutParams
-            ValueAnimator.ofInt(0, targetHeight).apply {
-                duration = 260L
-                interpolator = DecelerateInterpolator()
-                addUpdateListener { animator ->
-                    layoutParams.height = animator.animatedValue as Int
-                    content.layoutParams = layoutParams
-                }
-                start()
-            }
-            content.animate()
-                .alpha(targetAlpha)
-                .translationY(0f)
-                .setDuration(210L)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
-        }
+        content.animate()
+            .alpha(targetAlpha)
+            .setDuration(160L)
+            .setInterpolator(DecelerateInterpolator())
+            .withLayer()
+            .start()
     }
 
     protected fun animateCategoryCollapse(content: View, onFinished: () -> Unit) {
+        content.animate().cancel()
         if (reduceMotion) {
             onFinished()
             return
         }
-        val startHeight = content.height
-        val layoutParams = content.layoutParams
-        if (startHeight <= 0 || layoutParams == null) {
-            onFinished()
-            return
-        }
-        content.animate().cancel()
-        ValueAnimator.ofInt(startHeight, 0).apply {
-            duration = 210L
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animator ->
-                layoutParams.height = animator.animatedValue as Int
-                content.layoutParams = layoutParams
-            }
-            addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: android.animation.Animator) {
-                    onFinished()
-                }
-            })
-            start()
-        }
         content.animate()
             .alpha(0f)
-            .translationY(-dp(6).toFloat())
-            .setDuration(170L)
-            .setInterpolator(DecelerateInterpolator())
+            .setDuration(110L)
+            .withLayer()
+            .withEndAction(onFinished)
             .start()
     }
 
@@ -2588,12 +2470,14 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         strokeColor: String = COLOR_STROKE,
         radius: Int = 14,
     ) {
+        val row = view as? SettingsRowLayout
         if (reduceMotion) {
-            view.background = cardBackground(toColor, strokeColor, radius)
+            if (row != null) row.setSurfaceFill(Color.parseColor(toColor))
+            else view.background = cardBackground(toColor, strokeColor, radius)
             return
         }
-        val drawable = cardBackground(fromColor, strokeColor, radius)
-        view.background = drawable
+        val drawable = if (row == null) cardBackground(fromColor, strokeColor, radius) as SettingsSurfaceDrawable else null
+        drawable?.let { view.background = it }
         ValueAnimator.ofObject(
             ArgbEvaluator(),
             Color.parseColor(fromColor),
@@ -2601,7 +2485,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         ).apply {
             duration = 260L
             addUpdateListener { animator ->
-                (drawable as? SettingsCardBackgroundDrawable)?.setColor(animator.animatedValue as Int)
+                val color = animator.animatedValue as Int
+                row?.setSurfaceFill(color) ?: drawable?.setColor(color)
             }
             start()
         }
@@ -2671,6 +2556,218 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 onClick()
             }
         }
+    }
+
+    protected fun posterThumb(
+        url: String?,
+        fallbackIcon: String,
+        description: String,
+        widthDp: Int = 52,
+        heightDp: Int = 76,
+    ): FrameLayout {
+        val ctx = requireContext()
+        return FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(widthDp), dp(heightDp))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor(tint(COLOR_ACCENT, "30")), Color.parseColor(COLOR_CARD)),
+            ).apply {
+                cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), Color.parseColor(tint(COLOR_ACCENT, "40")))
+            }
+            clipToOutline = true
+            addView(TextView(ctx).apply {
+                text = fallbackIcon
+                textSize = 20f
+                gravity = Gravity.CENTER
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            })
+            url?.takeIf(String::isNotBlank)?.let { posterUrl ->
+                val image = ImageView(ctx).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    contentDescription = description
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                }
+                addView(image)
+                runCatching { ImageLoader.run { image.loadImage(posterUrl) } }
+            }
+        }
+    }
+
+    protected fun heroCountCard(value: String, accent: String, title: String, summary: String): LinearLayout {
+        val ctx = requireContext()
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = cardBackground(COLOR_CARD, tint(accent, "55"), 18)
+            layoutParams = verticalParams(top = 6)
+            addView(titleText(value, 46, true, display = true).apply {
+                setTextColor(Color.parseColor(accent))
+                minWidth = dp(64)
+            })
+            addView(LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(14)
+                }
+                addView(titleText(title, 16, true))
+                addView(bodyText(summary, 12).apply { setPadding(0, dp(4), 0, 0) })
+            })
+        }
+    }
+
+    protected fun countBadge(value: String, label: String, color: String, emphasized: Boolean = true): LinearLayout {
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            minimumWidth = dp(52)
+            addView(titleText(value, if (emphasized) 28 else 22, true, display = true).apply {
+                gravity = Gravity.CENTER
+                setTextColor(Color.parseColor(color))
+            })
+            addView(counterText(label, 10).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(2), 0, 0)
+            })
+        }
+    }
+
+    protected fun mediaCard(
+        poster: View,
+        title: String,
+        details: List<View>,
+        trailing: View,
+        accent: String,
+        description: String,
+        onClick: () -> Unit,
+    ): LinearLayout {
+        val ctx = requireContext()
+        val card = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(12), dp(14), dp(12))
+            background = interactiveBackground(COLOR_CARD_ALT, accent, 16, COLOR_STROKE)
+            layoutParams = verticalParams(top = 8)
+            isClickable = true
+            isFocusable = true
+            contentDescription = description
+            setOnClickListener { onClick() }
+        }
+        card.addView(poster)
+        card.addView(LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(12)
+                marginEnd = dp(10)
+            }
+            addView(titleText(title, 15, true).apply {
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            details.forEach(::addView)
+        })
+        card.addView(trailing)
+        addCardTouchFeedback(card, accent, poster)
+        return card
+    }
+
+    protected fun fractionBar(fraction: Float, color: String): LinearLayout {
+        val filled = fraction.coerceIn(0f, 1f)
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = solid(tint(COLOR_MUTED, "26"), 999)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(6)).apply {
+                topMargin = dp(10)
+            }
+            addView(View(context).apply {
+                background = solid(color, 999)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, filled)
+            })
+            addView(View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f - filled)
+            })
+        }
+    }
+
+    protected class UsageMeterViews(
+        val view: View,
+        private val value: TextView,
+        private val detail: TextView,
+        private val fill: View,
+        private val rest: View,
+    ) {
+        fun update(primary: String, secondary: String, fraction: Float) {
+            value.text = primary
+            detail.text = secondary
+            val filled = fraction.coerceIn(0f, 1f)
+            (fill.layoutParams as LinearLayout.LayoutParams).weight = filled
+            (rest.layoutParams as LinearLayout.LayoutParams).weight = 1f - filled
+            fill.requestLayout()
+        }
+    }
+
+    protected fun usageMeter(): UsageMeterViews {
+        val value = titleText("–", 26, true, display = true)
+        val detail = bodyText("", 12).apply { setPadding(0, dp(4), 0, 0) }
+        val fill = View(requireContext()).apply {
+            background = solid(COLOR_ACCENT, 999)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f)
+        }
+        val rest = View(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        }
+        val track = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = solid(COLOR_TRACK_OFF, 999)
+            layoutParams = verticalParams(top = 12).apply { height = dp(6) }
+            addView(fill)
+            addView(rest)
+        }
+        val card = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            background = cardBackground(COLOR_CARD, COLOR_CARD, 14)
+            layoutParams = verticalParams()
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            addView(value)
+            addView(detail)
+            addView(track)
+        }
+        return UsageMeterViews(card, value, detail, fill, rest)
+    }
+
+    protected data class OverflowAction(
+        val label: String,
+        val enabled: Boolean = true,
+        val onInvoke: () -> Unit,
+    )
+
+    protected fun overflowButton(
+        description: String,
+        actions: () -> List<OverflowAction>,
+    ): TextView {
+        lateinit var button: TextView
+        button = iconButton(OVERFLOW_SYMBOL, description, COLOR_MUTED) {
+            val items = actions()
+            android.widget.PopupMenu(requireContext(), button).apply {
+                items.forEachIndexed { index, action ->
+                    menu.add(0, index, index, action.label).isEnabled = action.enabled
+                }
+                setOnMenuItemClickListener { item ->
+                    items.getOrNull(item.itemId)?.onInvoke?.invoke()
+                    true
+                }
+                show()
+            }
+        }
+        return button
     }
 
     protected fun deleteIconButton(
@@ -2801,9 +2898,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         fillColor: String = COLOR_CARD,
         strokeColor: String = COLOR_STROKE,
         radius: Int = 14,
-    ): Drawable {
-        return cardBackground(fillColor, strokeColor, radius, strokeColor)
-    }
+    ): Drawable = surface(fillColor, strokeColor, radius, 1)
 
     private fun blendColorHex(base: String, overlay: String, ratio: Float): String {
         val blended = ColorUtils.blendARGB(Color.parseColor(base), Color.parseColor(overlay), ratio)
@@ -2815,67 +2910,54 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         accent: String,
         radius: Int,
         strokeColor: String = COLOR_STROKE,
-    ): Drawable {
-        val focusStroke = if (isTvLikeDevice()) 5 else 3
-        val focusFill = if (isTvLikeDevice()) blendColorHex(fill, accent, 0.18f) else fill
-        if (radius >= 100) {
-            val states = StateListDrawable().apply {
-                addState(
-                    intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed),
-                    outlined(accent, focusFill, radius, strokeWidth = focusStroke),
-                )
-                addState(
-                    intArrayOf(android.R.attr.state_focused),
-                    outlined(accent, focusFill, radius, strokeWidth = focusStroke),
-                )
-                addState(
-                    intArrayOf(android.R.attr.state_pressed),
-                    outlined(accent, fill, radius, strokeWidth = 2),
-                )
-                addState(intArrayOf(), outlined(strokeColor, fill, radius))
-            }
-            if (isTvLikeDevice()) return states
-            return RippleDrawable(
-                ColorStateList.valueOf(Color.parseColor(tint(accent, "1F"))),
-                states,
-                solid("#FFFFFF", radius),
-            )
-        }
+    ): Drawable = interactiveSurfaces(fill, accent, radius, strokeColor).drawable
+
+    private class SurfaceSet(
+        val drawable: Drawable,
+        val all: List<SettingsSurfaceDrawable>,
+        val fills: List<SettingsSurfaceDrawable>,
+    )
+
+    private fun interactiveSurfaces(
+        fill: String,
+        accent: String,
+        radius: Int,
+        strokeColor: String,
+    ): SurfaceSet {
+        val tv = isTvLikeDevice()
+        val focusStroke = if (tv) 5 else 2
+        val focusFill = if (tv) blendColorHex(fill, accent, 0.18f) else fill
+        val focusedPressed = surface(focusFill, accent, radius, focusStroke)
+        val focused = surface(focusFill, accent, radius, focusStroke)
+        val pressed = surface(blendColorHex(fill, accent, 0.08f), accent, radius, 1)
+        val rest = surface(fill, strokeColor, radius, 1)
         val states = StateListDrawable().apply {
-            addState(
-                intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed),
-                cardBackground(focusFill, accent, radius, accent, strokeWidth = focusStroke),
-            )
-            addState(
-                intArrayOf(android.R.attr.state_focused),
-                cardBackground(focusFill, accent, radius, accent, strokeWidth = focusStroke),
-            )
-            addState(
-                intArrayOf(android.R.attr.state_pressed),
-                cardBackground(fill, accent, radius, accent, strokeWidth = 2),
-            )
-            addState(intArrayOf(), cardBackground(fill, strokeColor, radius, accent))
+            addState(intArrayOf(android.R.attr.state_focused, android.R.attr.state_pressed), focusedPressed)
+            addState(intArrayOf(android.R.attr.state_focused), focused)
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), rest)
         }
-        if (isTvLikeDevice()) return states
-        return RippleDrawable(
-            ColorStateList.valueOf(Color.parseColor(tint(accent, "1F"))),
-            states,
-            solid("#FFFFFF", radius),
+        val shaped = listOf(focusedPressed, focused, pressed, rest)
+        if (tv) return SurfaceSet(states, shaped, listOf(rest))
+        val mask = surface("#FFFFFF", COLOR_TRANSPARENT, radius, 0)
+        return SurfaceSet(
+            RippleDrawable(ColorStateList.valueOf(Color.parseColor(tint(accent, "24"))), states, mask),
+            shaped + mask,
+            listOf(rest),
         )
     }
 
-    private fun cardBackground(
+    private fun surface(
         fillColor: String,
         strokeColor: String,
         radius: Int,
-        accentColor: String,
-        strokeWidth: Int = 1,
-    ): SettingsCardBackgroundDrawable {
-        return SettingsCardBackgroundDrawable(
+        strokeWidth: Int,
+    ): SettingsSurfaceDrawable {
+        return SettingsSurfaceDrawable(
             fillColor = Color.parseColor(fillColor),
-            accentColor = Color.parseColor(accentColor),
             strokeColor = Color.parseColor(strokeColor),
             radius = dp(radius).toFloat(),
+            joinedRadius = dp(SETTINGS_ROW_JOINED_RADIUS_DP).toFloat(),
             strokeWidth = dp(strokeWidth).toFloat(),
         )
     }

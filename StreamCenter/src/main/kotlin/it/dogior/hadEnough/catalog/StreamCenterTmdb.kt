@@ -7,6 +7,10 @@ import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbUserAgent
+import it.dogior.hadEnough.tmdb.TmdbApiMapping
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.mapChunkedParallel
 import org.jsoup.Jsoup
@@ -33,6 +37,66 @@ internal class StreamCenterTmdbCatalog(
     private val scoreCache = ConcurrentHashMap<String, Score>()
     private val englishTitleCache = ConcurrentHashMap<String, String>()
 
+    suspend fun resolveAnimeIds(titles: List<String>, year: Int?, isMovie: Boolean): List<Int> {
+        if (year == null) return emptyList()
+        val candidates = titles.map(String::trim).filter(String::isNotBlank).distinct()
+        val kind = if (isMovie) "movie" else "tv"
+        if (StreamCenterTmdbApiClient.isActive()) apiAnimeIds(candidates, year, kind)?.let { return it }
+        for (title in candidates.take(4)) {
+            val results = document(
+                requestUrl("/search/$kind", 1, "query=${encode(title)}&include_adult=true"),
+                search = true,
+            )
+            val ids = TmdbSeriesMetadata.matchingSearchIds(results.select(CARD_SELECTOR), candidates, year, isMovie)
+            if (ids.isNotEmpty()) return ids.take(5)
+        }
+        return emptyList()
+    }
+
+    private suspend fun apiAnimeIds(candidates: List<String>, year: Int, kind: String): List<Int>? {
+        for (title in candidates.take(4)) {
+            val results = StreamCenterTmdbApiClient.get("search/$kind", mapOf("query" to title)) ?: return null
+            val found = TmdbApiMapping.searchItems(results, kind)
+                .map { item -> TmdbSeriesMetadata.SearchCandidate(item.id, item.titles, item.year) }
+            val ids = TmdbSeriesMetadata.matchingIds(found, candidates, year)
+            if (ids.isNotEmpty()) return ids.take(5)
+        }
+        return emptyList()
+    }
+
+    private suspend fun apiCards(
+        api: MainAPI,
+        endpoint: String,
+        params: Map<String, String>,
+        page: Int,
+        forcedType: String?,
+        expectedType: TvType?,
+        showScore: Boolean,
+    ): StreamCenterCatalogPage? {
+        val json = StreamCenterTmdbApiClient.get(endpoint, params + ("page" to page.toString())) ?: return null
+        val items = TmdbApiMapping.searchItems(json, forcedType)
+            .filter { expectedType == null || (it.type == "tv") == (expectedType == TvType.TvSeries) }
+            .distinctBy { it.type to it.id }
+            .map { item ->
+                val url = mediaUrl(item.type, item.id.toString(), item.title, item.posterUrl)
+                val score = item.vote.takeIf { showScore }?.let { Score.from(it, 10) }
+                if (item.type == "tv") {
+                    api.newTvSeriesSearchResponse(item.title, url, TvType.TvSeries) {
+                        posterUrl = item.posterUrl
+                        year = item.year
+                        this.score = score
+                    }
+                } else {
+                    api.newMovieSearchResponse(item.title, url, TvType.Movie) {
+                        posterUrl = item.posterUrl
+                        year = item.year
+                        this.score = score
+                    }
+                }
+            }
+        return StreamCenterCatalogPage(items, json.optInt("page", page) < json.optInt("total_pages", 0))
+    }
+
     suspend fun englishTitle(type: String, id: String): String? {
         val normalizedType = type.lowercase(Locale.ROOT)
             .takeIf { value -> value == "movie" || value == "tv" }
@@ -54,6 +118,11 @@ internal class StreamCenterTmdbCatalog(
         page: Int,
         showScore: Boolean,
     ): StreamCenterCatalogPage {
+        API_SECTION_ENDPOINTS[section.path]?.takeIf { StreamCenterTmdbApiClient.isActive() }?.let { endpoint ->
+            val params = if (endpoint == "movie/upcoming") mapOf("region" to "IT") else emptyMap()
+            val forcedType = endpoint.substringBefore('/')
+            apiCards(api, endpoint, params, page.coerceAtLeast(1), forcedType, section.type, showScore)?.let { return it }
+        }
         val document = document(requestUrl(section.path, page.coerceAtLeast(1)))
         val items = mediaCards(api, document, section.type, showScore)
         return StreamCenterCatalogPage(items, items.size >= PAGE_SIZE)
@@ -74,6 +143,17 @@ internal class StreamCenterTmdbCatalog(
         expectedType: TvType?,
     ): StreamCenterCatalogPage {
         if (query.isBlank() || page < 1) return StreamCenterCatalogPage(emptyList(), false)
+        if (StreamCenterTmdbApiClient.isActive()) {
+            val (endpoint, forcedType) = when (expectedType) {
+                TvType.Movie -> "search/movie" to "movie"
+                TvType.TvSeries -> "search/tv" to "tv"
+                else -> "search/multi" to null
+            }
+            apiCards(
+                api, endpoint, mapOf("query" to query.trim(), "include_adult" to "false"), page,
+                forcedType, expectedType, showScore,
+            )?.let { return it }
+        }
         val encodedQuery = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
         val path = when (expectedType) {
             TvType.Movie -> "/search/movie"
@@ -88,6 +168,11 @@ internal class StreamCenterTmdbCatalog(
     suspend fun recommendations(api: MainAPI, mediaUrl: String, showScore: Boolean): List<SearchResponse> {
         val mediaMatch = MEDIA_PATH_REGEX.find(mediaUrl) ?: return emptyList()
         val mediaPath = "/${mediaMatch.groupValues[1].lowercase(Locale.ROOT)}/${mediaMatch.groupValues[2]}"
+        if (StreamCenterTmdbApiClient.isActive()) {
+            val kind = mediaMatch.groupValues[1].lowercase(Locale.ROOT)
+            apiCards(api, "${mediaPath.trimStart('/')}/recommendations", emptyMap(), 1, kind, null, showScore)
+                ?.let { return it.items }
+        }
         val document = document(
             "$TMDB_BASE_URL$mediaPath/remote/recommendations?language=it-IT&version=1&translate=false",
         )
@@ -96,7 +181,9 @@ internal class StreamCenterTmdbCatalog(
     }
 
     private suspend fun document(url: String, search: Boolean = false): Document {
-        val html = app.get(url, headers = if (search) tmdbSearchHeaders(headers) else headers).text
+        val html = StreamCenterHostGate.request(url) {
+            app.get(url, headers = StreamCenterTmdbUserAgent.webHeaders(if (search) tmdbSearchHeaders(headers) else headers))
+        }.text
         return Jsoup.parse(html, url)
     }
 
@@ -199,13 +286,15 @@ internal class StreamCenterTmdbCatalog(
             .filter { it.embeddedScore == null && scoreCache[it.url] == null }
             .distinctBy(CatalogCard::url)
             .mapChunkedParallel(REMOTE_SCORE_REQUEST_CHUNK_SIZE) { card ->
-                val html = app.get(
-                    card.ratingDetailsUrl,
-                    headers = headers + mapOf(
-                        "Referer" to card.url,
-                        "X-Requested-With" to "XMLHttpRequest",
-                    ),
-                ).text
+                val html = StreamCenterHostGate.request(card.ratingDetailsUrl) {
+                    app.get(
+                        card.ratingDetailsUrl,
+                        headers = StreamCenterTmdbUserAgent.webHeaders(headers) + mapOf(
+                            "Referer" to card.url,
+                            "X-Requested-With" to "XMLHttpRequest",
+                        ),
+                    )
+                }.text
                 val score = Jsoup.parse(html, card.ratingDetailsUrl)
                     .selectFirst(".user_score_chart[data-percent]")
                     ?.attr("data-percent")
@@ -280,6 +369,16 @@ internal class StreamCenterTmdbCatalog(
                 "div.media-card-list > div[data-object-id], " +
                 "div[data-object-id][class*=poster-card], div[data-object-id][class*=media-card], " +
                 "div.card.style_1, div.card.v4.tight"
+        private val API_SECTION_ENDPOINTS = mapOf(
+            "/movie" to "movie/popular",
+            "/movie/now-playing" to "movie/now_playing",
+            "/movie/upcoming" to "movie/upcoming",
+            "/movie/top-rated" to "movie/top_rated",
+            "/tv" to "tv/popular",
+            "/tv/airing-today" to "tv/airing_today",
+            "/tv/on-the-air" to "tv/on_the_air",
+            "/tv/top-rated" to "tv/top_rated",
+        )
         private val MEDIA_PATH_REGEX = Regex("/(movie|tv)/(\\d+)", RegexOption.IGNORE_CASE)
         private val YEAR_REGEX = Regex("\\b(?:18|19|20|21)\\d{2}\\b")
         private val VOTE_REGEX = Regex("\\d+(?:[.,]\\d+)?")

@@ -14,23 +14,16 @@ internal enum class PlaybackSourceGroup(val label: String) {
     TORRENT("Torrent"), HTTPS("HTTPS"), EXTENSION("Estensioni"),
 }
 
-internal class OrderedPlaybackLinks(private val dedupKey: (ExtractorLink) -> String) {
-    private data class Result(val group: PlaybackSourceGroup, val link: ExtractorLink)
-    private val results = linkedMapOf<String, Result>()
+internal class StreamingPlaybackLinks(
+    private val dedupKey: (ExtractorLink) -> String,
+    private val emit: (PlaybackSourceGroup, ExtractorLink) -> Unit,
+) {
+    private val emittedKeys = mutableSetOf<String>()
 
-    val size: Int get() = synchronized(results) { results.size }
+    val size: Int get() = synchronized(emittedKeys) { emittedKeys.size }
 
-    fun add(group: PlaybackSourceGroup, link: ExtractorLink) = synchronized(results) {
-        val key = dedupKey(link)
-        val previous = results[key]
-        if (previous == null || group.ordinal < previous.group.ordinal) results[key] = Result(group, link)
-    }
-
-    fun emit(callback: (PlaybackSourceGroup, ExtractorLink) -> Unit) {
-        val snapshot = synchronized(results) {
-            results.values.sortedWith(compareBy<Result> { it.group.ordinal }.thenByDescending { it.link.quality })
-        }
-        snapshot.forEach { callback(it.group, it.link) }
+    fun add(group: PlaybackSourceGroup, link: ExtractorLink) = synchronized(emittedKeys) {
+        if (emittedKeys.add(dedupKey(link))) emit(group, link)
     }
 }
 

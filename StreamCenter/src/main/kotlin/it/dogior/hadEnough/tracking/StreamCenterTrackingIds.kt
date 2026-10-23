@@ -73,7 +73,7 @@ private fun StreamCenterTrackingIds.toLogMetadata(): Map<String, String> = linke
 
 private fun Any?.orUnavailable(): String = this?.toString()?.takeIf(String::isNotBlank) ?: "Non disponibile"
 
-private fun LoadResponse.addStreamCenterTrackingIdTags(
+internal fun LoadResponse.addStreamCenterTrackingIdTags(
     ids: StreamCenterTrackingIds,
     visibleServices: Set<TrackingIdService>,
 ) {

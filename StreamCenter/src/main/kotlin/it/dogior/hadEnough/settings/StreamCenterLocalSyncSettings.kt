@@ -22,7 +22,6 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.widget.NestedScrollView
-import androidx.core.widget.doAfterTextChanged
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoConfig
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoRunner
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncCategory
@@ -40,14 +39,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private const val AUTO_SYNC_ROW_HEIGHT_DP = 80
 private const val IDLE_SESSION_STATUS = "Nessuna sessione attiva al momento"
 private const val MAX_SESSION_LOG_CHARS = 40_000
 
 internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsFragment(), StreamCenterLocalSyncListener {
-    override val screenTitle: String = "Sync locale"
+    override val screenTitle: String = "Sync tra dispositivi"
 
-    override val screenAccent: String = COLOR_LOCAL_SYNC
 
     private lateinit var manager: StreamCenterLocalSyncManager
     private var autoCard: LinearLayout? = null
@@ -82,11 +79,6 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         }
     }
 
-    private data class IntervalRowViews(
-        val view: View,
-        val field: EditText,
-    )
-
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -98,16 +90,11 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         val content = rootContainer().apply {
             minimumHeight = standardSubmenuMinimumHeight()
         }
-        content.addView(
-            header(
-                title = "Sync locale",
-                subtitle = "Trasferimento tra dispositivi sulla stessa rete.",
-                icon = "🔐",
-                accent = COLOR_LOCAL_SYNC,
-            ),
-        )
+        content.addView(sectionHeading("Trasferimento manuale", topMargin = 0))
         actionCard().also(content::addView)
+        content.addView(sectionHeading("Automatico"))
         autoSyncCard().also(content::addView)
+        content.addView(sectionHeading("Attività"))
         sessionCard().also(content::addView)
         startSessionClock()
         updateControls(StreamCenterLocalSyncState.IDLE)
@@ -184,18 +171,20 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = cardBackground(COLOR_CARD, tint(COLOR_LOCAL_SYNC, "78"), 16)
-            layoutParams = verticalParams(10)
+            background = cardBackground(COLOR_CARD, COLOR_CARD, 14)
+            layoutParams = verticalParams()
+            addView(bodyText("Invia da un dispositivo e ricevi sull'altro, sulla stessa rete Wi-Fi", 12).apply {
+                setPadding(dp(2), 0, dp(2), dp(12))
+            })
             addView(
                 LinearLayout(requireContext()).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    setPadding(0, 0, 0, 0)
-                    sendButton = actionButton("Invia", COLOR_LOCAL_SYNC, ::showSendChoice).apply {
+                    sendButton = actionButton("Invia", COLOR_ACCENT, ::showSendChoice).apply {
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                             marginEnd = dp(5)
                         }
                     }
-                    receiveButton = actionButton("Ricevi", COLOR_LOCAL_SYNC, ::startReceiving).apply {
+                    receiveButton = actionButton("Ricevi", COLOR_ACCENT, ::startReceiving).apply {
                         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                             marginStart = dp(5)
                         }
@@ -214,48 +203,40 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
     private fun sessionCard(): LinearLayout {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = cardBackground(COLOR_CARD, tint(COLOR_LOCAL_SYNC, "78"), 16)
-            layoutParams = verticalParams(10)
-            addView(
-                LinearLayout(requireContext()).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(titleText("Attività della sessione", 15, true).apply {
-                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    })
-                    sessionClockText = bodyText("--:--:--", 9).apply {
-                        typeface = Typeface.MONOSPACE
-                        setTextColor(Color.parseColor(COLOR_MUTED))
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ).apply {
-                            marginEnd = dp(8)
-                        }
-                    }
-                    addView(sessionClockText)
-                    addView(chip("LOCALE", COLOR_LOCAL_SYNC))
-                },
-            )
-            statusText = bodyText(IDLE_SESSION_STATUS, 12).apply {
-                setPadding(0, dp(7), 0, dp(8))
+            setPadding(dp(14), dp(12), dp(14), dp(14))
+            background = cardBackground(COLOR_CARD, COLOR_CARD, 14)
+            layoutParams = verticalParams()
+            statusText = bodyText(IDLE_SESSION_STATUS, 13).apply {
                 setTextColor(Color.parseColor(COLOR_TEXT))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
-            addView(statusText)
+            sessionClockText = bodyText("--:--:--", 11).apply {
+                typeface = Typeface.MONOSPACE
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = dp(8) }
+            }
+            addView(LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(statusText)
+                addView(sessionClockText)
+            })
             pairingCodeCard = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 visibility = View.GONE
                 setPadding(dp(12), dp(10), dp(12), dp(10))
-                background = cardBackground(COLOR_CARD_ALT, tint(COLOR_LOCAL_SYNC, "88"), 12)
+                background = cardBackground(COLOR_GROUP, COLOR_GROUP, 12)
+                layoutParams = verticalParams(10)
                 addView(bodyText("Codice temporaneo", 12).apply {
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
                 pairingCodeText = titleText("--- ---", 20, true).apply {
                     typeface = Typeface.MONOSPACE
                     letterSpacing = 0.08f
-                    setTextColor(Color.parseColor(COLOR_LOCAL_SYNC))
+                    setTextColor(Color.parseColor(COLOR_ACCENT))
                 }
                 addView(pairingCodeText)
             }
@@ -265,19 +246,19 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                 max = 100
                 progress = 0
                 visibility = View.GONE
-                progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(COLOR_LOCAL_SYNC))
-                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(COLOR_STROKE))
+                progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(COLOR_ACCENT))
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.parseColor(COLOR_TRACK_OFF))
                 layoutParams = verticalParams(10).apply { height = dp(5) }
             }
             addView(progressBar)
-            addView(sectionHeading("Registro", COLOR_LOCAL_SYNC, topMargin = 12))
-            logText = bodyText("In attesa di un'azione…", 11).apply {
+            addView(sectionLabel("Registro").apply { setPadding(dp(2), dp(14), dp(2), dp(6)) })
+            logText = bodyText("In attesa di un'azione", 11).apply {
                 typeface = Typeface.MONOSPACE
                 setTextColor(Color.parseColor(tint(COLOR_TEXT, "D6")))
                 setPadding(dp(12), dp(10), dp(12), dp(10))
             }
             logScroll = NestedScrollView(requireContext()).apply {
-                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_LOCAL_SYNC, "55"), 12)
+                background = cardBackground(COLOR_GROUP, COLOR_GROUP, 12)
                 isVerticalScrollBarEnabled = true
                 isNestedScrollingEnabled = true
                 isFillViewport = true
@@ -300,7 +281,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
     }
 
     private fun autoSyncCard(): LinearLayout {
-        val card = categoryContainer(COLOR_LOCAL_SYNC, topMargin = 10)
+        val card = categoryContainer(COLOR_ACCENT, topMargin = 0)
         autoCard = card
         rebuildAutoSyncCard()
         return card
@@ -317,12 +298,12 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         val expandButton = categoryExpandButton(
             expanded = autoExpanded,
             description = if (autoExpanded) "Chiudi Sync automatico" else "Apri Sync automatico",
-            accent = COLOR_LOCAL_SYNC,
+            accent = COLOR_ACCENT,
             size = 34,
         ) { toggleAutoExpanded() }
         val masterSwitch = styledSwitch(
             autoEnabled,
-            COLOR_LOCAL_SYNC,
+            COLOR_ACCENT,
             defaultChecked = false,
             resetTitle = "Sync automatico",
         ) { isOn ->
@@ -347,17 +328,12 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             title = "Sync automatico",
             summaryView = headerSummary,
             icon = "🔁",
-            accent = COLOR_LOCAL_SYNC,
+            accent = COLOR_ACCENT,
             trailingViews = listOf(masterSwitch, expandButton),
             enabledAppearance = autoEnabled,
         ) { expandButton.callOnClick() }
         headerRow.title.maxLines = 1
         headerRow.title.ellipsize = android.text.TextUtils.TruncateAt.END
-        headerRow.view.id = View.generateViewId()
-        applyAutoSyncRowHeight(headerRow.view)
-        headerRow.view.nextFocusRightId = masterSwitch.id
-        headerRow.view.nextFocusForwardId = masterSwitch.id
-        masterSwitch.nextFocusLeftId = headerRow.view.id
         card.addView(headerRow.view)
 
         if (!autoExpanded) return
@@ -372,71 +348,46 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             },
             summary = categories.joinToString(", ") { it.title }.ifBlank { "Niente selezionato" },
             icon = "📂",
-            accent = COLOR_LOCAL_SYNC,
-            fillColor = COLOR_CARD_ALT,
-            strokeColor = tint(COLOR_LOCAL_SYNC, "88"),
-            trailingViews = listOf(chevron(COLOR_LOCAL_SYNC)),
+            accent = COLOR_ACCENT,
+            trailingViews = listOf(chevron(COLOR_ACCENT)),
             topMargin = 10,
         ) { showAutoCategoriesDialog() }
         categoriesRowViews.title.maxLines = 1
         categoriesRowViews.title.ellipsize = android.text.TextUtils.TruncateAt.END
         categoriesRowViews.summary?.maxLines = 1
         categoriesRowViews.summary?.ellipsize = android.text.TextUtils.TruncateAt.END
-        val categoriesRow = categoriesRowViews.view.apply {
-            id = View.generateViewId()
-            applyAutoSyncRowHeight(this, topMargin = 10)
-        }
-        val interval = intervalRow(context)
-        categoriesRow.nextFocusDownId = interval.field.id
-        categoriesRow.nextFocusForwardId = interval.field.id
-        interval.field.nextFocusUpId = categoriesRow.id
-        card.addView(categoriesRow)
-        card.addView(interval.view)
-        card.addView(sectionHeading("Dispositivi fidati", COLOR_LOCAL_SYNC, topMargin = 12))
+        card.addView(categoriesRowViews.view)
+        card.addView(intervalRow(context))
+        card.addView(sectionHeading("Dispositivi fidati", topMargin = 8))
         if (peers.isEmpty()) {
             card.addView(
                 bodyText(
-                    "Nessuno ancora. Fai un primo trasferimento con Invia/Ricevi: i due dispositivi si ricorderanno a vicenda.",
+                    "Nessuno ancora. Fai un primo trasferimento con Invia/Ricevi: i due dispositivi si ricorderanno a vicenda",
                     12,
                 ).apply { setPadding(dp(4), 0, dp(4), 0) },
             )
         } else {
-            var previousPeerRow: View? = null
             peers.forEach { peer ->
                 val mode = StreamCenterLocalSyncAutoConfig.peerMode(context, peer.id)
                 val peerRowViews = settingsRow(
                     title = peer.name,
                     summary = "${mode.title}\nUltima sync: ${formatLastSync(peer)}",
                     icon = "📱",
-                    accent = COLOR_LOCAL_SYNC,
-                    fillColor = COLOR_CARD_ALT,
-                    strokeColor = tint(COLOR_LOCAL_SYNC, "88"),
-                    trailingViews = listOf(chevron(COLOR_LOCAL_SYNC)),
-                    topMargin = 8,
+                    accent = COLOR_ACCENT,
+                    trailingViews = listOf(chevron(COLOR_ACCENT)),
                 ) { showPeerSettings(peer) }
                 peerRowViews.title.maxLines = 1
                 peerRowViews.title.ellipsize = android.text.TextUtils.TruncateAt.END
                 peerRowViews.summary?.maxLines = 2
                 peerRowViews.summary?.ellipsize = android.text.TextUtils.TruncateAt.END
-                val peerRow = peerRowViews.view.apply {
-                    id = View.generateViewId()
-                    applyAutoSyncRowHeight(this, topMargin = 8)
+                peerRowViews.view.apply {
                     setOnLongClickListener {
                         forcePeerSync(peer)
                         true
                     }
-                    contentDescription = "$peer.name. ${mode.title}. Tieni premuto su entrambi i dispositivi per sincronizzare subito"
+                    contentDescription = "${peer.name}. ${mode.title}. Tieni premuto su entrambi i dispositivi per sincronizzare subito"
                 }
-                val previous = previousPeerRow
-                if (previous == null) {
-                    interval.field.nextFocusDownId = peerRow.id
-                    peerRow.nextFocusUpId = interval.field.id
-                } else {
-                    previous.nextFocusDownId = peerRow.id
-                    peerRow.nextFocusUpId = previous.id
-                }
-                card.addView(peerRow)
-                previousPeerRow = peerRow
+                card.addView(peerRowViews.view)
             }
         }
         if (!autoEnabled) {
@@ -461,7 +412,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
     }
 
     private fun trustedPeersSummary(count: Int): String = when (count) {
-        0 -> "Nessun dispositivo fidato · accoppia con Invia/Ricevi"
+        0 -> "Nessun dispositivo fidato, accoppia con Invia/Ricevi"
         1 -> "1 dispositivo fidato sulla rete locale"
         else -> "$count dispositivi fidati sulla rete locale"
     }
@@ -469,82 +420,55 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
     private fun formatLastSync(peer: StreamCenterLocalSyncTrustedPeer): String =
         if (peer.lastSyncAtMs > 0L) autoDateFormat.format(Date(peer.lastSyncAtMs)) else "mai"
 
-    private fun applyAutoSyncRowHeight(view: View, topMargin: Int = 0) {
-        view.minimumHeight = dp(AUTO_SYNC_ROW_HEIGHT_DP)
-        view.layoutParams = verticalParams(top = topMargin).apply {
-            height = dp(AUTO_SYNC_ROW_HEIGHT_DP)
-        }
+    private fun intervalRow(context: android.content.Context): View {
+        val views = settingsRow(
+            title = "Frequenza",
+            summary = automaticSyncScheduleSummary(StreamCenterLocalSyncAutoConfig.intervalMinutes(context)),
+            icon = "🕒",
+            accent = COLOR_ACCENT,
+            trailingViews = listOf(chevron(COLOR_ACCENT)),
+            onReset = {
+                StreamCenterLocalSyncAutoConfig.setIntervalMinutes(
+                    context,
+                    StreamCenterLocalSyncAutoConfig.DEFAULT_INTERVAL_MINUTES,
+                )
+                scheduleText.text = automaticSyncScheduleSummary(StreamCenterLocalSyncAutoConfig.intervalMinutes(context))
+            },
+        ) { showIntervalDialog(context) }
+        scheduleText = views.summary ?: error("Riepilogo mancante")
+        return views.view
     }
 
-    private fun intervalRow(context: android.content.Context): IntervalRowViews {
-        scheduleText = bodyText(
-            automaticSyncScheduleSummary(StreamCenterLocalSyncAutoConfig.intervalMinutes(context)),
-            9,
-        ).apply {
-            maxLines = 1
-            setTextColor(Color.parseColor(COLOR_MUTED))
-            setPadding(0, dp(2), 0, 0)
-        }
-        val field = EditText(context).apply {
-            id = View.generateViewId()
+    private fun showIntervalDialog(context: android.content.Context) {
+        val field = input(StreamCenterLocalSyncAutoConfig.intervalMinutes(context).toString(), widthDp = 130).apply {
             inputType = InputType.TYPE_CLASS_NUMBER
             filters = arrayOf(InputFilter.LengthFilter(3))
-            setSingleLine(true)
-            gravity = Gravity.CENTER
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setSelectAllOnFocus(true)
-            setTextColor(Color.parseColor(COLOR_TEXT))
-            setText(StreamCenterLocalSyncAutoConfig.intervalMinutes(context).toString())
-            background = interactiveBackground(COLOR_INPUT_FILL, COLOR_LOCAL_SYNC, 10, tint(COLOR_LOCAL_SYNC, "88"))
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            layoutParams = LinearLayout.LayoutParams(dp(72), ViewGroup.LayoutParams.WRAP_CONTENT)
-            contentDescription = "Frequenza in minuti, da 1 a 240"
-            doAfterTextChanged { editable ->
-                val value = editable?.toString()?.trim()?.toIntOrNull() ?: return@doAfterTextChanged
-                StreamCenterLocalSyncAutoConfig.setIntervalMinutes(context, value)
-                scheduleText.text = automaticSyncScheduleSummary(
-                    StreamCenterLocalSyncAutoConfig.intervalMinutes(context),
-                )
-            }
-            setOnFocusChangeListener { _, hasFocus ->
-                if (!hasFocus) setText(StreamCenterLocalSyncAutoConfig.intervalMinutes(context).toString())
-            }
         }
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-            isFocusable = false
-            isFocusableInTouchMode = false
-            isClickable = false
-            minimumHeight = dp(AUTO_SYNC_ROW_HEIGHT_DP)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = cardBackground(COLOR_CARD_ALT, tint(COLOR_LOCAL_SYNC, "88"), 12)
-            layoutParams = verticalParams(top = 8).apply {
-                height = dp(AUTO_SYNC_ROW_HEIGHT_DP)
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+            addView(sectionLabel("Ogni quanti minuti sincronizzare (1–240)"))
+            addView(field.apply { layoutParams = (layoutParams as LinearLayout.LayoutParams).apply { topMargin = dp(8) } })
+        }
+        val dialog = AlertDialog.Builder(context)
+            .setCustomTitle(dialogTitle("Frequenza"))
+            .setView(content)
+            .setPositiveButton("Salva", null)
+            .setNegativeButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(dialog)
+        dialog.show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+            val minutes = field.text?.toString()?.trim()?.toIntOrNull()
+            if (minutes == null || minutes !in 1..240) {
+                field.error = "Inserisci un valore da 1 a 240"
+                return@setOnClickListener
             }
-            addView(iconBadge("🕒", COLOR_LOCAL_SYNC, size = 36, marginEnd = 10))
-            addView(
-                LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    addView(titleText("Frequenza (minuti)", 14, true).apply {
-                        maxLines = 1
-                        ellipsize = android.text.TextUtils.TruncateAt.END
-                    })
-                    addView(scheduleText)
-                },
-            )
-            addView(field)
+            StreamCenterLocalSyncAutoConfig.setIntervalMinutes(context, minutes)
+            scheduleText.text = automaticSyncScheduleSummary(minutes)
+            saveToast("Frequenza aggiornata")
+            dialog.dismiss()
         }
-        val resetInterval = {
-            field.error = null
-            field.setText(StreamCenterLocalSyncAutoConfig.DEFAULT_INTERVAL_MINUTES.toString())
-        }
-        resetOnLongPress(row, "Frequenza", resetInterval)
-        resetOnLongPress(field, "Frequenza", resetInterval)
-        return IntervalRowViews(row, field)
     }
 
     private fun automaticSyncScheduleSummary(intervalMinutes: Int): String {
@@ -552,7 +476,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         val now = System.currentTimeMillis()
         val nextCycle = ((now / intervalMs) + 1) * intervalMs
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(nextCycle))
-        return "Prossimo ciclo alle $time"
+        return "Ogni ${intervalMinutes.coerceIn(1, 240)} minuti, prossimo ciclo alle $time"
     }
 
     private fun startSessionClock() {
@@ -568,7 +492,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             setPadding(dp(20), dp(6), dp(20), dp(14))
             addView(
                 bodyText(
-                    "La modalità bidirezionale confronta ogni singola voce e conserva quella modificata più di recente. Anche scegliendo un solo verso, una lista vecchia non sovrascrive dati più recenti.",
+                    "La modalità bidirezionale confronta ogni singola voce e conserva quella modificata più di recente. Anche scegliendo un solo verso, una lista vecchia non sovrascrive dati più recenti",
                     12,
                 ).apply { setPadding(dp(2), 0, dp(2), dp(4)) },
             )
@@ -576,7 +500,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         lateinit var dialog: AlertDialog
         StreamCenterLocalSyncPeerMode.entries.forEachIndexed { index, mode ->
             val selected = mode == selectedMode
-            val selectedBadge = iconBadge("✓", COLOR_LOCAL_SYNC, size = 30, marginEnd = 0).apply {
+            val selectedBadge = iconBadge("✓", COLOR_ACCENT, size = 30, marginEnd = 0).apply {
                 visibility = if (selected) View.VISIBLE else View.INVISIBLE
             }
             content.addView(
@@ -584,9 +508,9 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                     title = mode.title,
                     summary = mode.summary,
                     icon = peerModeIcon(mode),
-                    accent = COLOR_LOCAL_SYNC,
+                    accent = COLOR_ACCENT,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = if (selected) COLOR_LOCAL_SYNC else tint(COLOR_LOCAL_SYNC, "55"),
+                    strokeColor = if (selected) COLOR_ACCENT else COLOR_STROKE,
                     trailingViews = listOf(selectedBadge),
                     topMargin = if (index == 0) 10 else 8,
                     accessibilityState = { if (selected) "Selezionata" else "Non selezionata" },
@@ -603,7 +527,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             )
         }
         dialog = AlertDialog.Builder(context)
-            .setCustomTitle(dialogTitle("Direzione con ${peer.name}", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Direzione con ${peer.name}", COLOR_ACCENT))
             .setView(content)
             .setPositiveButton("Chiudi", null)
             .setNegativeButton("Dimentica", null)
@@ -665,7 +589,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                     title = category.title,
                     checked = StreamCenterLocalSyncAutoConfig.isCategoryEnabled(context, category),
                     defaultChecked = category in StreamCenterLocalSyncAutoConfig.DEFAULT_CATEGORIES,
-                    accent = COLOR_LOCAL_SYNC,
+                    accent = COLOR_ACCENT,
                     icon = autoCategoryIcon(category),
                     topMargin = if (index == 0) 0 else 10,
                 ) { on ->
@@ -674,7 +598,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             )
         }
         AlertDialog.Builder(context)
-            .setCustomTitle(dialogTitle("Cosa sincronizzare", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Cosa sincronizzare", COLOR_ACCENT))
             .setView(container)
             .setPositiveButton("Fatto") { _, _ -> rebuildAutoSyncCard() }
             .create()
@@ -698,7 +622,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
                     title = category.title,
                     checked = category in selected,
                     defaultChecked = true,
-                    accent = COLOR_LOCAL_SYNC,
+                    accent = COLOR_ACCENT,
                     icon = autoCategoryIcon(category),
                     topMargin = if (index == 0) 0 else 10,
                 ) { on ->
@@ -707,7 +631,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             )
         }
         AlertDialog.Builder(context)
-            .setCustomTitle(dialogTitle("Cosa vuoi inviare", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Cosa vuoi inviare", COLOR_ACCENT))
             .setView(options)
             .setPositiveButton("Invia") { _, _ ->
                 if (selected.isNotEmpty()) startSending(selected.toSet())
@@ -749,12 +673,12 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             append("\n\n")
             append("Contenuto: ${offer.entryCount} voci")
             if (offer.libraryItemCount > 0 || offer.progressCount > 0) {
-                append(" · ${offer.libraryItemCount} elementi · ${offer.progressCount} progressi")
+                append(", ${offer.libraryItemCount} elementi, ${offer.progressCount} progressi")
             }
         }
         lateinit var dialog: AlertDialog
         dialog = AlertDialog.Builder(requireContext())
-            .setCustomTitle(dialogTitle("Trasferimento locale trovato", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Trasferimento locale trovato", COLOR_ACCENT))
             .setMessage(details)
             .setPositiveButton("Continua") { _, _ -> showPairingCodeDialog(offer) }
             .setNegativeButton("No", null)
@@ -777,16 +701,16 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             setTextColor(Color.parseColor(COLOR_TEXT))
             setHintTextColor(Color.parseColor(COLOR_MUTED))
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = cardBackground(COLOR_INPUT_FILL, COLOR_LOCAL_SYNC, 12)
+            background = cardBackground(COLOR_INPUT_FILL, COLOR_ACCENT, 12)
         }
         val wrapper = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(24), dp(8), dp(24), 0)
-            addView(bodyText("Inserisci il codice di sei cifre mostrato sul dispositivo mittente.", 12))
+            addView(bodyText("Inserisci il codice di sei cifre mostrato sul dispositivo mittente", 12))
             addView(field, verticalParams(10))
         }
         val dialog = AlertDialog.Builder(requireContext())
-            .setCustomTitle(dialogTitle("Verifica il mittente", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Verifica il mittente", COLOR_ACCENT))
             .setView(wrapper)
             .setPositiveButton("Connetti", null)
             .setNegativeButton("Chiudi", null)
@@ -823,12 +747,12 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             append("${result.type.title}: contenuto $direction.")
             append("\n\n${result.entryCount} voci elaborate")
             if (result.libraryItemCount > 0 || result.progressCount > 0) {
-                append(" · ${result.libraryItemCount} elementi · ${result.progressCount} progressi")
+                append(", ${result.libraryItemCount} elementi, ${result.progressCount} progressi")
             }
             if (result.restartRequired) append(".\n\nRiavvia CloudStream.")
         }
         val builder = AlertDialog.Builder(requireContext())
-            .setCustomTitle(dialogTitle("Sync Locale completato", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Sync Locale completato", COLOR_ACCENT))
             .setMessage(statistics)
         if (result.restartRequired) {
             builder
@@ -869,7 +793,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         StreamCenterLocalSyncState.COMPLETED -> COLOR_SUCCESS
         StreamCenterLocalSyncState.ERROR -> COLOR_DANGER
         StreamCenterLocalSyncState.IDLE, StreamCenterLocalSyncState.CANCELLED -> COLOR_MUTED
-        else -> COLOR_LOCAL_SYNC
+        else -> COLOR_ACCENT
     }
 
     private fun appendEvent(event: StreamCenterLocalSyncEvent) {
@@ -910,9 +834,9 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         }
         event.progress?.let { progress ->
             val progressStart = eventLog.length
-            eventLog.append(" · ").append(progress.coerceIn(0, 100).toString()).append('%')
+            eventLog.append(", ").append(progress.coerceIn(0, 100).toString()).append('%')
             eventLog.setSpan(
-                ForegroundColorSpan(Color.parseColor(COLOR_LOCAL_SYNC)),
+                ForegroundColorSpan(Color.parseColor(COLOR_ACCENT)),
                 progressStart,
                 eventLog.length,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
@@ -946,7 +870,7 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
             event.message.contains("non raggiungibile", ignoreCase = true) -> COLOR_DANGER
         event.message.contains("riuscita", ignoreCase = true) ||
             event.message.contains("completato", ignoreCase = true) -> COLOR_SUCCESS
-        event.message.contains("finestra", ignoreCase = true) -> COLOR_LOCAL_SYNC
+        event.message.contains("finestra", ignoreCase = true) -> COLOR_ACCENT
         else -> COLOR_TEXT
     }
 

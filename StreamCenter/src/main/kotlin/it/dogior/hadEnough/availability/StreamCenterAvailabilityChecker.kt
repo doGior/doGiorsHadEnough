@@ -10,6 +10,8 @@ import it.dogior.hadEnough.extensions.ExtensionCall
 import it.dogior.hadEnough.extensions.InstalledExtension
 import it.dogior.hadEnough.extensions.InstalledExtensionSources
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddonClient
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbChallenge
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbUserAgent
 import it.dogior.hadEnough.torrent.StreamCenterExtAvailability
 import it.dogior.hadEnough.torrent.StreamCenterExtDomainStatus
 import it.dogior.hadEnough.torrent.StreamCenterExtTorrentClient
@@ -64,7 +66,7 @@ internal object StreamCenterAvailabilityChecker {
             jsonApiReachable("https://kitsu.io/api/edge/anime/1", accept = "application/vnd.api+json")
         })
         add(AvailabilityCheck("metadata:tmdb", "TMDB", AvailabilityGroup.METADATA) {
-            urlReachable("https://www.themoviedb.org").let { result ->
+            tmdbReachable(sharedPref).let { result ->
                 if (result.state == AvailabilityState.SUCCESS) result.copy(detail = "Sito raggiungibile; API autenticata non verificata")
                 else result
             }
@@ -212,13 +214,25 @@ internal object StreamCenterAvailabilityChecker {
         }
     } catch (_: Exception) { failure("Risposta JSON non valida") }
 
-    private suspend fun urlReachable(url: String): AvailabilityResult {
+    private suspend fun urlReachable(url: String, headers: Map<String, String> = requestHeaders): AvailabilityResult {
         if (url.isBlank()) return failure("URL non configurato")
-        val response = execute(request(url, requestHeaders))
-        return httpProblem(response.code, response.body, response.cloudflareMitigated)
+        return reachability(execute(request(url, headers)))
+    }
+
+    private suspend fun tmdbReachable(sharedPref: SharedPreferences?): AvailabilityResult {
+        val url = "https://www.themoviedb.org"
+        val headers = StreamCenterTmdbUserAgent.webHeaders(requestHeaders, sharedPref)
+        val response = execute(request(url, headers))
+        val challenged = StreamCenterTmdbChallenge.capture(url, headers["User-Agent"], response.code) { response.body }
+        return reachability(
+            if (challenged) execute(request(url, StreamCenterTmdbUserAgent.webHeaders(requestHeaders, sharedPref))) else response,
+        )
+    }
+
+    private fun reachability(response: HttpResponse): AvailabilityResult =
+        httpProblem(response.code, response.body, response.cloudflareMitigated)
             ?: if (response.body.isBlank()) warning("Il sito risponde, ma la pagina è vuota")
             else success("Sito raggiungibile (HTTP ${response.code})")
-    }
 
     private suspend fun isVidxGoAvailable(baseUrl: String): AvailabilityResult {
         if (baseUrl.isBlank()) return failure("URL non configurato")

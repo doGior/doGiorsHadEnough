@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.anime.metadata.AnimeSeriesEntry
+import it.dogior.hadEnough.anime.metadata.TmdbArtwork
 import it.dogior.hadEnough.tracking.StreamCenterTrackingIds
 import it.dogior.hadEnough.util.StreamCenterLogger
 import java.io.File
@@ -93,6 +94,7 @@ internal data class CachedMediaEntry(
     val animeRelationsExpiresAt: Long = 0L,
     val cachedAtMillis: Long = 0L,
     val expiresAtMillis: Long = 0L,
+    val fromTmdbApi: Boolean = false,
 )
 
 internal data class ScPointerIndex(
@@ -116,10 +118,12 @@ internal data class CachedMediaSummary(
     val sizeBytes: Long,
     val showStatus: String?,
     val animeMovie: Boolean = false,
+    val posterUrl: String? = null,
+    val year: Int? = null,
 )
 
 internal object StreamCenterMediaCache {
-    const val SCHEMA_VERSION = 7
+    const val SCHEMA_VERSION = 10
     const val TYPE_MOVIE = "movie"
     const val TYPE_SERIES = "series"
     const val TYPE_ANIME = "anime"
@@ -130,6 +134,7 @@ internal object StreamCenterMediaCache {
     @Volatile
     var generation: Long = 0L
         private set
+    const val MAX_RETENTION_DAYS = 180
     private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
     private const val ANIME_RELATIONS_TTL_MILLIS = 12L * 60L * 60L * 1000L
     private val MEDIA_PATH_REGEX = Regex("/(movie|tv)/(\\d+)", RegexOption.IGNORE_CASE)
@@ -213,7 +218,10 @@ internal object StreamCenterMediaCache {
             file.delete()
             return null
         }
-        return entry
+        val logoUrl = entry.logoUrl
+            ?.takeIf { it.substringBefore('?').substringBefore('#').endsWith(".svg", ignoreCase = true) }
+            ?.let(TmdbArtwork::imageUrl) ?: entry.logoUrl
+        return if (logoUrl == entry.logoUrl) entry else entry.copy(logoUrl = logoUrl)
     }
 
     @Synchronized
@@ -286,6 +294,8 @@ internal object StreamCenterMediaCache {
                 sizeBytes = file.length(),
                 showStatus = entry.showStatus,
                 animeMovie = entry.animeMovie,
+                posterUrl = entry.posterUrl,
+                year = entry.year,
             )
         }.sortedByDescending(CachedMediaSummary::cachedAtMillis)
     }
@@ -382,8 +392,10 @@ internal object StreamCenterMediaCache {
         entry.type == TYPE_MOVIE || entry.animeMovie || entry.showStatus.equals("Completed", ignoreCase = true)
 
     private fun effectiveExpiry(entry: CachedMediaEntry): Long {
-        if (!isCompleted(entry) || entry.cachedAtMillis <= 0L) return entry.expiresAtMillis
-        return minOf(entry.expiresAtMillis, computeMediaExpiry(
+        if (entry.cachedAtMillis <= 0L) return entry.expiresAtMillis
+        val retained = minOf(entry.expiresAtMillis, entry.cachedAtMillis + MAX_RETENTION_DAYS * DAY_MILLIS)
+        if (!isCompleted(entry)) return retained
+        return minOf(retained, computeMediaExpiry(
             entry.cachedAtMillis, entry.showStatus, null,
             isMovie = entry.type == TYPE_MOVIE || entry.animeMovie,
         ))
@@ -419,13 +431,25 @@ internal object StreamCenterMediaCache {
         completedDays: Int = StreamCenterPlugin.mediaCacheCompletedDays(StreamCenterPlugin.activeSharedPref),
     ): Long {
         if (isMovie || showStatus.equals("Completed", ignoreCase = true)) {
-            return now + completedDays.coerceIn(1, 365) * DAY_MILLIS
+            return now + completedDays.coerceIn(1, MAX_RETENTION_DAYS) * DAY_MILLIS
         }
         val dailyExpiry = now + DAY_MILLIS
         return if (showStatus.equals("Ongoing", ignoreCase = true) &&
             nextAirDateMillis != null && nextAirDateMillis > now) {
-            nextAirDateMillis
+            minOf(nextAirDateMillis, now + MAX_RETENTION_DAYS * DAY_MILLIS)
         } else dailyExpiry
+    }
+
+    @Synchronized
+    fun purgeTmdbApiEntries(): Int {
+        val files = directory()?.listFiles(::isMediaFile) ?: return 0
+        generation++
+        val removed = files.count { file ->
+            val entry = runCatching { parseJson<CachedMediaEntry>(AtomicTextFile.read(file)) }.getOrNull()
+            entry?.fromTmdbApi == true && file.delete()
+        }
+        if (removed > 0) prunePointers()
+        return removed
     }
 
     private fun mediaFile(key: String): File? {

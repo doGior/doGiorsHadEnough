@@ -1,86 +1,227 @@
 package it.dogior.hadEnough.settings
 
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import android.content.SharedPreferences
+import kotlin.random.Random
 
-private fun hsl(hue: Float, saturation: Float, lightness: Float): String {
-    val h = ((hue % 360f) + 360f) % 360f
-    val s = saturation.coerceIn(0f, 1f)
-    val l = lightness.coerceIn(0f, 1f)
-    val c = (1f - abs(2f * l - 1f)) * s
-    val x = c * (1f - abs((h / 60f) % 2f - 1f))
-    val m = l - c / 2f
-    val r: Float
-    val g: Float
-    val b: Float
-    when {
-        h < 60f -> { r = c; g = x; b = 0f }
-        h < 120f -> { r = x; g = c; b = 0f }
-        h < 180f -> { r = 0f; g = c; b = x }
-        h < 240f -> { r = 0f; g = x; b = c }
-        h < 300f -> { r = x; g = 0f; b = c }
-        else -> { r = c; g = 0f; b = x }
+internal data class StreamCenterPalette(
+    val key: String,
+    val label: String,
+    val description: String,
+    val background: String,
+    val group: String,
+    val surface: String,
+    val surfaceSunken: String,
+    val text: String,
+    val muted: String,
+    val stroke: String,
+    val accent: String,
+    val accentTile: String,
+    val success: String,
+    val danger: String,
+    val thumbOff: String,
+    val trackOff: String,
+)
+
+internal object StreamCenterThemes {
+    const val PREF_THEME = "settingsTheme"
+    const val ROTATION_KEY = "rotation"
+
+    val ocean = StreamCenterPalette(
+        key = "ocean",
+        label = "Acqua notturna",
+        description = "Petrolio profondo e acquamarina",
+        background = "#0D1517",
+        group = "#111D20",
+        surface = "#172729",
+        surfaceSunken = "#0F1A1C",
+        text = "#E6F0EF",
+        muted = "#88A3A1",
+        stroke = "#22373A",
+        accent = "#5FD4C0",
+        accentTile = "#1B3A39",
+        success = "#7FD6A0",
+        danger = "#F07C6C",
+        thumbOff = "#6E8584",
+        trackOff = "#263A3C",
+    )
+
+    val guide = StreamCenterPalette(
+        key = "guide",
+        label = "Guida TV",
+        description = "Grafite blu e blu segnale",
+        background = "#11141A",
+        group = "#151920",
+        surface = "#1C212B",
+        surfaceSunken = "#12151B",
+        text = "#ECEFF4",
+        muted = "#8D96A8",
+        stroke = "#2A303C",
+        accent = "#7FA6FF",
+        accentTile = "#243050",
+        success = "#6FD39B",
+        danger = "#FF7A6B",
+        thumbOff = "#737B8C",
+        trackOff = "#2C3240",
+    )
+
+    val remote = StreamCenterPalette(
+        key = "remote",
+        label = "Telecomando",
+        description = "Antracite e rosso play",
+        background = "#15161A",
+        group = "#1A1B20",
+        surface = "#212227",
+        surfaceSunken = "#131418",
+        text = "#F1F0EE",
+        muted = "#9A9AA2",
+        stroke = "#2F3036",
+        accent = "#FF6B5E",
+        accentTile = "#3A2326",
+        success = "#7CD39A",
+        danger = "#F5A524",
+        thumbOff = "#7A7A82",
+        trackOff = "#34353C",
+    )
+
+    val phosphor = StreamCenterPalette(
+        key = "phosphor",
+        label = "Fosfori",
+        description = "Bruno caldo e ambra dei vecchi schermi",
+        background = "#16120C",
+        group = "#1B1610",
+        surface = "#241D15",
+        surfaceSunken = "#130F0A",
+        text = "#F3EBDD",
+        muted = "#A89A84",
+        stroke = "#33291D",
+        accent = "#F2B45A",
+        accentTile = "#3D2E18",
+        success = "#8FD18B",
+        danger = "#F07868",
+        thumbOff = "#857A69",
+        trackOff = "#382E22",
+    )
+
+    val primetime = StreamCenterPalette(
+        key = "primetime",
+        label = "Prima serata",
+        description = "Indaco notturno e lilla",
+        background = "#13121B",
+        group = "#181622",
+        surface = "#201E2C",
+        surfaceSunken = "#110F18",
+        text = "#EEEBF6",
+        muted = "#9C96B0",
+        stroke = "#2C2939",
+        accent = "#B49BFF",
+        accentTile = "#2F2850",
+        success = "#79D3A2",
+        danger = "#FF7D86",
+        thumbOff = "#7D7890",
+        trackOff = "#2E2B3D",
+    )
+
+    val colorBars = StreamCenterPalette(
+        key = "colorbars",
+        label = "Barre colore",
+        description = "Prugna scura e magenta del monoscopio",
+        background = "#17121A",
+        group = "#1C1620",
+        surface = "#251D29",
+        surfaceSunken = "#120E15",
+        text = "#F4ECF3",
+        muted = "#A893A6",
+        stroke = "#352A38",
+        accent = "#F27BC3",
+        accentTile = "#43223A",
+        success = "#7DD3A0",
+        danger = "#FFA14F",
+        thumbOff = "#8A7889",
+        trackOff = "#3A2E3C",
+    )
+
+    val forest = ocean.copy(
+        key = "forest", label = "Sottobosco", description = "Verde bosco e salvia",
+        background = "#101711", group = "#162019", surface = "#1E2C22",
+        surfaceSunken = "#0C130E", text = "#E9F3E7", muted = "#9BB39E",
+        stroke = "#304735", accent = "#A4D789", accentTile = "#2A4326",
+        thumbOff = "#7A927E", trackOff = "#2C4030",
+    )
+
+    val sunset = phosphor.copy(
+        key = "sunset", label = "Tramonto", description = "Terracotta e arancio dorato",
+        background = "#1C1210", group = "#251915", surface = "#33231D",
+        surfaceSunken = "#160E0C", text = "#FFF0E5", muted = "#C0A393",
+        stroke = "#51372B", accent = "#FFAD78", accentTile = "#543322",
+        thumbOff = "#A18778", trackOff = "#463127",
+    )
+
+    val glacier = guide.copy(
+        key = "glacier", label = "Ghiacciaio", description = "Blu polare e azzurro ghiaccio",
+        background = "#0B1520", group = "#111F2D", surface = "#192C3D",
+        surfaceSunken = "#08111B", text = "#EAF7FF", muted = "#95B2C6",
+        stroke = "#2C465C", accent = "#80D8FF", accentTile = "#1A4056",
+        thumbOff = "#7896AB", trackOff = "#263F52",
+    )
+
+    val oled = remote.copy(
+        key = "oled", label = "Nero OLED", description = "Nero assoluto e bianco luminoso",
+        background = "#000000", group = "#080808", surface = "#141414",
+        surfaceSunken = "#000000", text = "#FFFFFF", muted = "#ADADAD",
+        stroke = "#353535", accent = "#E0E0E0", accentTile = "#303030",
+        thumbOff = "#888888", trackOff = "#303030",
+    )
+
+    val all: List<StreamCenterPalette> = listOf(
+        ocean, guide, remote, phosphor, primetime, colorBars, forest, sunset, glacier, oled,
+    )
+
+    fun available(prefs: SharedPreferences?): List<StreamCenterPalette> =
+        all + StreamCenterCustomThemes.load(prefs)
+
+    @Volatile
+    var active: StreamCenterPalette = ocean
+        private set
+
+    fun selectedKey(prefs: SharedPreferences?): String {
+        val stored = prefs?.getString(PREF_THEME, null)
+        return stored?.takeIf { key -> key == ROTATION_KEY || available(prefs).any { it.key == key } } ?: ROTATION_KEY
     }
-    val ri = ((r + m) * 255f).roundToInt().coerceIn(0, 255)
-    val gi = ((g + m) * 255f).roundToInt().coerceIn(0, 255)
-    val bi = ((b + m) * 255f).roundToInt().coerceIn(0, 255)
-    return "#%02X%02X%02X".format(ri, gi, bi)
+
+    fun selectedLabel(prefs: SharedPreferences?): String {
+        val key = selectedKey(prefs)
+        if (key == ROTATION_KEY) return "Rotazione"
+        return available(prefs).first { it.key == key }.label
+    }
+
+    fun applyFor(prefs: SharedPreferences?) {
+        val key = selectedKey(prefs)
+        val palettes = available(prefs)
+        active = if (key == ROTATION_KEY) {
+            palettes.filter { it.key != active.key }.let { it[Random.nextInt(it.size)] }
+        } else {
+            palettes.first { it.key == key }
+        }
+    }
 }
 
-internal const val COLOR_BACKGROUND = "#100C0B"
-internal const val COLOR_CARD = "#1C1613"
-internal const val COLOR_CARD_ALT = "#241B15"
-internal const val COLOR_CARD_DISABLED = "#150F0C"
-internal const val COLOR_TEXT = "#F3EADF"
-internal const val COLOR_MUTED = "#AB9B89"
-internal const val COLOR_STROKE = "#342820"
-internal const val COLOR_ACCENT = "#F2C066"
-internal const val COLOR_SUCCESS = "#A9CE8C"
-internal const val COLOR_DANGER = "#E56B4E"
-internal const val COLOR_THUMB_OFF = "#948270"
-internal const val COLOR_TRACK_OFF = "#3B2F27"
-internal const val COLOR_INPUT_FILL = "#140F0C"
-internal const val COLOR_VPN_ON = "#93AE84"
-internal const val COLOR_VPN_OFF = "#C08A80"
+internal val COLOR_BACKGROUND get() = StreamCenterThemes.active.background
+internal val COLOR_GROUP get() = StreamCenterThemes.active.group
+internal val COLOR_CARD get() = StreamCenterThemes.active.surface
+internal val COLOR_CARD_ALT get() = StreamCenterThemes.active.surface
+internal val COLOR_CARD_DISABLED get() = StreamCenterThemes.active.surfaceSunken
+internal val COLOR_INPUT_FILL get() = StreamCenterThemes.active.surfaceSunken
+internal val COLOR_TEXT get() = StreamCenterThemes.active.text
+internal val COLOR_MUTED get() = StreamCenterThemes.active.muted
+internal val COLOR_STROKE get() = StreamCenterThemes.active.stroke
+internal val COLOR_ACCENT get() = StreamCenterThemes.active.accent
+internal val COLOR_ACCENT_TILE get() = StreamCenterThemes.active.accentTile
+internal val COLOR_SUCCESS get() = StreamCenterThemes.active.success
+internal val COLOR_DANGER get() = StreamCenterThemes.active.danger
+internal val COLOR_THUMB_OFF get() = StreamCenterThemes.active.thumbOff
+internal val COLOR_TRACK_OFF get() = StreamCenterThemes.active.trackOff
 
-internal val COLOR_PERFORMANCE = hsl(48f, 0.90f, 0.62f)
-internal val COLOR_DISPLAY = hsl(20f, 0.72f, 0.64f)
-internal val COLOR_HOME = hsl(44f, 0.80f, 0.64f)
-internal val COLOR_SOURCES = hsl(34f, 0.86f, 0.60f)
-internal val COLOR_SUPPORT = hsl(351f, 0.52f, 0.70f)
-
-internal val COLOR_VISUAL_EFFECTS = hsl(40f, 0.80f, 0.64f)
-internal val COLOR_VISUAL_BLUR = hsl(30f, 0.54f, 0.66f)
-internal val COLOR_VISUAL_HEADER = hsl(46f, 0.62f, 0.62f)
-internal val COLOR_PARTICLES = hsl(44f, 0.78f, 0.66f)
-internal val COLOR_PUBLIC_IP = hsl(42f, 0.72f, 0.74f)
-internal val COLOR_VPN_GUARD = hsl(22f, 0.60f, 0.60f)
-internal val COLOR_SCORE = hsl(46f, 0.70f, 0.64f)
-internal val COLOR_ANIME_VARIANTS = hsl(16f, 0.62f, 0.64f)
-internal val COLOR_EPISODES = hsl(36f, 0.74f, 0.58f)
-internal val COLOR_TRACKING_IDS = hsl(50f, 0.55f, 0.72f)
-
-internal val COLOR_HOME_ANIME = hsl(12f, 0.64f, 0.66f)
-internal val COLOR_HOME_TV = hsl(40f, 0.80f, 0.62f)
-internal val COLOR_HOME_MOVIE = hsl(28f, 0.72f, 0.60f)
-internal val COLOR_HOME_TRACKING = hsl(50f, 0.66f, 0.68f)
-internal val COLOR_HOME_CHANNELS = hsl(46f, 0.82f, 0.60f)
-internal val COLOR_CATALOGS = hsl(24f, 0.66f, 0.62f)
-
-internal val COLOR_SOURCE_UPDATE = hsl(50f, 0.85f, 0.58f)
-internal val COLOR_SOURCE_ANIME = hsl(20f, 0.82f, 0.64f)
-internal val COLOR_SOURCE_TV = hsl(44f, 0.78f, 0.60f)
-internal val COLOR_TORRENT = hsl(14f, 0.82f, 0.62f)
-internal val COLOR_API_CHECK = hsl(46f, 0.66f, 0.70f)
-
-internal val COLOR_CLOUDSTREAM_SERVICES = hsl(352f, 0.60f, 0.66f)
-internal val COLOR_FEEDBACK = hsl(356f, 0.66f, 0.72f)
-internal val COLOR_RESET = hsl(8f, 0.78f, 0.62f)
-internal val COLOR_BACKUP = hsl(36f, 0.55f, 0.64f)
-internal val COLOR_LOG = hsl(344f, 0.60f, 0.62f)
-internal val COLOR_LOCAL_SYNC = hsl(28f, 0.58f, 0.66f)
-internal val COLOR_CACHE = hsl(48f, 0.60f, 0.62f)
-
+internal const val COLOR_TRANSPARENT = "#00000000"
 internal const val COLOR_STREMIO = "#D946EF"
 internal const val COLOR_TELEGRAM = "#229ED9"
 
@@ -90,4 +231,4 @@ internal const val TELEGRAM_ICON_URL = "https://telegram.org/img/t_logo.png"
 internal const val STREMIO_WEBSITE_URL = "https://www.stremio.com"
 
 internal fun tint(color: String, alphaHex: String): String =
-    "#$alphaHex${color.removePrefix("#")}"
+    "#$alphaHex${color.removePrefix("#").takeLast(6)}"

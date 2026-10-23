@@ -5,6 +5,11 @@ import it.dogior.hadEnough.extensions.InstalledExtensionSources
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.catalog.StreamCenterHomeImports
 import it.dogior.hadEnough.tracking.TrackingIdService
+import it.dogior.hadEnough.tracking.StreamCenterTrackingOverrides
+import it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoConfig
+import it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoRunner
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbCredential
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbUserAgent
 import it.dogior.hadEnough.settings.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.stremio.*
@@ -18,6 +23,7 @@ import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.appcompat.app.AppCompatActivity
+import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
@@ -143,6 +149,7 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_VISUAL_EFFECTS_PUBLIC_IP = "visualEffectsPublicIp"
         const val PREF_REQUIRE_VPN = "requireVpn"
         const val PREF_FORCE_TV_MODE = "forceTvMode"
+        const val PREF_LIBASS_SUBTITLES = "libassSubtitles"
         const val PREF_MEDIA_CACHE_ENABLED = "mediaCacheEnabled"
         const val PREF_HOME_CALENDAR_CACHE_ENABLED = "homeCalendarCacheEnabled"
         const val PREF_MEDIA_CACHE_MAX_ENTRIES = "mediaCacheMaxEntries"
@@ -191,10 +198,10 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_URL_VIXSRC = "urlVixSrc"
         const val PREF_URL_VIDXGO = "urlVidxGo"
 
-        const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.so"
+        const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.to"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.photography"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.build"
         const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
@@ -387,11 +394,15 @@ class StreamCenterPlugin : Plugin() {
                 ?: context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val failures = listOfNotNull(
                 runCatching {
-                    check(preferences.edit().clear().commit()) {
+                    val editor = preferences.edit()
+                    preferences.all.keys.filterNot(::isPreservedOnReset).forEach(editor::remove)
+                    check(editor.commit()) {
                         "Impossibile cancellare la configurazione principale."
                     }
                 }.exceptionOrNull(),
                 runCatching { StreamCenterBackupManager.resetDirectory(context) }.exceptionOrNull(),
+                runCatching { StreamCenterLocalSyncAutoConfig.reset(context) }.exceptionOrNull(),
+                runCatching { StreamCenterLocalSyncAutoRunner.refresh() }.exceptionOrNull(),
                 runCatching { StreamCenter.resetRuntimeConfiguration() }.exceptionOrNull(),
                 runCatching { StreamCenterIptv.setCustomPlaylists(emptyList()) }.exceptionOrNull(),
                 runCatching { StreamCenterStremioManifestRefreshNotice.reset() }.exceptionOrNull(),
@@ -403,6 +414,18 @@ class StreamCenterPlugin : Plugin() {
                 )
             }
         }
+
+        private val PRESERVED_ON_RESET = setOf(
+            StreamCenterTrackingOverrides.PREF_OVERRIDES,
+            PREF_MEDIA_CACHE_ENABLED,
+            PREF_HOME_CALENDAR_CACHE_ENABLED,
+            PREF_MEDIA_CACHE_MAX_ENTRIES,
+            PREF_MEDIA_CACHE_MAX_MB,
+            PREF_MEDIA_CACHE_COMPLETED_DAYS,
+        )
+
+        private fun isPreservedOnReset(key: String): Boolean =
+            key in PRESERVED_ON_RESET || StreamCenterTmdbCredential.isDeviceOnly(key)
 
         fun shouldShowHomeScore(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_SHOW_HOME_SCORE, true) ?: true
@@ -473,15 +496,15 @@ class StreamCenterPlugin : Plugin() {
         }
 
         fun isVpnRequired(sharedPref: SharedPreferences?): Boolean {
-            return sharedPref?.getBoolean(PREF_REQUIRE_VPN, false) ?: false
+            return sharedPref?.getBoolean(PREF_REQUIRE_VPN, true) ?: true
         }
 
         fun isMediaCacheEnabled(sharedPref: SharedPreferences?): Boolean {
-            return sharedPref?.getBoolean(PREF_MEDIA_CACHE_ENABLED, false) ?: false
+            return sharedPref?.getBoolean(PREF_MEDIA_CACHE_ENABLED, true) ?: true
         }
 
         fun isHomeCalendarCacheEnabled(sharedPref: SharedPreferences?): Boolean =
-            sharedPref?.getBoolean(PREF_HOME_CALENDAR_CACHE_ENABLED, false) ?: false
+            sharedPref?.getBoolean(PREF_HOME_CALENDAR_CACHE_ENABLED, true) ?: true
 
         fun mediaCacheMaxEntries(sharedPref: SharedPreferences?): Int =
             (sharedPref?.getInt(PREF_MEDIA_CACHE_MAX_ENTRIES, MEDIA_CACHE_DEFAULT_MAX_ENTRIES)
@@ -493,14 +516,18 @@ class StreamCenterPlugin : Plugin() {
 
         fun mediaCacheCompletedDays(sharedPref: SharedPreferences?): Int =
             (sharedPref?.getInt(PREF_MEDIA_CACHE_COMPLETED_DAYS, MEDIA_CACHE_DEFAULT_COMPLETED_DAYS)
-                ?: MEDIA_CACHE_DEFAULT_COMPLETED_DAYS).coerceIn(1, 365)
+                ?: MEDIA_CACHE_DEFAULT_COMPLETED_DAYS).coerceIn(1, StreamCenterMediaCache.MAX_RETENTION_DAYS)
+
+        fun isLibassSubtitlesEnabled(sharedPref: SharedPreferences?): Boolean {
+            return sharedPref?.getBoolean(PREF_LIBASS_SUBTITLES, true) ?: true
+        }
 
         fun isForceTvModeEnabled(sharedPref: SharedPreferences?): Boolean {
             return sharedPref?.getBoolean(PREF_FORCE_TV_MODE, false) ?: false
         }
 
         internal fun isDefaultVpnRequirementPreference(key: String, value: Any?): Boolean {
-            return key == PREF_REQUIRE_VPN && value == false
+            return key == PREF_REQUIRE_VPN && value == true
         }
 
         fun shouldGroupAnimeVariants(sharedPref: SharedPreferences?): Boolean {
@@ -516,13 +543,13 @@ class StreamCenterPlugin : Plugin() {
         }
 
         fun isTorrentEnabled(sharedPref: SharedPreferences?): Boolean {
-            return sharedPref?.getBoolean(PREF_TORRENT_ENABLED, false) ?: false
+            return sharedPref?.getBoolean(PREF_TORRENT_ENABLED, true) ?: true
         }
 
         fun setTorrentEnabled(sharedPref: SharedPreferences?, enabled: Boolean) {
             sharedPref?.edit()?.apply {
-                if (enabled) putBoolean(PREF_TORRENT_ENABLED, true)
-                else remove(PREF_TORRENT_ENABLED)
+                if (enabled) remove(PREF_TORRENT_ENABLED)
+                else putBoolean(PREF_TORRENT_ENABLED, false)
             }?.apply()
         }
 
@@ -755,12 +782,13 @@ class StreamCenterPlugin : Plugin() {
                 remove(PREF_STREMIO_ADDONS)
                 remove(PREF_AUTO_UPDATE_SOURCE_URLS)
                 remove(PREF_TMDB_SEARCH_FALLBACK)
+                remove(StreamCenterTmdbUserAgent.PREF_KEY)
                 stremioEnabledKeys.forEach { key -> remove(key) }
             }.apply()
         }
 
         internal fun isDefaultTorrentPreference(key: String, value: Any?): Boolean {
-            if (key == PREF_TORRENT_ENABLED) return value == false
+            if (key == PREF_TORRENT_ENABLED) return value == true
             return StreamCenterTorrentPreferences.isDefaultPreference(key, value)
         }
 
@@ -2024,16 +2052,34 @@ class StreamCenterPlugin : Plugin() {
     }
 
     private var sharedPref: SharedPreferences? = null
-    private val registeredCatalogKeys = mutableSetOf<String>()
+    private val registeredCatalogs = mutableMapOf<String, StreamCenter>()
 
     private fun registerConfiguredCatalogs() {
         val preferences = sharedPref ?: return
-        if (!isHomeCategoryEnabled(preferences, StreamCenterCatalogs.CATEGORY_KEY)) return
-        StreamCenterCatalogs.configuredCatalogs(preferences).forEach { catalog ->
-            if (registeredCatalogKeys.add(catalog.key)) {
-                registerMainAPI(StreamCenter(preferences, catalogDefinition = catalog))
+        synchronized(registeredCatalogs) {
+            val configured = StreamCenterCatalogs.configuredCatalogs(preferences)
+            val configuredKeys = configured.mapTo(mutableSetOf()) { it.key }
+            registeredCatalogs.keys.filterNot { it in configuredKeys }.forEach { key ->
+                registeredCatalogs.remove(key)?.let(::unregisterCatalogApi)
+            }
+            if (!isHomeCategoryEnabled(preferences, StreamCenterCatalogs.CATEGORY_KEY)) return
+            configured.forEach { catalog ->
+                if (catalog.key !in registeredCatalogs) {
+                    val api = StreamCenter(preferences, catalogDefinition = catalog)
+                    registeredCatalogs[catalog.key] = api
+                    registerMainAPI(api)
+                }
             }
         }
+    }
+
+    private fun unregisterCatalogApi(api: StreamCenter) {
+        runCatching { APIHolder.removePluginMapping(api) }
+        runCatching { APIHolder.allProviders.remove(api) }
+        StreamCenterLogger.logMenu(
+            action = "Catalogo rimosso dai provider di CloudStream",
+            metadata = mapOf("catalogo" to api.name),
+        )
     }
 
     override fun load(context: Context) {
@@ -2058,6 +2104,10 @@ class StreamCenterPlugin : Plugin() {
         }
 
         it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoRunner.attach(context.applicationContext)
+        it.dogior.hadEnough.settings.StreamCenterBundledLogos.install(filename)
+        it.dogior.hadEnough.subtitles.StreamCenterAssSubtitles.install(context, filename) {
+            isLibassSubtitlesEnabled(sharedPref)
+        }
 
         registerMainAPI(StreamCenter(sharedPref))
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_MOVIES))

@@ -444,6 +444,16 @@ internal object StreamCenterCatalogs {
             .firstOrNull { addon -> addon.key == addonKey }
     }
 
+    fun stremioCatalogKey(addonKey: String): String = STREMIO_CATALOG_KEY_PREFIX + addonKey
+
+    fun configuredStremioCatalog(
+        sharedPref: SharedPreferences?,
+        addonKey: String,
+    ): StreamCenterCatalogDefinition? {
+        val key = stremioCatalogKey(addonKey)
+        return configuredCatalogs(sharedPref).firstOrNull { it.key == key }
+    }
+
     fun configuredCatalogs(sharedPref: SharedPreferences?): List<StreamCenterCatalogDefinition> {
         val catalogByKey = allCatalogs(sharedPref).associateBy(StreamCenterCatalogDefinition::key)
         return configuredCatalogKeys(sharedPref).mapNotNull(catalogByKey::get)
@@ -544,6 +554,9 @@ internal object StreamCenterCatalogs {
             remove(catalogSectionsKey(catalog.key))
             remove(catalogSectionOrderKey(catalog.key))
         }.apply()
+        StreamCenterHomeImports.read(preferences)
+            .filter { it.kind == StreamCenterHomeImports.CATALOG && it.sourceKey == catalog.key }
+            .forEach { StreamCenterHomeImports.remove(preferences, it.key) }
     }
 
     fun reset(sharedPref: SharedPreferences?) {

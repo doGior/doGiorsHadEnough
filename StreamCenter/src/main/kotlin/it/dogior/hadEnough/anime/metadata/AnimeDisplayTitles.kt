@@ -18,6 +18,25 @@ internal data class AnimeDisplayTitles(
             StreamCenterPlugin.ANIME_CARD_TITLE_NATIVE -> listOf(native, fallback)
             else -> listOf(italian, english, romaji, fallback)
         }
-        return candidates.firstNotNullOfOrNull { it?.trim()?.takeIf(String::isNotBlank) } ?: fallback
+        val selected = candidates.firstNotNullOfOrNull { it?.trim()?.takeIf(String::isNotBlank) } ?: fallback
+        return forDisplay(selected)
     }
+
+    fun forDisplay(title: String): String = if (containsJapaneseTitleScript(title)) {
+        animeUnity?.trim()?.takeIf(String::isNotBlank) ?: title
+    } else title
+}
+
+internal fun containsJapaneseTitleScript(value: String): Boolean {
+    var offset = 0
+    while (offset < value.length) {
+        val codePoint = value.codePointAt(offset)
+        if (Character.UnicodeScript.of(codePoint) in setOf(
+                Character.UnicodeScript.HAN,
+                Character.UnicodeScript.HIRAGANA,
+                Character.UnicodeScript.KATAKANA,
+            )) return true
+        offset += Character.charCount(codePoint)
+    }
+    return false
 }

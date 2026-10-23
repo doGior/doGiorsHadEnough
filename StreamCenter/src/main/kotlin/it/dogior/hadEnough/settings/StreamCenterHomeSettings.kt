@@ -78,12 +78,15 @@ private data class HomeRowState(
     var count: Int,
 )
 
-class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
+class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
+    private companion object {
+        val ORDER_ONLY_SECTIONS = setOf("tv_catch_up")
+    }
+
     override val screenTitle: String = "Home"
 
     override val screenIcon: String = "🏠"
 
-    override val screenAccent: String = COLOR_HOME
 
     override fun screenAction(): SettingsScreenAction = SettingsScreenAction(
         label = "Ripristina",
@@ -96,7 +99,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
     private var expandedCategoryKey: String? = null
     private var pendingCategoryExpansionKey: String? = null
     private var pendingCategoryFocusKey: String? = null
-    private var categoryTransitionRunning = false
     private var rowsContainer: LinearLayout? = null
     private var stremioCatalogInstallRunning = false
     private val IPTV_LANGUAGE_OPTIONS: List<Pair<String, String?>> = listOf(
@@ -143,14 +145,13 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         }
         content.minimumHeight = standardSubmenuMinimumHeight()
 
-        content.addView(settingsRow(
-            title = "Ordinamento libero",
-            summary = "Ordina liberamente le sezioni e aggiungine da altri fonti.",
+        content.addView(navigationRow(
+            title = "Ordine delle sezioni",
+            summary = "Riordina le righe della Home e aggiungine da cataloghi o estensioni",
             icon = "⇅",
-            accent = COLOR_HOME,
-        ) { openScreen(StreamCenterBaseCatalogSettingsFragment(), "StreamCenterBaseCatalogSettings") }.view)
+        ) { openScreen(StreamCenterBaseCatalogSettingsFragment(), "StreamCenterBaseCatalogSettings") })
 
-        content.addView(sectionHeading("Sezioni", COLOR_HOME, topMargin = 4))
+        content.addView(sectionHeading("Categorie"))
 
         val rowsView = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
@@ -159,9 +160,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         rowsContainer = rowsView
         content.addView(rowsView)
         renderRows()
-
-        content.addView(sectionHeading("Schede", COLOR_SCORE))
-        addAdaptiveCardGrid(content, cardContentRows())
 
         FrameLayout(requireContext()).apply {
             visibility = View.INVISIBLE
@@ -192,76 +190,99 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             }
     }
 
+    override fun onSectionsEdited() {
+        loadRows()
+        renderRows()
+    }
+
+    private fun visibleCategoryRows(categoryKey: String): List<IndexedValue<HomeRowState>> =
+        rows.withIndex().filter {
+            StreamCenterPlugin.homeSectionCategoryKey(it.value.section) == categoryKey &&
+                it.value.section.key !in ORDER_ONLY_SECTIONS
+        }
+
     private fun renderRows() {
         val container = rowsContainer ?: return
         container.removeAllViews()
-        StreamCenterPlugin.homeCategories.forEachIndexed { categoryIndex, categoryKey ->
-            val categoryRows = rows.withIndex().filter {
-                StreamCenterPlugin.homeSectionCategoryKey(it.value.section) == categoryKey
-            }
-            if (
-                categoryRows.isEmpty() &&
-                categoryKey !in setOf("live", "tracking", StreamCenterCatalogs.CATEGORY_KEY)
-            ) return@forEachIndexed
-            val accent = categoryAccent(categoryKey)
-            val enabled = categoryEnabled[categoryKey] ?: true
-            val categoryContainer = categoryContainer(
-                accent = accent,
-                fillColor = if (enabled) COLOR_CARD_ALT else "#151920",
-                strokeColor = if (enabled) tint(accent, "88") else COLOR_STROKE,
-                topMargin = if (categoryIndex == 0) 0 else 10,
-            ).apply {
-                tag = "home-category-container:$categoryKey"
-            }
-            categoryContainer.addView(categoryHeader(categoryKey, categoryContainer))
-            if (expandedCategoryKey == categoryKey) {
-                val expandedContent = LinearLayout(requireContext()).apply {
-                    tag = "home-category-content:$categoryKey"
-                    orientation = LinearLayout.VERTICAL
-                    alpha = if (enabled) 1f else settingsRowDisabledAlpha
-                }
-                if (categoryKey == "live" && categoryRows.isEmpty()) {
-                    expandedContent.addView(tvEmptyState())
-                }
-                if (categoryKey == "tracking" && categoryRows.isEmpty()) {
-                    expandedContent.addView(trackingEmptyState())
-                }
-                if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
-                    expandedContent.addView(catalogsContent())
-                }
-                addAdaptiveCardGrid(
-                    expandedContent,
-                    categoryRows.map { homeRow(it.index, it.value) },
-                )
-                if (categoryKey == "live") {
-                    expandedContent.addView(tvCategoryFooter())
-                }
-                if (categoryKey == "anime") {
-                    expandedContent.addView(animeCategoryFooter())
-                }
-                if (categoryKey == "tv") {
-                    expandedContent.addView(tvSeriesCategoryFooter())
-                }
-                if (categoryKey == "movie") {
-                    expandedContent.addView(movieCategoryFooter())
-                }
-                if (categoryKey == "tracking") {
-                    expandedContent.addView(trackingCategoryFooter())
-                }
-                if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
-                    expandedContent.addView(catalogsCategoryFooter())
-                }
-                categoryContainer.addView(expandedContent)
-                if (pendingCategoryExpansionKey == categoryKey) {
-                    animateCategoryExpansion(
-                        expandedContent,
-                        targetAlpha = if (enabled) 1f else settingsRowDisabledAlpha,
-                    )
-                }
-            }
-            container.addView(categoryContainer)
+        StreamCenterPlugin.homeCategories.forEach { categoryKey ->
+            buildCategory(categoryKey, firstInList = container.childCount == 0)?.let(container::addView)
         }
         restorePendingCategoryFocus(container)
+    }
+
+    private fun rerenderCategory(categoryKey: String) {
+        val container = rowsContainer ?: return
+        val current = container.findViewWithTag<View>("home-category-container:$categoryKey")
+        if (current == null) {
+            renderRows()
+            return
+        }
+        val index = container.indexOfChild(current)
+        container.removeViewAt(index)
+        buildCategory(categoryKey, firstInList = index == 0)?.let { container.addView(it, index) }
+    }
+
+    private fun buildCategory(categoryKey: String, firstInList: Boolean): View? {
+        val categoryRows = visibleCategoryRows(categoryKey)
+        if (
+            categoryRows.isEmpty() &&
+            categoryKey !in setOf("live", "tracking", StreamCenterCatalogs.CATEGORY_KEY)
+        ) return null
+        val accent = categoryAccent(categoryKey)
+        val enabled = categoryEnabled[categoryKey] ?: true
+        val categoryContainer = categoryContainer(
+            accent = accent,
+            fillColor = if (enabled) COLOR_GROUP else COLOR_CARD_DISABLED,
+            topMargin = if (firstInList) 0 else 10,
+        ).apply {
+            tag = "home-category-container:$categoryKey"
+        }
+        categoryContainer.addView(categoryHeader(categoryKey, categoryContainer))
+        if (expandedCategoryKey == categoryKey) {
+            val expandedContent = groupColumn().apply {
+                tag = "home-category-content:$categoryKey"
+                alpha = if (enabled) 1f else settingsRowDisabledAlpha
+            }
+            if (categoryKey == "live" && categoryRows.isEmpty()) {
+                expandedContent.addView(tvEmptyState())
+            }
+            if (categoryKey == "tracking" && categoryRows.isEmpty()) {
+                expandedContent.addView(trackingEmptyState())
+            }
+            if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
+                expandedContent.addView(catalogsContent())
+            }
+            addAdaptiveCardGrid(
+                expandedContent,
+                categoryRows.map { homeRow(it.index, it.value) },
+            )
+            if (categoryKey == "live") {
+                expandedContent.addView(tvCategoryFooter())
+            }
+            if (categoryKey == "anime") {
+                expandedContent.addView(animeCategoryFooter())
+            }
+            if (categoryKey == "tv") {
+                expandedContent.addView(tvSeriesCategoryFooter())
+            }
+            if (categoryKey == "movie") {
+                expandedContent.addView(movieCategoryFooter())
+            }
+            if (categoryKey == "tracking") {
+                expandedContent.addView(trackingCategoryFooter())
+            }
+            if (categoryKey == StreamCenterCatalogs.CATEGORY_KEY) {
+                expandedContent.addView(catalogsCategoryFooter())
+            }
+            categoryContainer.addView(expandedContent)
+            if (pendingCategoryExpansionKey == categoryKey) {
+                animateCategoryExpansion(
+                    expandedContent,
+                    targetAlpha = if (enabled) 1f else settingsRowDisabledAlpha,
+                )
+            }
+        }
+        return categoryContainer
     }
 
     private fun categoryHeader(categoryKey: String, categoryContainer: LinearLayout): LinearLayout {
@@ -279,7 +300,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 StreamCenterPlugin.refreshCatalogs()
             }
             playToggleFeedback(header.view, header.badge, accent, checked)
-            updateCategoryAppearance(categoryContainer, categoryKey, checked)
+            updateCategoryAppearance(categoryContainer, checked)
         }
         val expandButton = categoryExpandButton(
             expanded = expanded,
@@ -295,7 +316,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             icon = categoryEmoji(categoryKey),
             accent = accent,
             trailingViews = listOf(toggle, expandButton),
-            strokeColor = tint(accent, "88"),
             enabledAppearance = enabled,
         ) { expandButton.callOnClick() }
         header.view.tag = "home-category:$categoryKey"
@@ -320,30 +340,17 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
     }
 
     private fun toggleHomeCategory(categoryKey: String) {
-        if (categoryTransitionRunning) return
         rememberCategoryFocus(categoryKey)
-        val currentExpanded = expandedCategoryKey
-        if (currentExpanded != null) {
-            val expandedContent = rowsContainer
-                ?.findViewWithTag<View>("home-category-content:$currentExpanded")
-            if (expandedContent != null) {
-                categoryTransitionRunning = true
-                animateCategoryCollapse(expandedContent) {
-                    val opening = currentExpanded != categoryKey
-                    expandedCategoryKey = categoryKey.takeIf { opening }
-                    pendingCategoryExpansionKey = categoryKey.takeIf { opening }
-                    renderRows()
-                    pendingCategoryExpansionKey = null
-                    categoryTransitionRunning = false
-                }
-                return
-            }
+        val previous = expandedCategoryKey
+        val opening = previous != categoryKey
+        expandedCategoryKey = categoryKey.takeIf { opening }
+        previous?.let(::rerenderCategory)
+        if (opening) {
+            pendingCategoryExpansionKey = categoryKey
+            rerenderCategory(categoryKey)
+            pendingCategoryExpansionKey = null
         }
-        val opening = expandedCategoryKey != categoryKey
-        expandedCategoryKey = if (opening) categoryKey else null
-        pendingCategoryExpansionKey = categoryKey.takeIf { opening }
-        renderRows()
-        pendingCategoryExpansionKey = null
+        rowsContainer?.let(::restorePendingCategoryFocus)
     }
 
     private fun rememberCategoryFocus(categoryKey: String) {
@@ -369,7 +376,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 else -> "$configured Cataloghi"
             }
         }
-        val categoryRows = rows.filter { StreamCenterPlugin.homeSectionCategoryKey(it.section) == categoryKey }
+        val categoryRows = visibleCategoryRows(categoryKey).map { it.value }
         if (categoryRows.isEmpty()) return "Nessuna sezione"
         return "${categoryRows.count { it.enabled }}/${categoryRows.size} sezioni"
     }
@@ -398,328 +405,131 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
     }
 
     private fun categoryAccent(categoryKey: String): String {
-        return when (categoryKey) {
-            "anime" -> COLOR_HOME_ANIME
-            "tv" -> COLOR_HOME_TV
-            "movie" -> COLOR_HOME_MOVIE
-            "tracking" -> COLOR_HOME_TRACKING
-            "live" -> COLOR_HOME_CHANNELS
-            StreamCenterCatalogs.CATEGORY_KEY -> COLOR_CATALOGS
-            else -> COLOR_MUTED
-        }
+        val known = setOf("anime", "tv", "movie", "tracking", "live", StreamCenterCatalogs.CATEGORY_KEY)
+        return if (categoryKey in known) COLOR_ACCENT else COLOR_MUTED
     }
 
-    private fun updateCategoryAppearance(
-        categoryContainer: LinearLayout,
-        categoryKey: String,
-        enabled: Boolean,
-    ) {
-        val accent = categoryAccent(categoryKey)
+    private fun updateCategoryAppearance(categoryContainer: LinearLayout, enabled: Boolean) {
         categoryContainer.getChildAt(0)?.let { header ->
-            if (reduceMotion) {
-                header.alpha = if (enabled) 1f else 0.55f
-            } else {
-                header.animate().cancel()
-                header.animate().alpha(if (enabled) 1f else 0.55f).setDuration(220L).start()
-            }
+            animateViewAlpha(header, if (enabled) 1f else 0.55f)
         }
         for (index in 1 until categoryContainer.childCount) {
-            val view = categoryContainer.getChildAt(index)
-            val sectionKey = (view.tag as? String)
-                ?.removePrefix("home-section:")
-                ?.takeIf { view.tag == "home-section:$it" }
-            val row = sectionKey?.let { key -> rows.firstOrNull { it.section.key == key } }
-            val targetAlpha = if (enabled) 1f else settingsRowDisabledAlpha
-            if (reduceMotion) {
-                view.alpha = targetAlpha
-            } else {
-                view.animate().cancel()
-                view.animate().alpha(targetAlpha).setDuration(220L).start()
-            }
-            if (row != null) {
-                animateCardFill(
-                    view,
-                    fromColor = if (!enabled && row.enabled) COLOR_CARD else COLOR_CARD_DISABLED,
-                    toColor = if (enabled && row.enabled) COLOR_CARD else COLOR_CARD_DISABLED,
-                )
-            }
+            animateViewAlpha(categoryContainer.getChildAt(index), if (enabled) 1f else settingsRowDisabledAlpha)
         }
         animateCardFill(
             categoryContainer,
-            fromColor = if (enabled) "#151920" else COLOR_CARD_ALT,
-            toColor = if (enabled) COLOR_CARD_ALT else "#151920",
-            strokeColor = if (enabled) tint(accent, "88") else COLOR_STROKE,
+            fromColor = if (enabled) COLOR_CARD_DISABLED else COLOR_GROUP,
+            toColor = if (enabled) COLOR_GROUP else COLOR_CARD_DISABLED,
             radius = 18,
         )
     }
 
-    private fun homeRow(index: Int, row: HomeRowState): LinearLayout {
-        return LinearLayout(requireContext()).apply {
-            val rowView = this
-            val categoryKey = StreamCenterPlugin.homeSectionCategoryKey(row.section)
-            val accent = categoryAccent(categoryKey)
-            val categoryIsEnabled = categoryEnabled[categoryKey] ?: true
-            tag = "home-section:${row.section.key}"
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(11), dp(14), dp(12))
-            alpha = if (row.enabled) 1f else settingsRowDisabledAlpha
-            background = cardBackground(
-                if (row.enabled && categoryIsEnabled) COLOR_CARD else COLOR_CARD_DISABLED,
-            )
-            layoutParams = verticalParams(top = 8)
-
-            val isLiveRow = categoryKey == "live"
-            val isAnimeCalendarRow = row.section.key == "anime_calendar"
-            val isAnimeCustomRow = row.section.key.startsWith(StreamCenterPlugin.ANIME_CUSTOM_SECTION_PREFIX)
-            val isTvCustomRow = row.section.key.startsWith(StreamCenterPlugin.TV_CUSTOM_SECTION_PREFIX)
-            val isMovieCustomRow = row.section.key.startsWith(StreamCenterPlugin.MOVIE_CUSTOM_SECTION_PREFIX)
-            val isTrackingCustomRow = row.section.key.startsWith(StreamCenterPlugin.TRACKING_CUSTOM_SECTION_PREFIX)
-            val topLine = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val channelCount = if (isLiveRow) {
-                StreamCenterPlugin.getIptvSectionChannelIds(sharedPref, row.section.key).size
-            } else {
-                0
-            }
-            val trackingConfig = if (isTrackingCustomRow) {
-                StreamCenterPlugin.getTrackingListConfig(sharedPref, row.section.key)
-            } else {
-                null
-            }
-            val sectionLabel = if (isLiveRow) {
-                if (channelCount == 0) "Sezione TV · nessun canale" else "Sezione TV · $channelCount canali"
-            } else if (isAnimeCalendarRow) {
-                "Anime: calendario"
-            } else if (trackingConfig != null) {
-                listOfNotNull(
-                    trackingConfig.service.title,
-                    trackingConfig.mediaCategory.takeUnless { it == StreamCenterTrackingMediaCategory.ALL }?.title,
-                    trackingConfig.status.title,
-                ).joinToString(" · ")
-            } else {
-                StreamCenterPlugin.getDefaultHomeSectionTitle(row.section).substringBefore(" (")
-            }
-            var persistCount: () -> Unit = {}
-            val titleInput: EditText = input(row.title).apply {
-                filters = arrayOf(InputFilter.LengthFilter(58))
-                hint = "Es. %Giorno%, %Data%, %Mese%, %Canali%, %Totale%"
-                doAfterTextChanged {
-                    row.title = it?.toString()?.trim().orEmpty()
-                    saveRows()
-                }
-            }
-            resetOnLongPress(titleInput, "Titolo della sezione") {
-                titleInput.setText(StreamCenterPlugin.getDefaultHomeSectionTitle(row.section))
-            }
-            resetOnLongPress(rowView, StreamCenterPlugin.getDefaultHomeSectionTitle(row.section)) {
-                rowView.clearFocus()
+    private fun homeRow(index: Int, row: HomeRowState): View {
+        val key = row.section.key
+        val categoryKey = StreamCenterPlugin.homeSectionCategoryKey(row.section)
+        val accent = categoryAccent(categoryKey)
+        val isLiveRow = categoryKey == "live"
+        lateinit var views: SettingsRowViews
+        val toggle = styledSwitch(
+            row.enabled,
+            accent,
+            defaultChecked = row.section.defaultEnabled,
+            resetTitle = StreamCenterPlugin.getDefaultHomeSectionTitle(row.section),
+        ) { checked ->
+            row.enabled = checked
+            saveRows()
+            rowsContainer?.findViewWithTag<TextView>("home-category-count:$categoryKey")
+                ?.text = categorySectionsLabel(categoryKey)
+            animateRowEnabledAppearance(views.view, checked)
+        }.drivenByRow()
+        val overflow = overflowButton("Altre azioni per ${row.title}") { homeRowActions(index, row) }
+        views = settingsRow(
+            title = row.title,
+            summary = homeRowSummary(row),
+            accent = accent,
+            trailingViews = listOf(toggle, overflow),
+            touchTarget = toggle,
+            enabledAppearance = row.enabled,
+            logAction = false,
+            onReset = {
                 row.enabled = row.section.defaultEnabled
                 row.title = StreamCenterPlugin.getDefaultHomeSectionTitle(row.section)
                 row.count = row.section.defaultCount
                 saveRows()
-                renderRows()
-            }
-            val sectionLabelView = titleText(sectionLabel, 12, true).apply {
-                setTextColor(Color.parseColor(if (row.enabled) accent else COLOR_MUTED))
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            }
-            topLine.addView(sectionLabelView)
-            topLine.addView(View(requireContext()).apply {
-                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
-            })
-            topLine.addView(styledSwitch(row.enabled, accent,
-                defaultChecked = row.section.defaultEnabled,
-                resetTitle = StreamCenterPlugin.getDefaultHomeSectionTitle(row.section),
-            ) { checked ->
-                row.enabled = checked
-                saveRows()
-                rowsContainer?.findViewWithTag<TextView>("home-category-count:$categoryKey")
-                    ?.text = categorySectionsLabel(categoryKey)
-                val categoryIsOn = categoryEnabled[categoryKey] ?: true
-                sectionLabelView.setTextColor(Color.parseColor(if (checked) accent else COLOR_MUTED))
-                animateCardFill(
-                    rowView,
-                    fromColor = if (!checked && categoryIsOn) COLOR_CARD else COLOR_CARD_DISABLED,
-                    toColor = if (checked && categoryIsOn) COLOR_CARD else COLOR_CARD_DISABLED,
-                )
-                animateRowEnabledAppearance(rowView, checked)
-            }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-            val canMoveUp = adjacentCategoryIndex(index, -1) != null
-            val canMoveDown = adjacentCategoryIndex(index, 1) != null
-            topLine.addView(reorderIconButton(
-                "↑",
-                "Sposta la sezione in alto",
-                accent,
-                enabled = canMoveUp,
-            ) {
-                row.title = titleInput.text?.toString()?.trim().orEmpty()
-                persistCount()
-                moveRow(index, -1)
-            })
-            topLine.addView(reorderIconButton(
-                "↓",
-                "Sposta la sezione in basso",
-                accent,
-                enabled = canMoveDown,
-            ) {
-                row.title = titleInput.text?.toString()?.trim().orEmpty()
-                persistCount()
-                moveRow(index, 1)
-            })
-            addView(topLine)
+                rerenderCategory(categoryKey)
+            },
+        ) { toggle.toggle() }
+        views.view.tag = "home-section:$key"
+        if (isLiveRow) views.title.maxLines = 2
+        return views.view
+    }
 
-            val controls = LinearLayout(requireContext()).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            if (isLiveRow) {
-                fun liveButton(
-                    text: String,
-                    color: String,
-                    first: Boolean = false,
-                    onClick: () -> Unit,
-                ) = actionButton(text, color, onClick).apply {
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                        .apply { if (!first) marginStart = dp(8) }
-                }
-                controls.addView(liveButton(
-                    if (channelCount == 0) "Scegli canali" else "Canali",
-                    accent,
-                    first = true,
-                ) {
-                    row.title = titleInput.text?.toString()?.trim().orEmpty()
-                    showIptvChannelPicker(row.section.key)
-                })
-                if (channelCount > 0) {
-                    controls.addView(liveButton("Selezionati", accent) {
-                        row.title = titleInput.text?.toString()?.trim().orEmpty()
-                        showIptvSelectedChannels(row.section.key)
-                    })
-                }
-                controls.addView(deleteIconButton("Elimina la sezione TV") {
-                    confirmDeleteTvSection(row.section.key)
-                })
-            } else {
-                val countInput: EditText = input(row.count.toString(), widthDp = 70).apply {
-                    inputType = android.text.InputType.TYPE_CLASS_NUMBER
-                    gravity = Gravity.CENTER
-                    setSelectAllOnFocus(true)
-                    contentDescription = "Numero di titoli"
-                    doAfterTextChanged { editable ->
-                        val value = editable?.toString()?.trim().orEmpty()
-                        if (value.isEmpty() || value.any { !it.isDigit() }) return@doAfterTextChanged
-                        row.count = normalizedCount(value, row.section)
-                        saveRows()
+    private fun homeRowSummary(row: HomeRowState): String {
+        val key = row.section.key
+        if (StreamCenterPlugin.homeSectionCategoryKey(row.section) == "live") {
+            val channels = StreamCenterPlugin.getIptvSectionChannelIds(sharedPref, key).size
+            return if (channels == 0) "Nessun canale scelto" else "$channels canali"
+        }
+        val titles = "${row.count} titoli"
+        val tracking = if (key.startsWith(StreamCenterPlugin.TRACKING_CUSTOM_SECTION_PREFIX)) {
+            StreamCenterPlugin.getTrackingListConfig(sharedPref, key)
+        } else {
+            null
+        } ?: return titles
+        return listOfNotNull(
+            tracking.service.title,
+            tracking.mediaCategory.takeUnless { it == StreamCenterTrackingMediaCategory.ALL }?.title,
+            tracking.status.title,
+            titles,
+        ).joinToString(", ")
+    }
+
+    private fun homeRowActions(index: Int, row: HomeRowState): List<OverflowAction> {
+        val key = row.section.key
+        val isLiveRow = StreamCenterPlugin.homeSectionCategoryKey(row.section) == "live"
+        return buildList {
+            add(OverflowAction(if (isLiveRow) "Modifica nome" else "Modifica nome e quantità") {
+                editSection(row.section, countManagedBySource = isLiveRow)
+            })
+            when {
+                isLiveRow -> {
+                    add(OverflowAction("Scegli canali") { showIptvChannelPicker(key) })
+                    if (StreamCenterPlugin.getIptvSectionChannelIds(sharedPref, key).isNotEmpty()) {
+                        add(OverflowAction("Canali selezionati") { showIptvSelectedChannels(key) })
                     }
-                    setOnFocusChangeListener { _, hasFocus ->
-                        if (!hasFocus) {
-                            row.count = normalizedCount(text?.toString(), row.section)
-                            val normalizedText = row.count.toString()
-                            if (text?.toString() != normalizedText) setText(normalizedText)
-                            saveRows()
-                        }
-                    }
-                    (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8)
                 }
-                resetOnLongPress(countInput, "Numero di titoli") {
-                    countInput.error = null
-                    countInput.setText(row.section.defaultCount.toString())
-                }
-                controls.addView(countInput)
-                if (isAnimeCustomRow) {
-                    controls.addView(iconButton("\u270E", "Modifica i filtri della sezione", accent) {
-                        row.title = titleInput.text?.toString()?.trim().orEmpty()
-                        row.count = normalizedCount(countInput.text?.toString(), row.section)
-                        StreamCenterPlugin.updateAnimeCustomSection(
-                            sharedPref,
-                            row.section.key,
-                            StreamCenterPlugin.getAnimeCustomSectionFilters(sharedPref, row.section.key)
-                                ?: StreamCenterAnimeArchiveFilters(),
-                            row.count,
-                            row.title,
-                        )
-                        promptCreateAnimeSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                    controls.addView(deleteIconButton("Elimina la sezione") {
-                        confirmDeleteAnimeSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                }
-                if (isTvCustomRow) {
-                    controls.addView(iconButton("\u270E", "Modifica i filtri della sezione", accent) {
-                        row.title = titleInput.text?.toString()?.trim().orEmpty()
-                        row.count = normalizedCount(countInput.text?.toString(), row.section)
-                        StreamCenterPlugin.updateTvCustomSection(
-                            sharedPref,
-                            row.section.key,
-                            StreamCenterPlugin.getTvCustomSectionFilters(sharedPref, row.section.key)
-                                ?: StreamCenterTvArchiveFilters(),
-                            row.count,
-                            row.title,
-                        )
-                        promptCreateTvSeriesSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                    controls.addView(deleteIconButton("Elimina la sezione") {
-                        confirmDeleteTvSeriesSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                }
-                if (isMovieCustomRow) {
-                    controls.addView(iconButton("\u270E", "Modifica i filtri della sezione", accent) {
-                        row.title = titleInput.text?.toString()?.trim().orEmpty()
-                        row.count = normalizedCount(countInput.text?.toString(), row.section)
-                        StreamCenterPlugin.updateMovieCustomSection(
-                            sharedPref,
-                            row.section.key,
-                            StreamCenterPlugin.getMovieCustomSectionFilters(sharedPref, row.section.key)
-                                ?: StreamCenterMovieArchiveFilters(),
-                            row.count,
-                            row.title,
-                        )
-                        promptCreateMovieSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                    controls.addView(deleteIconButton("Elimina la sezione") {
-                        confirmDeleteMovieSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
-                }
-                if (isTrackingCustomRow) {
-                    if (trackingConfig?.service?.key == "simkl") {
-                        controls.addView(iconButton("\u270E", "Modifica il tipo di contenuto", accent) {
-                            promptTrackingMediaCategory(trackingConfig.service, trackingConfig.status) { category ->
-                                StreamCenterPlugin.updateTrackingMediaCategory(sharedPref, row.section.key, category)
+                key.startsWith(StreamCenterPlugin.ANIME_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Modifica filtri") { promptCreateAnimeSection(key) })
+                key.startsWith(StreamCenterPlugin.TV_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Modifica filtri") { promptCreateTvSeriesSection(key) })
+                key.startsWith(StreamCenterPlugin.MOVIE_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Modifica filtri") { promptCreateMovieSection(key) })
+                key.startsWith(StreamCenterPlugin.TRACKING_CUSTOM_SECTION_PREFIX) -> {
+                    val tracking = StreamCenterPlugin.getTrackingListConfig(sharedPref, key)
+                    if (tracking?.service?.key == "simkl") {
+                        add(OverflowAction("Tipo di contenuto") {
+                            promptTrackingMediaCategory(tracking.service, tracking.status) { category ->
+                                StreamCenterPlugin.updateTrackingMediaCategory(sharedPref, key, category)
                                 loadRows()
                                 renderRows()
                                 saveToast("Tipo di contenuto aggiornato")
                             }
-                        }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
+                        })
                     }
-                    controls.addView(deleteIconButton("Elimina la lista") {
-                        confirmDeleteTrackingSection(row.section.key)
-                    }.apply { (layoutParams as LinearLayout.LayoutParams).marginStart = dp(8) })
                 }
-                persistCount = { row.count = normalizedCount(countInput.text?.toString(), row.section) }
             }
-            if (isLiveRow) {
-                addView(titleInput.apply { layoutParams = verticalParams(top = 10) })
-                addView(controls.apply { layoutParams = verticalParams(top = 10) })
-            } else {
-                val titleAndCountRow = LinearLayout(requireContext()).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    layoutParams = verticalParams(top = 10)
-                }
-                titleAndCountRow.addView(titleInput.apply {
-                    layoutParams = LinearLayout.LayoutParams(
-                        0,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        1f,
-                    ).apply { marginEnd = dp(2) }
-                })
-                titleAndCountRow.addView(controls)
-                addView(titleAndCountRow)
+            add(OverflowAction("Sposta su", enabled = adjacentCategoryIndex(index, -1) != null) { moveRow(index, -1) })
+            add(OverflowAction("Sposta giù", enabled = adjacentCategoryIndex(index, 1) != null) { moveRow(index, 1) })
+            when {
+                isLiveRow -> add(OverflowAction("Elimina") { confirmDeleteTvSection(key) })
+                key.startsWith(StreamCenterPlugin.ANIME_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Elimina") { confirmDeleteAnimeSection(key) })
+                key.startsWith(StreamCenterPlugin.TV_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Elimina") { confirmDeleteTvSeriesSection(key) })
+                key.startsWith(StreamCenterPlugin.MOVIE_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Elimina") { confirmDeleteMovieSection(key) })
+                key.startsWith(StreamCenterPlugin.TRACKING_CUSTOM_SECTION_PREFIX) ->
+                    add(OverflowAction("Elimina") { confirmDeleteTrackingSection(key) })
             }
         }
     }
@@ -733,7 +543,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         val target = adjacentCategoryIndex(index, direction) ?: return
         rows[index] = rows[target].also { rows[target] = rows[index] }
         saveRows()
-        renderRows()
+        rerenderCategory(StreamCenterPlugin.homeSectionCategoryKey(rows[target].section))
     }
 
     private fun maxCountFor(section: StreamCenterHomeSectionDefinition): Int {
@@ -864,6 +674,19 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         }
     }
 
+    private fun filterField(accent: String, height: Int): TextView {
+        return TextView(requireContext()).apply {
+            textSize = 13f
+            setTextColor(Color.parseColor(COLOR_TEXT))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
+            layoutParams = verticalParams(top = 8).apply { this.height = height }
+            isClickable = true
+            isFocusable = true
+        }
+    }
+
     private fun ScrollView.enableTvFocusScrolling() {
         val scroll = this
         descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -921,6 +744,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         if (!StreamCenterVpnGuard.canUseInternet(sharedPref)) return
         CoroutineScope(Dispatchers.IO).launch {
             val iconUrls = STREAMING_COMMUNITY_SERVICE_OPTIONS
+                .filterNot { StreamCenterBundledLogos.covers(it.websiteUrl) }
                 .mapNotNull { service ->
                     StreamCenterSiteIcons.cached(service.websiteUrl)
                         ?: runCatching { StreamCenterSiteIcons.resolve(service.websiteUrl) }.getOrNull()
@@ -1114,7 +938,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     icon = if (selected) "✓" else "+",
                     accent = accent,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = if (selected) accent else tint(accent, "55"),
+                    strokeColor = if (selected) accent else COLOR_STROKE,
                     topMargin = if (index == 0) 0 else 8,
                 ) {
                     if (!selectedGenreIds.add(genre.first)) selectedGenreIds.remove(genre.first)
@@ -1310,15 +1134,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             currentValue: () -> String?,
             onSelected: (String?) -> Unit,
         ): TextView {
-            return TextView(ctx).apply {
+            return filterField(accent, filterRowHeight).apply {
                 val any = "Qualsiasi"
                 text = filterText(label, currentValue() ?: any)
-                textSize = 13f
-                setTextColor(Color.parseColor(COLOR_TEXT))
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
-                layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 setOnClickListener {
                     val searchInput = input("").apply {
                         hint = "Cerca ${label.lowercase(Locale.ITALIAN)}"
@@ -1344,7 +1162,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                                     icon = filterChoiceBadge(label, option),
                                     accent = accent,
                                     fillColor = COLOR_CARD_ALT,
-                                    strokeColor = if (selected) accent else tint(accent, "55"),
+                                    strokeColor = if (selected) accent else COLOR_STROKE,
                                     topMargin = if (index == 0) 0 else 8,
                                 ) {
                                     text = filterText(label, option ?: any)
@@ -1407,7 +1225,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                                     icon = filterChoiceBadge(label, entry?.second),
                                     accent = accent,
                                     fillColor = COLOR_CARD_ALT,
-                                    strokeColor = if (selected) accent else tint(accent, "55"),
+                                    strokeColor = if (selected) accent else COLOR_STROKE,
                                     topMargin = if (index == 0) 0 else 8,
                                 ) {
                                     onSelected(entry?.first)
@@ -1439,14 +1257,8 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         fun scoreChoice(): TextView {
             val label = "Valutazione minima"
             val any = "Qualsiasi"
-            return TextView(ctx).apply {
+            return filterField(accent, filterRowHeight).apply {
                 text = filterText(label, minimumScore?.toString() ?: any)
-                textSize = 13f
-                setTextColor(Color.parseColor(COLOR_TEXT))
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
-                layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 setOnClickListener {
                     lateinit var picker: AlertDialog
                     val keypad = LinearLayout(ctx).apply {
@@ -1502,14 +1314,8 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             fun selectedService(): StreamingServiceOption? = service?.let { selectedKey ->
                 services.firstOrNull { it.key == selectedKey }
             }
-            return TextView(ctx).apply {
+            return filterField(accent, filterRowHeight).apply {
                 text = filterText(label, selectedService()?.title ?: any)
-                textSize = 13f
-                setTextColor(Color.parseColor(COLOR_TEXT))
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
-                layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 setOnClickListener {
                     val rows = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
                     val scroll = ScrollView(ctx).apply {
@@ -1528,10 +1334,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                             title = option?.title ?: any,
                             accent = accent,
                             fillColor = COLOR_CARD_ALT,
-                            strokeColor = if (selected) accent else tint(accent, "55"),
+                            strokeColor = if (selected) accent else COLOR_STROKE,
                             leadingView = option?.let {
-                                streamingServiceSiteBadge(it, accent, size = 42, marginEnd = 12)
-                            } ?: iconBadge("•", accent, size = 42, marginEnd = 12),
+                                streamingServiceSiteBadge(it, accent, size = 36, marginEnd = 12)
+                            } ?: iconBadge("•", accent, size = 36, marginEnd = 12),
                             topMargin = if (index == 0) 0 else 8,
                         ) {
                             service = option?.key
@@ -1829,15 +1635,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             interactive: Boolean = true,
             onSelected: (String?) -> Unit,
         ): TextView {
-            return TextView(ctx).apply {
+            return filterField(accent, filterRowHeight).apply {
                 val any = "Qualsiasi"
                 text = filterText(label, currentValue() ?: any)
-                textSize = 13f
-                setTextColor(Color.parseColor(COLOR_TEXT))
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(10), dp(14), dp(10))
-                background = interactiveBackground(COLOR_INPUT_FILL, accent, 12, COLOR_STROKE)
-                layoutParams = verticalParams(top = 8).apply { height = filterRowHeight }
                 if (interactive) {
                     setOnClickListener {
                         val labels = listOf(any) + options
@@ -2061,7 +1861,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     icon = if (pendingGenreIds.isEmpty()) "✓" else "×",
                     accent = accent,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = if (pendingGenreIds.isEmpty()) accent else tint(accent, "55"),
+                    strokeColor = if (pendingGenreIds.isEmpty()) accent else COLOR_STROKE,
                 ) {
                     pendingGenreIds.clear()
                     renderGenres(searchInput.text?.toString().orEmpty())
@@ -2083,7 +1883,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                         icon = if (selected) "✓" else "+",
                         accent = accent,
                         fillColor = COLOR_CARD_ALT,
-                        strokeColor = if (selected) accent else tint(accent, "55"),
+                        strokeColor = if (selected) accent else COLOR_STROKE,
                         topMargin = 8,
                     ) {
                         if (!pendingGenreIds.add(genre.first)) pendingGenreIds.remove(genre.first)
@@ -2299,7 +2099,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = verticalParams(top = 8)
-            addView(actionButton("+ Aggiungi lista di tracciamento", categoryAccent("tracking")) {
+            addView(actionButton("Aggiungi lista di tracciamento", categoryAccent("tracking")) {
                 promptCreateTrackingSection()
             })
         }
@@ -2341,7 +2141,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 summary = if (connected) "Collegato" else "Non collegato nelle impostazioni di CloudStream",
                 accent = accent,
                 fillColor = if (connected) COLOR_CARD_ALT else COLOR_CARD_DISABLED,
-                strokeColor = if (connected) tint(accent, "66") else COLOR_STROKE,
                 leadingView = trackingServiceSiteBadge(service),
                 trailingViews = if (connected) listOf(arrow) else emptyList(),
                 topMargin = 8,
@@ -2377,7 +2176,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         val catalog = StreamCenterCatalogs.catalogs.firstOrNull { it.key == service.key }
         return catalog?.let { catalogSiteBadge(it, marginEnd = 12) } ?: siteIconBadge(
             fallback = service.title.take(1),
-            accent = COLOR_CATALOGS,
+            accent = COLOR_ACCENT,
             contentDescription = "Icona di ${service.title}",
             size = CATALOG_ICON_SIZE_DP,
             marginEnd = 12,
@@ -2401,8 +2200,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 title = status.title,
                 accent = accent,
                 fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(accent, "66"),
-                leadingView = iconBadge(trackingListBadge(status), accent, size = 42, marginEnd = 12),
+                leadingView = iconBadge(trackingListBadge(status), accent, size = 36, marginEnd = 12),
                 trailingViews = listOf(arrow),
                 topMargin = 8,
                 touchTarget = arrow,
@@ -2414,7 +2212,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         }
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle(
-                if (service.key == "simkl") "${service.title} · ${mediaCategory.title}" else service.title,
+                if (service.key == "simkl") "${service.title}, ${mediaCategory.title}" else service.title,
                 accent,
             ))
             .setView(content)
@@ -2458,7 +2256,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     title = category.title,
                     accent = accent,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = tint(accent, "66"),
                     trailingViews = listOf(arrow),
                     topMargin = 8,
                     touchTarget = arrow,
@@ -2473,7 +2270,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             }
         dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle(
-                if (status == null) "SIMKL · Tipo di contenuto" else "SIMKL · ${status.title}",
+                if (status == null) "SIMKL, Tipo di contenuto" else "SIMKL, ${status.title}",
                 accent,
             ))
             .setView(content)
@@ -2576,7 +2373,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             if (catalogs.isEmpty()) {
-                addView(emptyStateCard("Nessun Catalogo", COLOR_CATALOGS))
+                addView(emptyStateCard("Nessun Catalogo", COLOR_ACCENT))
             } else {
                 catalogs.forEach { catalog -> addView(catalogCard(catalog)) }
             }
@@ -2584,7 +2381,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
     }
 
     private fun catalogCard(catalog: StreamCenterCatalogDefinition): LinearLayout {
-        val accent = COLOR_CATALOGS
+        val accent = COLOR_ACCENT
         val modifyButton = iconButton("\u270E", "Modifica ${catalog.title}", accent) {
             promptCatalogSections(catalog)
         }
@@ -2595,7 +2392,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             title = catalog.title,
             accent = accent,
             fillColor = COLOR_CARD,
-            strokeColor = tint(accent, "66"),
             leadingView = catalogSiteBadge(catalog, marginEnd = 12),
             trailingViews = listOf(modifyButton, deleteButton),
             topMargin = 8,
@@ -2615,7 +2411,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = verticalParams(top = 8)
-            addView(actionButton("+ Aggiungi Catalogo", COLOR_CATALOGS) {
+            addView(actionButton("Aggiungi catalogo", COLOR_ACCENT) {
                 promptCreateCatalog()
             })
         }
@@ -2623,7 +2419,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
 
     private fun promptCreateCatalog() {
         val ctx = context ?: return
-        val accent = COLOR_CATALOGS
+        val accent = COLOR_ACCENT
         val list = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(8))
@@ -2635,7 +2431,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 title = catalog.title,
                 accent = accent,
                 fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(accent, "66"),
                 leadingView = catalogSiteBadge(catalog, marginEnd = 12),
                 trailingViews = listOf(arrow),
                 topMargin = 8,
@@ -2650,7 +2445,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             title = "Stremio",
             accent = COLOR_STREMIO,
             fillColor = COLOR_CARD_ALT,
-            strokeColor = tint(COLOR_STREMIO, "66"),
             leadingView = siteIconBadge(
                 fallback = "🔌",
                 accent = COLOR_STREMIO,
@@ -2781,7 +2575,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
 
     private fun promptCatalogSections(catalog: StreamCenterCatalogDefinition) {
         val ctx = context ?: return
-        val accent = COLOR_CATALOGS
+        val accent = COLOR_ACCENT
         val configured = StreamCenterCatalogs.isConfigured(sharedPref, catalog)
         val orderedSections = StreamCenterCatalogs.orderedSections(sharedPref, catalog).toMutableList()
         val selectedKeys = if (configured) {
@@ -2808,18 +2602,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 ) { enabled ->
                     if (available) {
                         if (enabled) selectedKeys += section.key else selectedKeys -= section.key
-                        val targetAlpha = if (enabled) 1f else 0.55f
-                        if (reduceMotion) {
-                            sectionRow.view.alpha = targetAlpha
-                        } else {
-                            sectionRow.view.animate().cancel()
-                            sectionRow.view.animate().alpha(targetAlpha).setDuration(220L).start()
-                        }
+                        animateViewAlpha(sectionRow.view, if (enabled) 1f else 0.55f)
                         animateCardFill(
                             sectionRow.view,
                             fromColor = if (enabled) COLOR_CARD_DISABLED else COLOR_CARD_ALT,
                             toColor = if (enabled) COLOR_CARD_ALT else COLOR_CARD_DISABLED,
-                            strokeColor = tint(accent, "55"),
                         )
                         typeView.setTextColor(Color.parseColor(if (enabled) accent else COLOR_MUTED))
                     }
@@ -2861,7 +2648,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     title = section.title,
                     accent = if (available) accent else COLOR_STROKE,
                     fillColor = if (selected) COLOR_CARD_ALT else COLOR_CARD_DISABLED,
-                    strokeColor = if (available) tint(accent, "55") else COLOR_STROKE,
                     summaryView = typeView,
                     trailingViews = listOf(moveUp, moveDown, sectionSwitch),
                     topMargin = 8,
@@ -2930,19 +2716,42 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
     }
 
     private fun confirmDeleteCatalog(catalog: StreamCenterCatalogDefinition) {
-        val dialog = AlertDialog.Builder(requireContext())
+        val linkedSource = catalog.stremioAddon?.let { addon ->
+            StreamCenterPlugin.getStremioAddons(sharedPref).firstOrNull { it.key == addon.key }
+        }
+        fun removeCatalog() {
+            StreamCenterCatalogs.removeCatalog(sharedPref, catalog)
+            StreamCenterPlugin.refreshCatalogs()
+            loadRows()
+            renderRows()
+        }
+        val builder = AlertDialog.Builder(requireContext())
             .setCustomTitle(dialogTitle("Elimina Catalogo"))
-            .setMessage("Vuoi rimuovere ${catalog.title}?")
-            .setPositiveButton("Elimina") { _, _ ->
-                StreamCenterCatalogs.removeCatalog(sharedPref, catalog)
-                loadRows()
-                renderRows()
-                saveToast("Catalogo ${catalog.title} eliminato")
-            }
             .setNegativeButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
+        if (linkedSource == null) {
+            builder
+                .setMessage("Vuoi rimuovere ${catalog.title}?")
+                .setPositiveButton("Elimina") { _, _ ->
+                    removeCatalog()
+                    saveToast("Catalogo ${catalog.title} eliminato")
+                }
+        } else {
+            builder
+                .setMessage(
+                    "${catalog.title} è configurato anche come Fonte Streaming. " +
+                        "Vuoi eliminare anche la Fonte?",
+                )
+                .setPositiveButton("Elimina entrambi") { _, _ ->
+                    StreamCenterPlugin.removeStremioAddon(sharedPref, linkedSource.key)
+                    removeCatalog()
+                    saveToast("${catalog.title} eliminato da Cataloghi e Fonti")
+                }
+                .setNeutralButton("Solo Catalogo") { _, _ ->
+                    removeCatalog()
+                    saveToast("Catalogo ${catalog.title} eliminato")
+                }
+        }
+        showCompactActionDialog(builder.create())
     }
 
     private fun tvEmptyState(): LinearLayout {
@@ -2972,15 +2781,15 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             addView(
                 actionButton(
                     if (customCount == 0) {
-                        "📺 Liste IPTV personalizzate"
+                        "Liste IPTV personalizzate"
                     } else {
-                        "📺 Liste IPTV personalizzate · $customCount"
+                        "Liste IPTV personalizzate ($customCount)"
                     },
-                    tvPresetAccent("custom"),
+                    COLOR_ACCENT,
                 ) { showIptvPlaylistManager() }.apply { layoutParams = verticalParams(top = 8) },
             )
             if (hasChannels) {
-                addView(actionButton("Testa i canali", COLOR_SUCCESS) {
+                addView(actionButton("Testa i canali", COLOR_ACCENT) {
                     testSelectedIptvChannels()
                 }.apply { layoutParams = verticalParams(top = 8) })
             }
@@ -2989,7 +2798,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
 
     private fun customPlaylistSourceLabel(playlist: StreamCenterIptv.CustomPlaylist): String {
         return when {
-            !playlist.content.isNullOrBlank() -> "Contenuto salvato · ${playlist.content.lineSequence().count()} righe"
+            !playlist.content.isNullOrBlank() -> "Contenuto salvato, ${playlist.content.lineSequence().count()} righe"
             !playlist.url.isNullOrBlank() -> runCatching { Uri.parse(playlist.url).host }.getOrNull() ?: playlist.url
             else -> "—"
         }
@@ -3006,7 +2815,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         fun rebuild() {
             listContainer.removeAllViews()
             listContainer.addView(
-                actionButton("+ Aggiungi lista", accent) {
+                actionButton("Aggiungi lista", accent) {
                     promptIptvPlaylist(null) { rebuild() }
                 }.apply { layoutParams = verticalParams() },
             )
@@ -3026,7 +2835,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                     icon = "📺",
                     accent = accent,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = tint(accent, "66"),
                     summaryView = bodyText(customPlaylistSourceLabel(playlist), 12),
                     trailingViews = listOf(delete),
                     topMargin = 8,
@@ -3072,11 +2880,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
             layoutParams = verticalParams(top = 8)
         }
-        val fileButton = actionButton("📁 Importa file .m3u", categoryAccent("live")) {
+        val fileButton = actionButton("Importa file .m3u", categoryAccent("live")) {
             pendingPlaylistFileCallback = { text ->
                 contentInput.setText(text)
                 urlInput.setText("")
-                saveToast("File importato · ${text.lineSequence().count()} righe")
+                saveToast("File importato, ${text.lineSequence().count()} righe")
             }
             runCatching { iptvPlaylistFilePicker.launch(arrayOf("*/*")) }
                 .onFailure { saveToast("Impossibile aprire il selettore file") }
@@ -3087,12 +2895,12 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             IPTV_LANGUAGE_OPTIONS.firstOrNull { it.second == selectedLanguage }?.first
                 ?: (selectedLanguage ?: "Nessuna")
         lateinit var languageButton: TextView
-        languageButton = actionButton("🌐 Lingua: ${languageLabel()}", categoryAccent("live")) {
+        languageButton = actionButton("Lingua: ${languageLabel()}", categoryAccent("live")) {
             val picker = AlertDialog.Builder(ctx)
                 .setCustomTitle(dialogTitle("Lingua dei canali"))
                 .setItems(IPTV_LANGUAGE_OPTIONS.map { it.first }.toTypedArray()) { pickerDialog, which ->
                     selectedLanguage = IPTV_LANGUAGE_OPTIONS[which].second
-                    languageButton.text = "🌐 Lingua: ${languageLabel()}"
+                    languageButton.text = "Lingua: ${languageLabel()}"
                     pickerDialog.dismiss()
                 }
                 .create()
@@ -3137,7 +2945,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 existing.key
             }
             dialog.dismiss()
-            saveToast(if (existing == null) "Lista aggiunta · rilevo le categorie…" else "Lista aggiornata · rilevo le categorie…")
+            saveToast(if (existing == null) "Lista aggiunta, rilevo le categorie…" else "Lista aggiornata, rilevo le categorie…")
             onSaved()
             key?.let { discoverIptvPlaylistCatalog(it) }
         }
@@ -3157,7 +2965,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 if (categories.isEmpty()) {
                     saveToast("Lista senza canali validi o non raggiungibile")
                 } else {
-                    saveToast("Catalogo creato · ${categories.size} categorie")
+                    saveToast("Catalogo creato, ${categories.size} categorie")
                 }
             }
         }
@@ -3189,14 +2997,13 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             setPadding(dp(18), dp(8), dp(18), dp(4))
         }
         StreamCenterIptv.presets.forEach { preset ->
-            val presetAccent = tvPresetAccent(preset.key)
+            val presetAccent = COLOR_ACCENT
             val arrow = chevron(presetAccent)
             presetList.addView(settingsRow(
                 title = preset.title,
                 icon = preset.icon,
                 accent = presetAccent,
                 fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(presetAccent, "72"),
                 trailingViews = listOf(arrow),
                 topMargin = 8,
                 touchTarget = arrow,
@@ -3212,17 +3019,6 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             .create()
         applyDialogBackdrop(dialog)
         dialog.show()
-    }
-
-    private fun tvPresetAccent(key: String): String {
-        return when (key) {
-            "rai" -> "#60A5FA"
-            "mediaset" -> "#FB923C"
-            "discovery" -> "#34D399"
-            "sky" -> "#A78BFA"
-            "la7" -> "#FACC15"
-            else -> categoryAccent("live")
-        }
     }
 
     private fun createTvSectionFromPreset(preset: StreamCenterIptv.Preset) {
@@ -3513,7 +3309,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                 }
                 val selectedCount = selected.count { it.startsWith("${region.key}:") }
                 SpannableString("${region.name} $channelCount" + when {
-                    selectedCount > 0 -> " · $selectedCount selezionati"
+                    selectedCount > 0 -> ", $selectedCount selezionati"
                     else -> ""
                 }).apply {
                     val countStart = region.name.length + 1
@@ -3542,7 +3338,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         renderList("")
 
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Regione o categoria · ${tvSectionTitle(sectionKey)}"))
+            .setCustomTitle(dialogTitle("Regione o categoria: ${tvSectionTitle(sectionKey)}"))
             .setView(container)
             .setNegativeButton("Chiudi", null)
             .create()
@@ -3585,7 +3381,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
             withContext(Dispatchers.Main) {
                 if (channels.isEmpty()) {
                     AlertDialog.Builder(requireContext())
-                        .setCustomTitle(dialogTitle("TV · ${region.name}"))
+                        .setCustomTitle(dialogTitle("TV: ${region.name}"))
                         .setMessage("Nessun canale disponibile o playlist non raggiungibile.")
                         .setPositiveButton("OK", null)
                         .show()
@@ -3622,9 +3418,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         fun updateCounter() {
             val inRegion = selected.count { it.startsWith("${region.key}:") }
             counter.text = when {
-                visible.isEmpty() -> "Nessun canale trovato · $inRegion selezionati"
+                visible.isEmpty() -> "Nessun canale trovato, $inRegion selezionati"
                 selected.isEmpty() -> "${visible.size} canali disponibili"
-                else -> "${visible.size} canali · $inRegion selezionati qui · ${selected.size} in totale"
+                else -> "${visible.size} canali, $inRegion selezionati qui, ${selected.size} in totale"
             }
             val allRegionSelected = regionChannelIds.isNotEmpty() && regionChannelIds.all(selected::contains)
             selectAllButton.text = if (allRegionSelected) {
@@ -3690,7 +3486,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         renderList("")
 
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("${tvSectionTitle(sectionKey)} · ${region.name}"))
+            .setCustomTitle(dialogTitle("${tvSectionTitle(sectionKey)}: ${region.name}"))
             .setView(container)
             .setPositiveButton("Salva") { _, _ ->
                 saveIptvSelection(selected, sectionKey)
@@ -3787,7 +3583,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
                         }
                     })
                     val entryActionButton = if (entry.removed) {
-                        iconButton("↩", "Ripristina ${entry.name}", COLOR_SUCCESS, size = 30) {
+                        iconButton("↩", "Ripristina ${entry.name}", COLOR_ACCENT, size = 30) {
                             entry.removed = false
                             renderEntries()
                         }
@@ -3817,7 +3613,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterCardSettingsFragment() {
         renderEntries()
 
         val dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Selezionati · ${tvSectionTitle(sectionKey)}"))
+            .setCustomTitle(dialogTitle("Selezionati: ${tvSectionTitle(sectionKey)}"))
             .setView(container)
             .setPositiveButton("Salva") { _, _ ->
                 val kept = entries.filterNot { it.removed }.map { it.id }

@@ -49,6 +49,8 @@ internal object StreamCenterCatchUp {
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryAfter = mutableMapOf<String, Long>()
     private var refreshJob: Job? = null
+    private var watchingJob: Job? = null
+    private val seriesTypes = setOf(TvType.TvSeries, TvType.Anime, TvType.AsianDrama, TvType.Cartoon)
     private var refreshAccount: String? = null
     private var loadedGeneration = -1L
 
@@ -154,20 +156,38 @@ internal object StreamCenterCatchUp {
             if (refreshAccount == account) return refreshJob
             refreshJob?.cancel()
         }
+        val pending = pendingLoads(account, candidates, force = false)
+        if (pending.isEmpty()) return null
+        refreshAccount = account
+        return launchLoads(account, pending).also { refreshJob = it }
+    }
+
+    @Synchronized
+    fun refreshWatching(force: Boolean): Job? {
+        if (watchingJob?.isActive == true) return watchingJob
+        restoreSnapshots()
+        val account = DataStoreHelper.currentAccount
+        val pending = pendingLoads(account, watchingCandidates(), force)
+        if (pending.isEmpty()) return null
+        return launchLoads(account, pending).also { watchingJob = it }
+    }
+
+    private fun pendingLoads(account: String, candidates: List<Candidate>, force: Boolean): List<Triple<Candidate, DubStatus?, String>> {
         val now = System.currentTimeMillis()
         retryAfter.entries.removeAll { it.value <= now }
-        val pending = candidates.mapNotNull { candidate ->
+        return candidates.mapNotNull { candidate ->
             val dub = DataStoreHelper.getDub(candidate.id)
             val key = key(account, candidate.card.apiName, candidate.id, dub, candidate.card.url)
-            if (snapshots[key]?.let { now - it.fetchedAt < REFRESH_AFTER_MS } == true || key in retryAfter) null
-            else Triple(candidate, dub, key)
+            val fresh = snapshots[key]?.let { now - it.fetchedAt < REFRESH_AFTER_MS } == true
+            if (!force && (fresh || key in retryAfter)) null else Triple(candidate, dub, key)
         }.sortedByDescending { (candidate) ->
             DataStoreHelper.getResultWatchState(candidate.id) == WatchType.WATCHING ||
                 DataStoreHelper.getLastWatched(candidate.id) != null
         }
-        if (pending.isEmpty()) return null
+    }
+
+    private fun launchLoads(account: String, pending: List<Triple<Candidate, DubStatus?, String>>): Job {
         val generation = loadedGeneration
-        refreshAccount = account
         return backgroundScope.launch {
             withTimeoutOrNull(60_000L) {
                 pending.mapChunkedParallel(3) { (candidate, dub, key) ->
@@ -184,7 +204,66 @@ internal object StreamCenterCatchUp {
                     }
                 }
             }
-        }.also { refreshJob = it }
+        }
+    }
+
+    private fun watchingCandidates(): List<Candidate> = DataStoreHelper.getAllBookmarkedData()
+        .mapNotNull { item ->
+            val id = item.id ?: return@mapNotNull null
+            if (DataStoreHelper.getResultWatchState(id) != WatchType.WATCHING) return@mapNotNull null
+            if (item.type !in seriesTypes) return@mapNotNull null
+            Candidate(id, item, DataStoreHelper.getLastWatched(id)?.updateTime ?: item.latestUpdatedTime)
+        }
+        .distinctBy { it.card.apiName to it.id }
+
+    fun watching(): List<WatchingSeries> {
+        restoreSnapshots()
+        val account = DataStoreHelper.currentAccount
+        val now = System.currentTimeMillis()
+        return watchingCandidates()
+            .map { candidate -> watchingSeries(account, candidate, now) }
+            .sortedByDescending { it.lastWatchedAt }
+    }
+
+    private fun watchingSeries(account: String, candidate: Candidate, now: Long): WatchingSeries {
+        val cached = synchronized(this) {
+            snapshots[key(account, candidate.card.apiName, candidate.id, DataStoreHelper.getDub(candidate.id), candidate.card.url)]
+        }
+        val pending = WatchingSeries(candidate.card, candidate.updatedAt)
+        val episodes = cached?.episodes?.filter { it.season != 0 }?.takeIf { it.isNotEmpty() } ?: return pending
+        val lastAired = episodes.indexOfLast { it.dateMillis != null && it.dateMillis <= now }
+        val undated = episodes.none { it.dateMillis != null }
+        val released = episodes.filterIndexed { index, episode ->
+            episode.dateMillis?.let { it <= now } ?: (undated || index < lastAired)
+        }
+        val progress = released.map { progressFor(it.id) }
+        val resume = DataStoreHelper.getLastWatched(candidate.id)
+        val resumeIndex = resume?.episodeId?.let { id -> released.indexOfFirst { it.id == id } } ?: -1
+        val furthest = maxOf(
+            progress.indexOfLast { it.completed },
+            if (resumeIndex >= 0 && progress[resumeIndex].completed) resumeIndex else -1,
+        )
+        val inProgress = released.getOrNull(resumeIndex)
+            ?.takeIf { resumeIndex > furthest && progress[resumeIndex].position > 0L }
+        val releasedIndex = released.withIndex().associate { (index, episode) -> episode.id to index }
+        val focus = released.getOrNull(furthest + 1) ?: released.lastOrNull() ?: episodes.first()
+        return pending.copy(
+            known = true,
+            lastWatched = released.getOrNull(furthest),
+            inProgress = inProgress,
+            released = released.size,
+            missing = released.size - (furthest + 1),
+            season = focus.season,
+            seasonEpisodes = episodes.filter { it.season == focus.season }.map { episode ->
+                val index = releasedIndex[episode.id]
+                when {
+                    index == null -> WatchingEpisodeState.UPCOMING
+                    index <= furthest -> WatchingEpisodeState.WATCHED
+                    else -> WatchingEpisodeState.AVAILABLE
+                }
+            },
+            nextAirDate = episodes.mapNotNull { it.dateMillis }.filter { it > now }.minOrNull(),
+        )
     }
 
     private suspend fun candidates(): List<Candidate> {
@@ -206,18 +285,33 @@ internal object StreamCenterCatchUp {
         }
         return (library + history).sortedByDescending { it.updatedAt }
             .distinctBy { it.card.apiName to it.id }
-            .filter { it.card.type in setOf(TvType.TvSeries, TvType.Anime, TvType.AsianDrama, TvType.Cartoon) }
+            .filter { it.card.type in seriesTypes }
             .filter { DataStoreHelper.getResultWatchState(it.id) !in setOf(WatchType.DROPPED, WatchType.PLANTOWATCH) }
     }
 }
 
-internal data class CatchUpEpisode(val id: Int, val season: Int?, val dateMillis: Long?)
+internal data class CatchUpEpisode(val id: Int, val season: Int?, val dateMillis: Long?, val episode: Int? = null)
 internal data class CatchUpProgress(val markedWatched: Boolean, val position: Long, val duration: Long) {
     val completed: Boolean get() = markedWatched || (duration > 0 && position.toDouble() / duration >= 0.95)
 }
 
+internal enum class WatchingEpisodeState { WATCHED, AVAILABLE, UPCOMING }
+
+internal data class WatchingSeries(
+    val card: SearchResponse,
+    val lastWatchedAt: Long,
+    val known: Boolean = false,
+    val lastWatched: CatchUpEpisode? = null,
+    val inProgress: CatchUpEpisode? = null,
+    val released: Int = 0,
+    val missing: Int = 0,
+    val season: Int? = null,
+    val seasonEpisodes: List<WatchingEpisodeState> = emptyList(),
+    val nextAirDate: Long? = null,
+)
+
 internal fun catchUpEpisodes(response: LoadResponse, parentId: Int, preferredDub: DubStatus?): List<CatchUpEpisode> {
-    fun Episode.snapshot(id: Int) = CatchUpEpisode(id, season, date)
+    fun Episode.snapshot(id: Int) = CatchUpEpisode(id, season, date, episode)
     return when (response) {
         is TvSeriesLoadResponse -> response.episodes.sortedBy {
             (it.season?.times(10_000) ?: 0) + (it.episode ?: 0)

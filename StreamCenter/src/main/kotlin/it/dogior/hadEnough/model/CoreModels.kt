@@ -54,6 +54,14 @@ internal data class StreamCenterPlaybackData(
     val animeSeason: AnimeSeasonPlayback? = null,
 )
 
+internal data class DirectPlaybackTarget(
+    val type: String,
+    val tmdbId: Int?,
+    val imdbId: String?,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
+)
+
 internal data class ResolvedLoadSources(
     val animeUnitySources: List<AnimeUnityTitleSources> = emptyList(),
     val animeWorldSources: List<AnimeWorldTitleSources> = emptyList(),

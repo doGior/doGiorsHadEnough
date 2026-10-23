@@ -37,6 +37,7 @@ internal object StreamCenterLocalSyncStorage {
     )
 
     private val nonTransferableKeyParts = listOf(
+        "tmdbApiCredential",
         "anilist_cached_list",
         "mal_cached_list",
         "kitsu_cached_list",
@@ -503,6 +504,7 @@ internal object StreamCenterLocalSyncStorage {
         }
         if (StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories) {
             StreamCenterConfigurationStore.replace(streamCenter, streamCenterValues)
+            runCatching { it.dogior.hadEnough.StreamCenterPlugin.refreshCatalogs() }
         }
     }
 

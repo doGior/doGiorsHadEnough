@@ -3,6 +3,7 @@ package it.dogior.hadEnough.settings
 import android.content.Context
 import android.content.SharedPreferences
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbCredential
 import it.dogior.hadEnough.util.StreamCenterLogger
 
 internal object StreamCenterConfigurationStore {
@@ -25,7 +26,8 @@ internal object StreamCenterConfigurationStore {
                 null -> return@mapNotNull null
                 else -> throw IllegalArgumentException("Tipo non supportato per la preferenza $key.")
             }
-            val excluded = StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue) ||
+            val excluded = StreamCenterTmdbCredential.isDeviceOnly(key) ||
+                StreamCenterPlugin.isDefaultTorrentPreference(key, portableValue) ||
                 StreamCenterPlugin.isDefaultHomePreference(key, portableValue) ||
                 StreamCenterPlugin.isDefaultVpnRequirementPreference(key, portableValue) ||
                 StreamCenterLogger.isDefaultRetentionPreference(key, portableValue)
@@ -48,7 +50,8 @@ internal object StreamCenterConfigurationStore {
     }
 
     private fun write(preferences: SharedPreferences, values: Map<String, Any>) {
-        val editor = preferences.edit().clear()
+        val editor = preferences.edit()
+        preferences.all.keys.filterNot(StreamCenterTmdbCredential::isDeviceOnly).forEach(editor::remove)
         values.forEach { (key, value) ->
             when (value) {
                 is String -> editor.putString(key, value)

@@ -31,7 +31,7 @@ fun resolveBuildCompletedAtRome(): String {
 val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
-version = 11
+version = 12
 val pluginVersion = version.toString()
 
 cloudstream {
@@ -57,11 +57,31 @@ cloudstream {
 }
 
 android {
+    ndkVersion = "28.2.13676358"
+
     buildFeatures {
         buildConfig = true
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+    }
+
     defaultConfig {
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    "-DSTREAMCENTER_DEPS_DIR=${layout.buildDirectory.dir("libass-sources").get().asFile.invariantSeparatorsPath}",
+                )
+            }
+        }
         buildConfigField("String", "PLUGIN_VERSION", escapeBuildConfigString(pluginVersion))
         buildConfigField("String", "BUILD_COMMIT_SHA", escapeBuildConfigString(buildCommitSha))
         buildConfigField(
@@ -73,7 +93,24 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
     compileOnly("io.coil-kt.coil3:coil:3.3.0")
+    compileOnly("androidx.media3:media3-exoplayer:1.9.3")
+    compileOnly("androidx.media3:media3-extractor:1.9.3")
+    compileOnly("androidx.media3:media3-ui:1.9.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
+}
+
+tasks.withType<Zip>().matching { it.name == "make" }.configureEach {
+    from(tasks.named("stripDebugDebugSymbols")) {
+        include("**/libstreamcenter_ass.so")
+        eachFile { path = "libass/" + relativePath.segments.takeLast(2).joinToString("/") }
+        includeEmptyDirs = false
+    }
+    from("logos") {
+        include("*.png")
+        into("logos")
+    }
 }

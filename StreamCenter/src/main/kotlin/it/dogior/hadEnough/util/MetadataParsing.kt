@@ -5,6 +5,10 @@ import java.util.Locale
 import java.util.TimeZone
 
 private val EPISODE_TITLE_PREFIX = Regex("""^\d+\.\s*""")
+private val PLACEHOLDER_EPISODE_TITLE = Regex(
+    """^(?:(?:episodio|episode|ep\.?)\s*\d+|第\s*\d+\s*話)$""",
+    RegexOption.IGNORE_CASE,
+)
 private val RUNTIME_HOURS = Regex("""(\d+)\s*h""", RegexOption.IGNORE_CASE)
 private val RUNTIME_MINUTES = Regex("""(\d+)\s*m""", RegexOption.IGNORE_CASE)
 private val ISO_DATE = Regex("""\b(\d{4})-(\d{2})-(\d{2})\b""")
@@ -20,6 +24,7 @@ private val MONTHS = listOf(
 internal fun cleanMetadataEpisodeTitle(text: String?): String? = cleanText(text)
     ?.replace(EPISODE_TITLE_PREFIX, "")
     ?.takeIf(String::isNotBlank)
+    ?.takeUnless(PLACEHOLDER_EPISODE_TITLE::matches)
 
 internal fun parseMetadataRuntime(text: String?): Int? {
     val value = cleanText(text) ?: return null

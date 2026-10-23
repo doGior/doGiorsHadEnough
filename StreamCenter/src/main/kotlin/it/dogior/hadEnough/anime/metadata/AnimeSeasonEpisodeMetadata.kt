@@ -47,19 +47,17 @@ internal class AnimeSeasonEpisodeMetadata(
         val count = release.episodeCount ?: numbers.maxOrNull() ?: 0
         val episodes = numbers.map { number ->
             val metadata = mapped?.episodes?.get(number)
-            val fallback = catalog.episodes[number]
             api.newEpisode(StreamCenterPlaybackData(animeSeason = AnimeSeasonPlayback(
                 release.id, release.malId, number, count,
             )).toJson()) {
-                name = metadata?.title ?: fallback?.title ?: "Episodio $number"
+                name = metadata?.title ?: "Episodio $number"
                 episode = number
                 season = metadata?.tmdbSeason ?: mapped?.season
-                posterUrl = metadata?.posterUrl ?: fallback?.posterUrl ?: release.poster
-                description = metadata?.description ?: fallback?.overview ?: fallback?.summary
-                runTime = metadata?.runTime ?: fallback?.runTime
+                posterUrl = metadata?.posterUrl ?: release.poster
+                description = metadata?.description
+                runTime = metadata?.runTime
                 score = metadata?.ratingPercent?.let { Score.from(it, 100) }
-                    ?: fallback?.rating?.let { Score.from(it, 10) }
-                (metadata?.airDate ?: fallback?.airDate ?: fallback?.fallbackAirDate)?.let { addDate(it) }
+                metadata?.airDate?.let { addDate(it) }
             }
         }
         if (cacheEnabled() && (mapped?.episodes?.isNotEmpty() == true || catalog.episodes.isNotEmpty())) {

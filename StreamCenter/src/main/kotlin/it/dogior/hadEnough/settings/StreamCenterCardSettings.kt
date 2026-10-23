@@ -1,7 +1,10 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.tracking.StreamCenterTrackingOverrides
 
+import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CompoundButton
@@ -10,7 +13,30 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.edit
 
-abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragment() {
+class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragment() {
+    override val screenTitle: String = "Schede"
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?,
+    ): View {
+        val content = rootContainer().apply {
+            setPadding(paddingLeft, 0, paddingRight, paddingBottom)
+        }
+        content.minimumHeight = standardSubmenuMinimumHeight()
+        content.addView(sectionHeading("Tutte le schede", topMargin = 0))
+        addAdaptiveCardGrid(content, listOf(scoreRow()))
+        content.addView(sectionHeading("Anime"))
+        addAdaptiveCardGrid(
+            content,
+            listOf(dubStatusRow(), episodeNumberRow(), groupVariantsRow(), groupSeasonsRow(), animeCardTitleRow()),
+        )
+        content.addView(sectionHeading("ID di tracciamento"))
+        addAdaptiveCardGrid(content, listOf(trackingIdsRow(), manualTrackingIdsRow()))
+        return scroll(content, fixedSubmenuHeight = true)
+    }
+
     private data class TrackingService(
         val fallback: String,
         val label: String,
@@ -18,22 +44,12 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
         val websiteUrl: String,
     )
 
-    protected fun cardContentRows(): List<View> = listOf(
-        scoreRow(),
-        dubStatusRow(),
-        episodeNumberRow(),
-        groupVariantsRow(),
-        groupSeasonsRow(),
-        animeCardTitleRow(),
-        trackingIdsRow(),
-    )
-
     private fun scoreRow(): View = switchRow(
         title = "Valutazione",
-        summary = "Mostra il voto sulle schede di\nAnime, Serie TV e Film.",
+        summary = "Mostra il voto sulle schede di\nAnime, Serie TV e Film",
         checked = StreamCenterPlugin.shouldShowHomeScore(sharedPref),
         defaultChecked = StreamCenterPlugin.shouldShowHomeScore(null),
-        accent = COLOR_SCORE,
+        accent = COLOR_ACCENT,
         icon = "⭐",
         fixedHeight = true,
     ) { enabled ->
@@ -42,10 +58,10 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
     private fun dubStatusRow(): View = switchRow(
         title = "SUB/DUB",
-        summary = "Mostra se l'Anime è SUB, DUB o entrambe le versioni.",
+        summary = "Mostra se l'Anime è SUB, DUB o entrambe le versioni",
         checked = StreamCenterPlugin.shouldShowAnimeHomeDubStatus(sharedPref),
         defaultChecked = StreamCenterPlugin.shouldShowAnimeHomeDubStatus(null),
-        accent = COLOR_ANIME_VARIANTS,
+        accent = COLOR_ACCENT,
         icon = "🎙️",
         fixedHeight = true,
     ) { enabled ->
@@ -54,10 +70,10 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
     private fun episodeNumberRow(): View = switchRow(
         title = "Numero episodi",
-        summary = "Mostra sulle schede Anime l'ultimo episodio disponibile.",
+        summary = "Mostra sulle schede Anime l'ultimo episodio disponibile",
         checked = StreamCenterPlugin.shouldShowAnimeHomeEpisodeNumber(sharedPref),
         defaultChecked = StreamCenterPlugin.shouldShowAnimeHomeEpisodeNumber(null),
-        accent = COLOR_EPISODES,
+        accent = COLOR_ACCENT,
         icon = "🔢",
         fixedHeight = true,
     ) { enabled ->
@@ -66,10 +82,10 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
     private fun groupVariantsRow(): View = switchRow(
         title = "Unifica SUB e DUB",
-        summary = "Raggruppa le versioni sottotitolata e doppiata in un’unica scheda.",
+        summary = "Raggruppa le versioni sottotitolata e doppiata in un’unica scheda",
         checked = StreamCenterPlugin.shouldGroupAnimeVariants(sharedPref),
         defaultChecked = StreamCenterPlugin.shouldGroupAnimeVariants(null),
-        accent = COLOR_ANIME_VARIANTS,
+        accent = COLOR_ACCENT,
         icon = "🔗",
         fixedHeight = true,
     ) { enabled ->
@@ -78,10 +94,10 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
     private fun groupSeasonsRow(): View = switchRow(
         title = "Unifica stagioni Anime",
-        summary = "Stagioni e parti nella stessa scheda. Disattiva il tracciamento.",
+        summary = "Stagioni e parti nella stessa scheda. Disattiva il tracciamento",
         checked = StreamCenterPlugin.shouldGroupAnimeSeasons(sharedPref),
         defaultChecked = false,
-        accent = COLOR_ANIME_VARIANTS,
+        accent = COLOR_ACCENT,
         icon = "📚",
     ) { enabled ->
         sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_GROUP_ANIME_SEASONS, enabled) }
@@ -89,11 +105,11 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
     private fun animeCardTitleRow(): LinearLayout {
         val selectedTitle = bodyText(animeCardTitleLabel(), 12)
-        val arrow = chevron(COLOR_DISPLAY)
+        val arrow = chevron(COLOR_ACCENT)
         return settingsRow(
             title = "Titolo Anime",
             icon = "✍️",
-            accent = COLOR_DISPLAY,
+            accent = COLOR_ACCENT,
             fillColor = COLOR_CARD_ALT,
             summaryView = selectedTitle,
             onReset = {
@@ -107,18 +123,39 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
     }
 
     private fun trackingIdsRow(): LinearLayout {
-        val arrow = chevron(COLOR_TRACKING_IDS)
+        val arrow = chevron(COLOR_ACCENT)
         return settingsRow(
             title = "ID di tracciamento",
-            summary = "MyAnimeList, AniList, Kitsu, Simkl, IMDb, TMDB.",
+            summary = "MyAnimeList, AniList, Kitsu, Simkl, IMDb, TMDB",
             onReset = { sharedPref?.edit { remove(StreamCenterPlugin.PREF_SHOW_TRACKING_IDS) } },
             icon = "🆔",
-            accent = COLOR_TRACKING_IDS,
+            accent = COLOR_ACCENT,
             fillColor = COLOR_CARD_ALT,
             trailingViews = listOf(arrow),
             touchTarget = arrow,
             fixedHeight = true,
         ) { showTrackingIdsDialog() }.view
+    }
+
+    private fun manualTrackingIdsRow(): LinearLayout {
+        val arrow = chevron(COLOR_ACCENT)
+        val manualCount = StreamCenterTrackingOverrides.overrides(sharedPref).size
+        return settingsRow(
+            title = "ID manuali",
+            summary = if (manualCount > 0) {
+                "$manualCount ${if (manualCount == 1) "scheda" else "schede"} con ID scelti a mano"
+            } else {
+                "Correggi gli ID usati da CloudStream per il tracciamento"
+            },
+            icon = "✎",
+            accent = COLOR_ACCENT,
+            fillColor = COLOR_CARD_ALT,
+            trailingViews = listOf(arrow),
+            touchTarget = arrow,
+            fixedHeight = true,
+        ) {
+            openScreen(StreamCenterTrackingIdsSettingsFragment(), "StreamCenterTrackingIdsSettings")
+        }.view
     }
 
     private fun animeCardTitleLabel(): String {
@@ -152,7 +189,7 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
             options = options,
             selectedValue = StreamCenterPlugin.getAnimeCardTitle(sharedPref),
             defaultValue = StreamCenterPlugin.getAnimeCardTitle(null),
-            accent = COLOR_DISPLAY,
+            accent = COLOR_ACCENT,
             closeLabel = "Chiudi",
         ) { selected ->
             sharedPref?.edit { putString(StreamCenterPlugin.PREF_ANIME_CARD_TITLE, selected.value) }
@@ -178,14 +215,13 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
             title = service.label,
             checked = sharedPref?.getBoolean(service.preferenceKey, true) ?: true,
             defaultChecked = true,
-            accent = COLOR_TRACKING_IDS,
+            accent = COLOR_ACCENT,
             leadingView = siteIconBadge(
                 fallback = service.fallback,
-                accent = COLOR_TRACKING_IDS,
+                accent = COLOR_ACCENT,
                 contentDescription = service.label,
                 websiteUrl = service.websiteUrl,
             ),
-            strokeColor = tint(COLOR_TRACKING_IDS, "55"),
             topMargin = 8,
         ) { enabled ->
             sharedPref?.edit { putBoolean(service.preferenceKey, enabled) }
@@ -201,12 +237,11 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
 
         val master = switchRow(
             title = "Mostra ID di tracciamento",
-            summary = "Mostra gli ID sulle schede. I servizi qui sotto scelgono quali appaiono.",
+            summary = "Mostra gli ID sulle schede. I servizi qui sotto scelgono quali appaiono",
             checked = StreamCenterPlugin.shouldShowTrackingIds(sharedPref),
             defaultChecked = StreamCenterPlugin.shouldShowTrackingIds(null),
-            accent = COLOR_TRACKING_IDS,
+            accent = COLOR_ACCENT,
             icon = "🆔",
-            strokeColor = tint(COLOR_TRACKING_IDS, "55"),
             topMargin = 8,
         ) { enabled ->
             sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_SHOW_TRACKING_IDS, enabled) }
@@ -218,9 +253,9 @@ abstract class StreamCenterCardSettingsFragment : StreamCenterBaseSettingsFragme
             setPadding(dp(20), dp(10), dp(20), dp(4))
             addView(master)
         }
-        content.addView(sectionHeading("Anime", COLOR_TRACKING_IDS, topMargin = 14))
+        content.addView(sectionHeading("Anime", COLOR_ACCENT, topMargin = 14))
         addAdaptiveCardGrid(content, animeRows)
-        content.addView(sectionHeading("Serie TV / Film", COLOR_TRACKING_IDS, topMargin = 14))
+        content.addView(sectionHeading("Serie TV / Film", COLOR_ACCENT, topMargin = 14))
         addAdaptiveCardGrid(content, serieTvFilmRows)
 
         applyMasterState(StreamCenterPlugin.shouldShowTrackingIds(sharedPref))

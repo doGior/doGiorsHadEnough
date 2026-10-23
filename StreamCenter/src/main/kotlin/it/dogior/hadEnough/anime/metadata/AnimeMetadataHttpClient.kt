@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.anime.metadata
 
 import com.lagradost.cloudstream3.app
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
@@ -25,12 +26,14 @@ internal class AnimeMetadataHttpClient {
             beforeRequest()
             val responseResult = try {
                 Result.success(
-                    app.get(
-                        url,
-                        headers = mapOf("Accept" to accept),
-                        cacheTime = 0,
-                        timeout = REQUEST_TIMEOUT_SECONDS,
-                    ),
+                    StreamCenterHostGate.request(url) {
+                        app.get(
+                            url,
+                            headers = mapOf("Accept" to accept),
+                            cacheTime = 0,
+                            timeout = REQUEST_TIMEOUT_SECONDS,
+                        )
+                    },
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

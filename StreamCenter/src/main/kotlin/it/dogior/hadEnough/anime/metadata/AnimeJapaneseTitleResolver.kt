@@ -16,7 +16,6 @@ internal data class AnimeJapaneseTitleHints(
 internal enum class AnimeJapaneseTitleSource(
     val logName: String,
 ) {
-    ANIZIP("AniZip"),
     KITSU("Kitsu"),
     ANILIST("AniList"),
     MY_ANIME_LIST("MyAnimeList"),
@@ -78,7 +77,7 @@ internal class AnimeJapaneseTitleResolver(
             anilistId = anilistId.validId() ?: aniZipCatalog?.anilistId.validId(),
             malId = malId.validId() ?: aniZipCatalog?.malId.validId(),
         )
-        val cacheKey = cacheKey(aniZipCatalog, ids, hints)
+        val cacheKey = cacheKey(ids, hints)
         val now = clock()
         cache[cacheKey]?.let { cached ->
             if (cached.expiresAtMs > now) {
@@ -88,10 +87,9 @@ internal class AnimeJapaneseTitleResolver(
         }
 
         val attempts = mutableListOf<AnimeJapaneseTitleAttempt>()
-        var activeSource = AnimeJapaneseTitleSource.ANIZIP
+        var activeSource = AnimeJapaneseTitleSource.KITSU
         val resolution = withTimeoutOrNull(totalTimeoutMs) {
             resolveUncached(
-                aniZipCatalog = aniZipCatalog,
                 ids = ids,
                 hints = hints,
                 attempts = attempts,
@@ -117,29 +115,11 @@ internal class AnimeJapaneseTitleResolver(
     }
 
     private suspend fun resolveUncached(
-        aniZipCatalog: AniZipEpisodeCatalog?,
         ids: ResolvedIds,
         hints: AnimeJapaneseTitleHints,
         attempts: MutableList<AnimeJapaneseTitleAttempt>,
         onSourceStarted: (AnimeJapaneseTitleSource) -> Unit,
     ): AnimeJapaneseTitleResolution {
-        onSourceStarted(AnimeJapaneseTitleSource.ANIZIP)
-        val aniZipStartedAt = clock()
-        val aniZipTitle = aniZipCatalog?.titles?.let(::selectAniZipTitle)
-        attempts += AnimeJapaneseTitleAttempt(
-            source = AnimeJapaneseTitleSource.ANIZIP,
-            status = if (aniZipTitle == null) {
-                AnimeJapaneseTitleAttemptStatus.NOT_FOUND
-            } else {
-                AnimeJapaneseTitleAttemptStatus.FOUND
-            },
-            origin = if (aniZipCatalog == null) ORIGIN_CATALOG_ABSENT else ORIGIN_CATALOG,
-            durationMs = elapsedSince(aniZipStartedAt),
-        )
-        if (aniZipTitle != null) {
-            return success(aniZipTitle, AnimeJapaneseTitleSource.ANIZIP, attempts)
-        }
-
         onSourceStarted(AnimeJapaneseTitleSource.KITSU)
         resolveProvider(
             source = AnimeJapaneseTitleSource.KITSU,
@@ -291,29 +271,6 @@ internal class AnimeJapaneseTitleResolver(
         if (includeApi) add(ORIGIN_API)
     }.ifEmpty { listOf(ORIGIN_NO_ID) }.joinToString("+")
 
-    private fun selectAniZipTitle(titles: Map<String, String>): String? {
-        return titles.entries
-            .sortedWith(
-                compareBy<Map.Entry<String, String>>(
-                    { aniZipLanguagePriority(it.key) },
-                    { it.key.lowercase(Locale.ROOT) },
-                )
-            )
-            .asSequence()
-            .mapNotNull { normalizeNativeTitle(it.value) }
-            .firstOrNull()
-    }
-
-    private fun aniZipLanguagePriority(rawLanguage: String): Int {
-        val language = rawLanguage.trim().lowercase(Locale.ROOT).replace('_', '-')
-        return when {
-            language in ANIZIP_JAPANESE_LANGUAGE_KEYS -> 0
-            language.startsWith("ja-") -> 1
-            language.contains("japanese") || language.contains("native") -> 2
-            else -> 3
-        }
-    }
-
     private fun firstNativeTitle(values: Iterable<String>): String? {
         return values.asSequence().mapNotNull(::normalizeNativeTitle).firstOrNull()
     }
@@ -345,18 +302,11 @@ internal class AnimeJapaneseTitleResolver(
     }
 
     private fun cacheKey(
-        aniZipCatalog: AniZipEpisodeCatalog?,
         ids: ResolvedIds,
         hints: AnimeJapaneseTitleHints,
     ): CacheKey {
-        val aniZipTitles = aniZipCatalog?.titles.orEmpty().entries
-            .map { (language, title) ->
-                language.trim().lowercase(Locale.ROOT) to title.trim()
-            }
-            .sortedWith(compareBy<Pair<String, String>>({ it.first }, { it.second }))
         return CacheKey(
             ids = ids,
-            aniZipTitles = aniZipTitles,
             kitsuHints = hints.kitsu.normalizedCacheValues(),
             aniListHints = hints.aniList.normalizedCacheValues(),
             myAnimeListHints = hints.myAnimeList.normalizedCacheValues(),
@@ -424,7 +374,6 @@ internal class AnimeJapaneseTitleResolver(
     private fun Int?.validId(): Int? = this?.takeIf { it > 0 }
 
     private fun ResolvedIds.identifierFor(source: AnimeJapaneseTitleSource): Int? = when (source) {
-        AnimeJapaneseTitleSource.ANIZIP -> null
         AnimeJapaneseTitleSource.KITSU -> kitsuId
         AnimeJapaneseTitleSource.ANILIST -> anilistId
         AnimeJapaneseTitleSource.MY_ANIME_LIST -> malId
@@ -438,7 +387,6 @@ internal class AnimeJapaneseTitleResolver(
 
     private data class CacheKey(
         val ids: ResolvedIds,
-        val aniZipTitles: List<Pair<String, String>>,
         val kitsuHints: List<String>,
         val aniListHints: List<String>,
         val myAnimeListHints: List<String>,
@@ -467,9 +415,6 @@ internal class AnimeJapaneseTitleResolver(
         const val DEFAULT_NEGATIVE_CACHE_TTL_MS = 10L * 60L * 1_000L
         const val MAX_CACHE_ENTRIES = 256
         const val MAX_TITLE_LENGTH = 240
-
-        const val ORIGIN_CATALOG = "catalog"
-        const val ORIGIN_CATALOG_ABSENT = "catalog_absent"
         const val ORIGIN_KNOWN_HINT = "known_hint"
         const val ORIGIN_ID_MAPPING = "id_mapping"
         const val ORIGIN_API = "api"
@@ -477,13 +422,6 @@ internal class AnimeJapaneseTitleResolver(
         const val ORIGIN_RESOLVER = "resolver"
 
         val WHITESPACE_REGEX = Regex("\\s+")
-        val ANIZIP_JAPANESE_LANGUAGE_KEYS = setOf(
-            "ja",
-            "ja-jp",
-            "jp",
-            "jpn",
-            "japanese",
-            "native",
-        )
+
     }
 }

@@ -15,7 +15,7 @@ internal object StreamCenterSiteIcons {
     }
 
     fun resolve(siteUrl: String): String? {
-        StreamCenterVpnGuard.requireInternetAccess()
+        if (!StreamCenterVpnGuard.canUseInternet()) return null
         val origin = origin(siteUrl) ?: return null
         resolvedUrls[origin]?.let { return it }
         val lock = resolutionLocks.computeIfAbsent(origin) { Any() }

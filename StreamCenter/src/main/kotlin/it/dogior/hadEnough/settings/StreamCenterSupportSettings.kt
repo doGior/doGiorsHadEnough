@@ -12,7 +12,6 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
-import android.os.Bundle
 import android.text.InputFilter
 import android.text.SpannableString
 import android.text.Spanned
@@ -20,12 +19,12 @@ import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.view.animation.DecelerateInterpolator
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.HorizontalScrollView
+import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
@@ -47,12 +46,10 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragment() {
-    override val screenTitle: String = "Sistema"
+abstract class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragment() {
 
     override val screenIcon: String = "⚙️"
 
-    override val screenAccent: String = COLOR_SUPPORT
 
     private var activeBackupDialog: AlertDialog? = null
     private var backupLocationText: TextView? = null
@@ -71,34 +68,15 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         const val TELEGRAM_GROUP_URL = "https://t.me/cloudstream_italia"
     }
 
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?,
-    ): View {
-        val content = rootContainer().apply {
-            setPadding(paddingLeft, 0, paddingRight, paddingBottom)
-        }
-        content.minimumHeight = standardSubmenuMinimumHeight()
-
-        fun addSection(label: String, accent: String, topMargin: Int, rows: List<View>) {
-            content.addView(sectionHeading(label, accent, topMargin))
-            addAdaptiveCardGrid(content, rows)
-        }
-        addSection("Rete", COLOR_VPN_GUARD, 4, listOf(vpnGuardRow()))
-        addSection("Dati", COLOR_BACKUP, 16, listOf(backupCard(), syncLocaleCard(), cacheCard()))
-        addSection("Diagnostica", COLOR_LOG, 16, listOf(logCard(), feedbackCard(), resetCard()))
-        return scroll(content, fixedSubmenuHeight = true)
-    }
-
     private var setVpnGuardChecked: ((Boolean) -> Unit)? = null
+    private var setLibassChecked: ((Boolean) -> Unit)? = null
 
-    private fun vpnGuardRow(): View = switchRow(
+    protected fun vpnGuardRow(): View = switchRow(
         title = "Protezione VPN",
-        summary = "Blocca Internet finché la VPN non è attiva.",
+        summary = "Blocca Internet finché la VPN non è attiva",
         checked = StreamCenterPlugin.isVpnRequired(sharedPref),
         defaultChecked = StreamCenterPlugin.isVpnRequired(null),
-        accent = COLOR_VPN_GUARD,
+        accent = COLOR_ACCENT,
         icon = "🛡️",
         fixedHeight = true,
         bindChecked = { setter -> setVpnGuardChecked = setter },
@@ -106,54 +84,102 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_REQUIRE_VPN, enabled) }
     }
 
-    private fun logCard(): View = supportCard(
+    protected fun libassSubtitlesRow(): View = switchRow(
+        title = "Sottotitoli ASS avanzati",
+        summary = "Stili, posizioni, karaoke e font degli anime con libass",
+        checked = StreamCenterPlugin.isLibassSubtitlesEnabled(sharedPref),
+        defaultChecked = StreamCenterPlugin.isLibassSubtitlesEnabled(null),
+        accent = COLOR_ACCENT,
+        icon = "💬",
+        fixedHeight = true,
+        bindChecked = { setter -> setLibassChecked = setter },
+    ) { enabled ->
+        sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_LIBASS_SUBTITLES, enabled) }
+        saveToast("Vale dal prossimo video che apri")
+    }
+
+    protected fun logCard(): View = navigationRow(
         icon = "📋",
         title = "Log",
-        summary = "Ricerche, fonti ed errori.",
-        accent = COLOR_LOG,
+        summary = "Cosa ha fatto StreamCenter: ricerche, fonti ed errori",
+        accent = COLOR_ACCENT,
     ) {
         openScreen(StreamCenterLogsSettingsFragment(), "StreamCenterLogsSettings")
     }
 
-    private fun cacheCard(): View = supportCard(
+    protected fun cacheCard(): View = navigationRow(
         icon = "⚡",
         title = "Cache",
-        summary = "Riapre subito le schede già viste.",
-        accent = COLOR_CACHE,
+        summary = "Schede già viste salvate per riaprirle subito",
+        accent = COLOR_ACCENT,
     ) {
         openScreen(StreamCenterCacheSettingsFragment(), "StreamCenterCacheSettings")
     }
 
-    private fun feedbackCard(): View = supportCard(
+    protected fun feedbackCard(): View = navigationRow(
         icon = "💬",
         title = "Invia feedback",
-        summary = "Segnala un problema.",
-        accent = COLOR_FEEDBACK,
+        summary = "Segnala un problema o proponi un miglioramento",
+        accent = COLOR_ACCENT,
     ) { showFeedbackChoiceDialog() }
 
-    private fun backupCard(): View = supportCard(
+    protected fun legalCard(): View = navigationRow(
+        icon = "⚖️",
+        title = StreamCenterLegalNotice.TITLE,
+        summary = "Cosa fa StreamCenter e di cosa sei responsabile",
+        accent = COLOR_ACCENT,
+    ) { showLegalNoticeDialog() }
+
+    private fun showLegalNoticeDialog() {
+        val ctx = context ?: return
+        val content = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(6), dp(20), dp(8))
+            StreamCenterLegalNotice.sections.forEachIndexed { index, section ->
+                addView(titleText(section.title, 15).apply { layoutParams = verticalParams(top = if (index == 0) 0 else 14) })
+                section.points.forEach { point ->
+                    addView(bodyText("• $point").apply {
+                        layoutParams = verticalParams(top = 6)
+                        isFocusable = true
+                    })
+                }
+            }
+        }
+        val alertDialog = AlertDialog.Builder(ctx)
+            .setCustomTitle(dialogTitle("⚖️ ${StreamCenterLegalNotice.TITLE}"))
+            .setView(scrollableDialogView(content))
+            .setPositiveButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(alertDialog)
+        alertDialog.show()
+    }
+
+    protected fun backupCard(): View = navigationRow(
         icon = "💾",
-        title = "Esporta e importa",
-        summary = "Salva la configurazione in un file.",
-        accent = COLOR_BACKUP,
+        title = "Backup",
+        summary = "Salva o ripristina la configurazione da un file",
+        accent = COLOR_ACCENT,
     ) { showBackupChoiceDialog() }
 
-    private fun syncLocaleCard(): View = supportCard(
+    protected fun syncLocaleCard(): View = navigationRow(
         icon = "🔐",
-        title = "Sync locale",
-        summary = "Allinea i dispositivi sulla stessa rete.",
-        accent = COLOR_LOCAL_SYNC,
+        title = "Sync tra dispositivi",
+        summary = "Allinea liste e impostazioni sulla stessa rete Wi-Fi",
+        accent = COLOR_ACCENT,
     ) { showLocalSyncWarningDialog() }
 
-    private fun resetCard(): View = supportCard(
+    protected fun resetCard(): View = navigationRow(
         icon = "♻️",
-        title = "Ripristina tutte le impostazioni",
-        summary = "Torna alla configurazione iniziale.",
-        accent = COLOR_RESET,
+        title = "Ripristina tutto",
+        summary = "Riporta StreamCenter alla configurazione iniziale",
+        accent = COLOR_DANGER,
     ) {
         val alertDialog = AlertDialog.Builder(requireContext())
             .setCustomTitle(dialogTitle("Ripristina impostazioni"))
-            .setMessage("Vuoi riportare StreamCenter alle impostazioni iniziali?")
+            .setMessage(
+                "Vuoi riportare StreamCenter alle impostazioni iniziali?\n\n" +
+                    "Restano la cache, gli ID inseriti a mano e la chiave TMDB.",
+            )
             .setPositiveButton("Ripristina") { _, _ ->
                 runCatching {
                     StreamCenterPlugin.resetAllConfiguration(
@@ -162,6 +188,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                     )
                 }.onSuccess {
                     setVpnGuardChecked?.invoke(StreamCenterPlugin.isVpnRequired(sharedPref))
+                    setLibassChecked?.invoke(StreamCenterPlugin.isLibassSubtitlesEnabled(sharedPref))
                     refreshVisibleSettingsEffects()
                     resetRestartNeeded()
                     saveToast("StreamCenter ripristinato")
@@ -175,30 +202,9 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         alertDialog.show()
     }
 
-    private fun supportCard(
-        icon: String,
-        title: String,
-        summary: String,
-        accent: String,
-        onClick: () -> Unit,
-    ): LinearLayout {
-        val arrow = chevron(accent)
-        val card = settingsRow(
-            title = title,
-            summary = summary,
-            icon = icon,
-            accent = accent,
-            fillColor = COLOR_CARD,
-            trailingViews = listOf(arrow),
-            touchTarget = arrow,
-            onClick = onClick,
-        ).view
-        return card
-    }
-
     private fun showLocalSyncWarningDialog() {
         val alertDialog = AlertDialog.Builder(requireContext())
-            .setCustomTitle(dialogTitle("Funzionalità sperimentale", COLOR_LOCAL_SYNC))
+            .setCustomTitle(dialogTitle("Funzionalità sperimentale", COLOR_ACCENT))
             .setMessage(localSyncWarningMessage())
             .setPositiveButton("Continua") { _, _ -> openLocalSync() }
             .setNegativeButton("Chiudi", null)
@@ -326,22 +332,6 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
         dialog.show()
         activeBackupDialog = dialog
-        if (reduceMotion) return
-        dialog.window?.decorView?.apply {
-            animate().cancel()
-            alpha = 0f
-            scaleX = 0.94f
-            scaleY = 0.94f
-            translationY = dp(14).toFloat()
-            animate()
-                .alpha(1f)
-                .scaleX(1f)
-                .scaleY(1f)
-                .translationY(0f)
-                .setDuration(210L)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
-        }
     }
 
     private fun setBackupBackNavigation(
@@ -379,7 +369,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 },
             )
             addView(
-                dialogActionTile("\uD83D\uDCC1", "Percorso", COLOR_SOURCES) { chooseBackupDirectory() },
+                dialogActionTile("\uD83D\uDCC1", "Percorso", COLOR_ACCENT) { chooseBackupDirectory() },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     marginStart = dp(5)
                 },
@@ -389,7 +379,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             setPadding(0, dp(2), 0, 0)
         }
         backupLocationText = locationText
-        val resetLocation = iconButton("⌂", "Usa il percorso predefinito", COLOR_BACKUP, size = 34) {
+        val resetLocation = iconButton("⌂", "Usa il percorso predefinito", COLOR_ACCENT, size = 34) {
                 runCatching { StreamCenterBackupManager.resetDirectory(ctx.applicationContext) }
                     .onSuccess {
                         locationText.text = StreamCenterBackupManager.locationLabel(ctx)
@@ -402,9 +392,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         val location = settingsRow(
             title = "Cartella dei backup",
             icon = "\uD83D\uDCCD",
-            accent = COLOR_BACKUP,
+            accent = COLOR_ACCENT,
             fillColor = COLOR_CARD_ALT,
-            strokeColor = tint(COLOR_BACKUP, "55"),
             summaryView = locationText,
             trailingViews = listOf(resetLocation),
         ).view
@@ -440,42 +429,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
 
     private fun showExportNameDialog() {
         val ctx = context ?: return
-        val defaultName = StreamCenterBackupManager.defaultFileName()
-        val nameInput = input(defaultName).apply {
-            hint = "Nome del backup"
-            filters = arrayOf(InputFilter.LengthFilter(120))
-            layoutParams = verticalParams(top = 6)
-        }
-        val preview = bodyText(StreamCenterBackupManager.normalizedFileName(defaultName), 12).apply {
-            setTextColor(Color.parseColor(COLOR_TEXT))
-            setPadding(0, dp(3), 0, 0)
-        }
-        nameInput.doAfterTextChanged {
-            preview.text = StreamCenterBackupManager.normalizedFileName(it?.toString().orEmpty())
-        }
-        val content = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(10), dp(20), 0)
-            addView(sectionLabel("Nome del file"))
-            addView(nameInput)
-            addView(LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(9), dp(12), dp(9))
-                background = cardBackground(COLOR_CARD_ALT, tint(COLOR_BACKUP, "55"), 12)
-                layoutParams = verticalParams(top = 10)
-                addView(bodyText("Anteprima", 11).apply {
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(Color.parseColor(COLOR_BACKUP))
-                })
-                addView(preview)
-            })
-            addView(bodyText(
-                "Segnaposto: %data%, %giorno%, %dd%, %mm%, %yyyy%, %ora%, %minuti%, %secondi%, %versione%.",
-                11,
-            ).apply {
-                setPadding(dp(2), dp(10), dp(2), 0)
-            })
-        }
+        val nameInput = backupNameInput(StreamCenterBackupManager.DEFAULT_FILE_NAME_TEMPLATE)
+        val content = backupNameEditor("Nome del file", nameInput)
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Nome del backup"))
             .setView(content)
@@ -491,6 +446,66 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 return@setOnClickListener
             }
             exportBackup(requestedName)
+        }
+    }
+
+    private fun backupNameInput(initial: String): EditText = input(initial).apply {
+        hint = "Nome del backup"
+        filters = arrayOf(InputFilter.LengthFilter(120))
+        layoutParams = verticalParams(top = 6)
+    }
+
+    private fun backupNameEditor(label: String, nameInput: EditText): View {
+        val preview = bodyText(StreamCenterBackupManager.normalizedFileName(nameInput.text.toString()), 13).apply {
+            setTextColor(Color.parseColor(COLOR_TEXT))
+            setPadding(0, dp(3), 0, 0)
+        }
+        nameInput.doAfterTextChanged {
+            preview.text = StreamCenterBackupManager.normalizedFileName(it?.toString().orEmpty())
+        }
+        return LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), 0)
+            addView(sectionLabel(label))
+            addView(nameInput)
+            addView(LinearLayout(requireContext()).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                background = cardBackground(COLOR_CARD, COLOR_CARD, 12)
+                layoutParams = verticalParams(top = 10)
+                addView(sectionLabel("Anteprima"))
+                addView(preview)
+            })
+            addView(sectionLabel("Tocca un segnaposto per inserirlo").apply {
+                setPadding(dp(2), dp(14), dp(2), dp(6))
+            })
+            addView(placeholderChips(StreamCenterBackupManager.fileNamePlaceholders, nameInput))
+        }
+    }
+
+    private fun placeholderChips(placeholders: List<String>, target: EditText): View {
+        val row = LinearLayout(requireContext()).apply { orientation = LinearLayout.HORIZONTAL }
+        placeholders.forEachIndexed { index, placeholder ->
+            row.addView(chip(placeholder).apply {
+                isClickable = true
+                isFocusable = true
+                contentDescription = "Inserisci $placeholder"
+                background = interactiveBackground(tint(COLOR_ACCENT, "14"), COLOR_ACCENT, 999, tint(COLOR_ACCENT, "4D"))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { if (index > 0) marginStart = dp(6) }
+                setOnClickListener {
+                    val start = target.selectionStart.coerceAtLeast(0)
+                    val end = target.selectionEnd.coerceAtLeast(start)
+                    target.text?.replace(start, end, placeholder)
+                    target.requestFocus()
+                }
+            })
+        }
+        return HorizontalScrollView(requireContext()).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
         }
     }
 
@@ -562,9 +577,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 title = if (files.size == 1) "1 backup disponibile" else "${files.size} backup disponibili",
                 summary = StreamCenterBackupManager.locationLabel(ctx),
                 icon = "\uD83D\uDCC1",
-                accent = COLOR_BACKUP,
+                accent = COLOR_ACCENT,
                 fillColor = COLOR_CARD_ALT,
-                strokeColor = tint(COLOR_BACKUP, "55"),
                 topMargin = 0,
             ).view)
             if (files.isEmpty()) {
@@ -577,7 +591,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                         gravity = Gravity.CENTER
                         setPadding(0, dp(12), 0, 0)
                     })
-                    addView(bodyText("Esporta una configurazione oppure scegli un'altra cartella.", 12).apply {
+                    addView(bodyText("Esporta una configurazione oppure scegli un'altra cartella", 12).apply {
                         gravity = Gravity.CENTER
                         setPadding(0, dp(5), 0, 0)
                     })
@@ -586,7 +600,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 val rows = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     files.forEach { backup ->
-                        val renameButton = iconButton("✎", "Rinomina ${backup.name}", COLOR_BACKUP) {
+                        val renameButton = iconButton("✎", "Rinomina ${backup.name}", COLOR_ACCENT) {
                                 showRenameBackupDialog(backup) { showImportFilesDialog(files) }
                             }
                         val deleteButton = deleteIconButton("Elimina ${backup.name}") {
@@ -596,9 +610,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                             title = StreamCenterBackupManager.fileNameWithoutExtension(backup.name),
                             summary = backupMetadata(ctx, backup),
                             icon = "\uD83D\uDCE6",
-                            accent = COLOR_BACKUP,
+                            accent = COLOR_ACCENT,
                             fillColor = COLOR_CARD_ALT,
-                            strokeColor = tint(COLOR_BACKUP, "55"),
                             trailingViews = listOf(renameButton, deleteButton),
                             touchTarget = null,
                             topMargin = 8,
@@ -647,41 +660,8 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
     ) {
         val ctx = context ?: return
         val currentName = StreamCenterBackupManager.fileNameWithoutExtension(backup.name)
-        val nameInput = input(currentName).apply {
-            hint = "Nome del backup"
-            filters = arrayOf(InputFilter.LengthFilter(120))
-            layoutParams = verticalParams(top = 6)
-        }
-        val preview = bodyText(StreamCenterBackupManager.normalizedFileName(currentName), 12).apply {
-            setTextColor(Color.parseColor(COLOR_TEXT))
-            setPadding(0, dp(3), 0, 0)
-        }
-        nameInput.doAfterTextChanged {
-            preview.text = StreamCenterBackupManager.normalizedFileName(it?.toString().orEmpty())
-        }
-        val content = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(10), dp(20), 0)
-            addView(sectionLabel("Nuovo nome"))
-            addView(nameInput)
-            addView(LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(12), dp(9), dp(12), dp(9))
-                background = cardBackground(COLOR_CARD_ALT, tint(COLOR_BACKUP, "55"), 12)
-                layoutParams = verticalParams(top = 10)
-                addView(bodyText("Anteprima", 11).apply {
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(Color.parseColor(COLOR_BACKUP))
-                })
-                addView(preview)
-            })
-            addView(bodyText(
-                "Segnaposto: %data%, %giorno%, %dd%, %mm%, %yyyy%, %ora%, %minuti%, %secondi%, %versione%.",
-                11,
-            ).apply {
-                setPadding(dp(2), dp(10), dp(2), 0)
-            })
-        }
+        val nameInput = backupNameInput(currentName)
+        val content = backupNameEditor("Nuovo nome", nameInput)
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Rinomina backup"))
             .setView(content)
@@ -795,7 +775,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             })
             addView(ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = true
-                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_BACKUP, "44"), 12)
+                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_ACCENT, "44"), 12)
                 addView(contentText)
             }, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -903,12 +883,12 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
 
     private fun backupMetadata(ctx: Context, backup: StreamCenterBackupFile): String {
         val date = if (backup.lastModified > 0L) {
-            SimpleDateFormat("dd/MM/yyyy · HH:mm", Locale.ITALY).format(Date(backup.lastModified))
+            SimpleDateFormat("dd/MM/yyyy, HH:mm", Locale.ITALY).format(Date(backup.lastModified))
         } else {
             "Data non disponibile"
         }
         val size = Formatter.formatShortFileSize(ctx, backup.size.coerceAtLeast(0L))
-        return "$date · $size"
+        return "$date, $size"
     }
 
     private fun showBackupError(title: String, error: Throwable) {
@@ -953,7 +933,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             isIndeterminate = false
             max = checks.size
             progress = 0
-            progressTintList = ColorStateList.valueOf(Color.parseColor(COLOR_API_CHECK))
+            progressTintList = ColorStateList.valueOf(Color.parseColor(COLOR_ACCENT))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5)).apply {
                 marginStart = dp(14)
                 marginEnd = dp(14)
@@ -972,7 +952,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
             text = "Verifica anche le fonti disattivate"
             textSize = 13f
             setTextColor(Color.parseColor(COLOR_TEXT))
-            buttonTintList = ColorStateList.valueOf(Color.parseColor(COLOR_API_CHECK))
+            buttonTintList = ColorStateList.valueOf(Color.parseColor(COLOR_ACCENT))
             isChecked = includeDisabled
             minimumHeight = dp(48)
         }
@@ -987,9 +967,9 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
         AvailabilityGroup.entries.forEach { group ->
             addHeading(group.title, when (group) {
-                AvailabilityGroup.TORRENT -> COLOR_TORRENT
-                AvailabilityGroup.SITES -> COLOR_SOURCES
-                else -> COLOR_API_CHECK
+                AvailabilityGroup.TORRENT -> COLOR_ACCENT
+                AvailabilityGroup.SITES -> COLOR_ACCENT
+                else -> COLOR_ACCENT
             })
             val entries = checks.filter { it.group == group }
             if (entries.isEmpty()) content.addView(bodyText(
@@ -1006,7 +986,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
                 content.addView(row.container)
             }
         }
-        addHeading("Account CloudStream", COLOR_CLOUDSTREAM_SERVICES)
+        addHeading("Account CloudStream", COLOR_ACCENT)
         accounts.forEach { (name, connected) ->
             val row = createApiCheckRow(ctx, name)
             setApiCheckState(row, AvailabilityResult(
@@ -1039,7 +1019,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         }
         dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
             val report = buildString {
-                appendLine("Data: $checkedAt · Versione: ${BuildConfig.PLUGIN_VERSION}")
+                appendLine("Data: $checkedAt, Versione: ${BuildConfig.PLUGIN_VERSION}")
                 append(availabilityReport(checks, results))
                 appendLine()
                 appendLine("Account CloudStream (collegamenti locali; accesso remoto non verificato)")
@@ -1143,7 +1123,7 @@ open class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFragmen
         row.badge.background = cardBackground(tint(color, "22"), tint(color, "99"), 17)
         row.detail.text = buildString {
             append(labelOverride ?: result.state.label)
-            result.elapsedMs?.let { append(" · $it ms") }
+            result.elapsedMs?.let { append(", $it ms") }
             if (result.detail.isNotBlank()) append("\n${result.detail}")
         }
         row.detail.setTextColor(Color.parseColor(color))

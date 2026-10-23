@@ -11,7 +11,7 @@ import android.widget.FrameLayout
 internal class StreamCenterTvTouchCursor(
     private val overlay: FrameLayout,
     private val target: View,
-    accentColor: Int = Color.parseColor("#F2C066"),
+    accentColor: Int = Color.parseColor(COLOR_ACCENT),
 ) {
     private val density = overlay.resources.displayMetrics.density
     private fun dp(value: Float): Float = value * density

@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.anime.metadata
 
+import it.dogior.hadEnough.tmdbLogoLanguages
 import kotlinx.coroutines.CancellationException
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -22,7 +23,7 @@ internal class TmdbLogoClient(private val document: suspend (String) -> Document
             return result
         }
 
-        val preferred = listOfNotNull("it", "en", "ja".takeIf { isAnime }, "xx")
+        val preferred = tmdbLogoLanguages(isAnime)
         for (language in preferred) {
             page("$baseUrl?image_language=$language")?.let { doc ->
                 TmdbArtwork.logo(doc, language)?.let { return it }
@@ -60,6 +61,9 @@ internal object TmdbArtwork {
         if (uri.scheme !in setOf("http", "https") || uri.host?.lowercase(Locale.ROOT) !in hosts) return null
         val filename = imagePath.matchEntire(uri.path)?.groupValues?.get(1) ?: return null
         if (!filename.contains('.') || filename.contains('$')) return null
+        if (filename.endsWith(".svg", ignoreCase = true)) {
+            return "https://image.tmdb.org/t/p/w1280/${filename.substringBeforeLast('.')}.png"
+        }
         return "https://image.tmdb.org/t/p/original/$filename"
     }
 

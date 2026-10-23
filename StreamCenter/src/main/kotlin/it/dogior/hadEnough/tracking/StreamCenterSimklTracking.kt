@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.syncproviders.SyncAPI
 import com.lagradost.cloudstream3.syncproviders.providers.SimklApi
 import it.dogior.hadEnough.StreamCenterTrackingMediaCategory
 import it.dogior.hadEnough.cache.ExpiringCache
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.optNullableString
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -33,11 +34,13 @@ internal object StreamCenterSimklTracking {
         val cacheKey = "${account.user.id}|${account.token.accessToken}"
         val categories = categoriesMutex.withLock {
             categoriesCache[cacheKey] ?: run {
-                val response = app.get(
-                    "https://api.simkl.com/sync/all-items/",
-                    headers = SimklApi.getHeaders(account.token),
-                    cacheTime = 0,
-                )
+                val response = StreamCenterHostGate.request("https://api.simkl.com/sync/all-items/") {
+                    app.get(
+                        "https://api.simkl.com/sync/all-items/",
+                        headers = SimklApi.getHeaders(account.token),
+                        cacheTime = 0,
+                    )
+                }
                 check(response.isSuccessful) { "Impossibile leggere le categorie della lista SIMKL" }
                 parseCategories(JSONObject(response.text)).also { categoriesCache.put(cacheKey, it) }
             }

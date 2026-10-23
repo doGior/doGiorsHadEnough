@@ -80,6 +80,8 @@ internal data class AnimeSeasonInfo(
                 Regex("""(?i)(?:season|stagione)\s+\d+|specials|speciali""").matches(it)
             }
 
+        fun tmdbSeasonName(name: String?): String? = meaningfulName(name)
+
         fun tmdbSeasonName(document: Document, tmdbId: Int, season: Int): String? {
             if (!TmdbArtwork.isSeason(document, tmdbId, season)) return null
             val heading = document.selectFirst("section.header h2, .season_wrapper h2")?.clone() ?: return null

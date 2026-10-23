@@ -28,8 +28,19 @@ import it.dogior.hadEnough.StreamCenterPlugin
 
 private class SettingsHostFrame(
     context: Context,
+    private val preferredHeight: () -> Int,
     private val onInteraction: () -> Unit,
 ) : FrameLayout(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val preferred = preferredHeight()
+        val height = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) {
+            preferred
+        } else {
+            minOf(preferred, MeasureSpec.getSize(heightMeasureSpec))
+        }
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY))
+    }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.actionMasked == MotionEvent.ACTION_DOWN) onInteraction()
         return super.dispatchTouchEvent(event)
@@ -51,8 +62,12 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var resultsScroll: ScrollView? = null
     private var resultsList: LinearLayout? = null
     private var contentContainer: FrameLayout? = null
+    private var hostFrame: FrameLayout? = null
+    private var hostColumn: LinearLayout? = null
     private var searchChangedSettings = false
     private var returningToPreviousScreen = false
+    private val focusTrail = mutableListOf<List<Int>?>()
+    private var pendingFocusRestore: List<Int>? = null
 
     private val screenLifecycleCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(
@@ -62,6 +77,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             savedInstanceState: Bundle?,
         ) {
             syncBar()
+            restoreScreenFocus(view)
         }
     }
 
@@ -71,17 +87,17 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         savedInstanceState: Bundle?,
     ): View {
         resetRestartNeeded()
-        val frameHeight = standardSubmenuMinimumHeight()
+        StreamCenterThemes.applyFor(sharedPref)
 
         val column = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
         }
+        hostColumn = column
         column.addView(buildBar())
         contentContainer = FrameLayout(requireContext()).apply {
             id = CONTAINER_ID
         }
-        resultsList = LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.VERTICAL
+        resultsList = groupColumn().apply {
             val horizontal = if (isTvLikeDevice()) dp(30) else dp(16)
             setPadding(horizontal, dp(4), horizontal, dp(18))
         }
@@ -116,11 +132,11 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
         column.addView(stack)
 
-        return SettingsHostFrame(requireContext()) { onSheetInteraction() }.apply {
+        return SettingsHostFrame(requireContext(), ::standardSubmenuMinimumHeight) { onSheetInteraction() }.apply {
             background = sheetFrameBackground()
             clipToOutline = true
             addView(
-                createParticleBackground(showOrbitalDecoration = true),
+                createParticleBackground(showGlow = true),
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -130,14 +146,32 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 column,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    frameHeight,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                frameHeight,
+                ViewGroup.LayoutParams.MATCH_PARENT,
             )
-        }
+        }.also { hostFrame = it }
+    }
+
+    fun restyle() {
+        if (childFragmentManager.isStateSaved) return
+        val frame = hostFrame ?: return
+        val column = hostColumn ?: return
+        releaseEffectTargets()
+        frame.background = sheetFrameBackground()
+        column.removeViewAt(0)
+        column.addView(buildBar(), 0)
+        clearSearch()
+        focusTrail.clear()
+        pendingFocusRestore = null
+        childFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+        childFragmentManager.beginTransaction()
+            .replace(CONTAINER_ID, StreamCenterMenuFragment(), MENU_TAG)
+            .commitNow()
+        push(StreamCenterInterfaceSettingsFragment(), "StreamCenterInterfaceSettings")
     }
 
     private fun buildBar(): View {
@@ -147,24 +181,18 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
         backButton = TextView(requireContext()).apply {
             text = "‹"
-            textSize = 26f
-            typeface = Typeface.DEFAULT_BOLD
+            textSize = 24f
             gravity = Gravity.CENTER
             includeFontPadding = false
             contentDescription = "Torna indietro"
             isClickable = true
             isFocusable = true
             setTextColor(Color.parseColor(COLOR_ACCENT))
-            background = interactiveBackground(
-                tint(COLOR_ACCENT, "12"),
-                COLOR_ACCENT,
-                999,
-                strokeColor = tint(COLOR_ACCENT, "4D"),
-            )
+            background = interactiveBackground(COLOR_CARD, COLOR_ACCENT, 12, strokeColor = COLOR_CARD)
             layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(12) }
             setOnClickListener { pop() }
         }.also(titleRow::addView)
-        titleView = titleText("StreamCenter", 21, true, display = true).apply {
+        titleView = titleText("StreamCenter", 22, true, display = true).apply {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
@@ -189,7 +217,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(2), dp(6), dp(2))
-            background = outlined(COLOR_STROKE, COLOR_INPUT_FILL, 12)
+            background = solid(COLOR_CARD, 14)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -200,7 +228,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 text = "⌕"
                 textSize = 18f
                 includeFontPadding = false
-                setTextColor(Color.parseColor(tint(COLOR_ACCENT, "B0")))
+                setTextColor(Color.parseColor(COLOR_MUTED))
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -222,6 +250,9 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 1f,
             )
             doAfterTextChanged { editable -> renderSearch(editable?.toString().orEmpty()) }
+            setOnFocusChangeListener { _, hasFocus ->
+                searchRow.background = if (hasFocus) outlined(COLOR_ACCENT, COLOR_CARD, 14) else solid(COLOR_CARD, 14)
+            }
         }.also(searchRow::addView)
         clearButton = TextView(requireContext()).apply {
             text = "✕"
@@ -235,42 +266,29 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             visibility = View.GONE
             setTextColor(Color.parseColor(COLOR_MUTED))
             background = interactiveBackground(
-                tint(COLOR_MUTED, "12"),
+                tint(COLOR_MUTED, "1C"),
                 COLOR_ACCENT,
                 999,
-                strokeColor = tint(COLOR_MUTED, "44"),
+                strokeColor = COLOR_TRANSPARENT,
             )
             layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginStart = dp(6) }
-            setOnClickListener { clearSearch() }
+            setOnClickListener {
+                clearSearch()
+                searchField?.requestFocus()
+            }
         }.also(searchRow::addView)
-
-        val separator = View(requireContext()).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(
-                    Color.TRANSPARENT,
-                    Color.parseColor(tint(COLOR_ACCENT, "3A")),
-                    Color.TRANSPARENT,
-                ),
-            )
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(1),
-            ).apply { topMargin = dp(12) }
-        }
 
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#191210"))
+                setColor(Color.parseColor(COLOR_BACKGROUND))
                 val radius = dp(22).toFloat()
                 cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
             }
             val horizontal = if (isTvLikeDevice()) dp(30) else dp(16)
-            setPadding(horizontal, dp(16), horizontal, 0)
+            setPadding(horizontal, dp(16), horizontal, dp(10))
             addView(titleRow)
             addView(searchRow)
-            addView(separator)
         }
     }
 
@@ -332,6 +350,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         clearSearch()
         if (alreadyOpen) return
         returningToPreviousScreen = false
+        focusTrail.add(currentScreen()?.view?.let(::focusPathIn))
+        pendingFocusRestore = null
         StreamCenterSettingsNavigation.configure(childFragmentManager.beginTransaction())
             .replace(CONTAINER_ID, fragment, tag)
             .addToBackStack(tag)
@@ -342,8 +362,39 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         if (childFragmentManager.backStackEntryCount == 0) return false
         if (childFragmentManager.isStateSaved) return true
         returningToPreviousScreen = true
+        pendingFocusRestore = focusTrail.removeLastOrNull()
         childFragmentManager.popBackStack()
         return true
+    }
+
+    private fun popToRoot() {
+        clearSearch()
+        if (childFragmentManager.isStateSaved || childFragmentManager.backStackEntryCount == 0) return
+        returningToPreviousScreen = true
+        pendingFocusRestore = focusTrail.firstOrNull()
+        focusTrail.clear()
+        childFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
+    }
+
+    private fun focusPathIn(root: View): List<Int>? {
+        var node = root.findFocus()?.takeIf { it !== root && !it.isInTouchMode } ?: return null
+        val path = ArrayList<Int>()
+        while (node !== root) {
+            val parent = node.parent as? ViewGroup ?: return null
+            path.add(parent.indexOfChild(node))
+            node = parent
+        }
+        return path.asReversed()
+    }
+
+    private fun restoreScreenFocus(screenView: View) {
+        val path = pendingFocusRestore ?: return
+        pendingFocusRestore = null
+        screenView.post {
+            if (!screenView.isAttachedToWindow || screenView.isInTouchMode) return@post
+            val target = path.fold<Int, View?>(screenView) { node, index -> (node as? ViewGroup)?.getChildAt(index) }
+            if (target != null && target.isShown && target.isFocusable) target.requestFocus()
+        }
     }
 
     private fun isSearching(): Boolean = !searchField?.text.isNullOrBlank()
@@ -383,7 +434,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         return LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(26), dp(18), dp(26))
-            background = cardBackground(COLOR_CARD_ALT, tint(COLOR_ACCENT, "33"), 16)
+            background = cardBackground(COLOR_CARD, COLOR_CARD, 16)
             layoutParams = verticalParams(top = 10)
             addView(
                 titleText("Nessun risultato per “$query”", 15, true).apply {
@@ -391,7 +442,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 },
             )
             addView(
-                bodyText("Prova con il nome della fonte, della sezione o di cosa vuoi cambiare.", 12).apply {
+                bodyText("Prova con il nome della fonte, della sezione o di cosa vuoi cambiare", 12).apply {
                     gravity = Gravity.CENTER
                     alpha = 0.78f
                     setPadding(0, dp(6), 0, 0)
@@ -425,8 +476,6 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             title = entry.title,
             icon = entry.icon,
             accent = entry.accent,
-            fillColor = COLOR_CARD_ALT,
-            strokeColor = tint(entry.accent, "5A"),
             summaryView = trail,
             trailingViews = listOf(arrow),
             touchTarget = arrow,
@@ -436,20 +485,27 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
 
     private fun openIndexedScreen(screen: SettingsScreenId) {
         when (screen) {
+            SettingsScreenId.ROOT -> popToRoot()
+            SettingsScreenId.CARDS ->
+                push(StreamCenterCardSettingsFragment(), "StreamCenterCardSettings")
             SettingsScreenId.BASE_CATALOG ->
                 push(StreamCenterBaseCatalogSettingsFragment(), "StreamCenterBaseCatalogSettings")
             SettingsScreenId.HOME ->
                 push(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
             SettingsScreenId.SOURCES ->
                 push(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
+            SettingsScreenId.TORRENT ->
+                push(StreamCenterTorrentSettingsFragment(), "StreamCenterTorrentSettings")
             SettingsScreenId.INTERFACE ->
                 push(StreamCenterInterfaceSettingsFragment(), "StreamCenterInterfaceSettings")
-            SettingsScreenId.SYSTEM ->
-                push(StreamCenterSupportSettingsFragment(), "StreamCenterSupportSettings")
             SettingsScreenId.CACHE ->
                 push(StreamCenterCacheSettingsFragment(), "StreamCenterCacheSettings")
             SettingsScreenId.LOGS ->
                 push(StreamCenterLogsSettingsFragment(), "StreamCenterLogsSettings")
+            SettingsScreenId.TRACKING_IDS ->
+                push(StreamCenterTrackingIdsSettingsFragment(), "StreamCenterTrackingIdsSettings")
+            SettingsScreenId.WATCHING ->
+                push(StreamCenterWatchingSettingsFragment(), "StreamCenterWatchingSettings")
         }
     }
 
@@ -481,7 +537,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             }
             requestLayout()
             text = title
-            setTextColor(Color.parseColor(if (nested) accent else COLOR_TEXT))
+            setTextColor(Color.parseColor(COLOR_TEXT))
             applyTitleEffect(this, title, accent)
             if (titleChanged) {
                 animate().cancel()
@@ -545,6 +601,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         resultsScroll = null
         resultsList = null
         contentContainer = null
+        hostFrame = null
+        hostColumn = null
         super.onDestroyView()
     }
 

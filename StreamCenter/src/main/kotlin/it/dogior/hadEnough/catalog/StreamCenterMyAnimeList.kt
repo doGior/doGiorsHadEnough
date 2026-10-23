@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.catalog
 
+import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.normalizeTrailerUrl
 
 import com.lagradost.cloudstream3.Actor
@@ -88,10 +89,12 @@ internal class StreamCenterMyAnimeListCatalog(
     ): StreamCenterCatalogPage {
         if (query.isBlank() || page != 1) return StreamCenterCatalogPage(emptyList(), false)
         val encodedQuery = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
-        val response = app.get(
-            "$BASE_URL/search/prefix.json?type=anime&keyword=$encodedQuery&v=1",
-            headers = headers,
-        ).text
+        val response = StreamCenterHostGate.request("$BASE_URL/search/prefix.json?type=anime&keyword=$encodedQuery&v=1") {
+            app.get(
+                "$BASE_URL/search/prefix.json?type=anime&keyword=$encodedQuery&v=1",
+                headers = headers,
+            )
+        }.text
         val items = searchCards(api, JSONObject(response), showScore)
         return StreamCenterCatalogPage(items, false)
     }
@@ -149,7 +152,9 @@ internal class StreamCenterMyAnimeListCatalog(
     }
 
     private suspend fun document(url: String): Document {
-        return Jsoup.parse(app.get(url, headers = headers).text, url)
+        return Jsoup.parse(StreamCenterHostGate.request(url) {
+            app.get(url, headers = headers)
+        }.text, url)
     }
 
     private fun rankingCards(api: MainAPI, document: Document, showScore: Boolean): List<SearchResponse> {

@@ -124,6 +124,10 @@ internal object StreamCenterLocalSyncAutoConfig {
             categories(context).isNotEmpty() &&
             StreamCenterLocalSyncTrust.trustedPeers(context).isNotEmpty()
 
+    fun reset(context: Context) {
+        check(prefs(context).edit().clear().commit()) { "Impossibile ripristinare la sincronizzazione automatica." }
+    }
+
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

@@ -26,7 +26,6 @@ import java.util.Locale
 class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
     override val screenTitle: String = "Log"
 
-    override val screenAccent: String = COLOR_LOG
 
     private data class PendingLogExport(
         val fileName: String,
@@ -69,11 +68,11 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             minimumHeight = standardSubmenuMinimumHeight()
         }
         val enabledRow = switchRow(
-            title = "Log",
-            summary = "",
+            title = "Registra i log",
+            summary = "Salva ricerche, fonti ed errori di ogni sessione",
             checked = StreamCenterLogger.isEnabled(sharedPref),
             defaultChecked = StreamCenterLogger.isEnabled(null),
-            accent = COLOR_LOG,
+            accent = COLOR_ACCENT,
             icon = "\uD83D\uDD0E",
             fixedHeight = true,
         ) { enabled ->
@@ -93,30 +92,20 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
         val retentionLabel = bodyText(logRetentionLabel(), 12)
         val retentionRow = settingsRow(
-            title = "Conservazione Log",
+            title = "Conservazione",
             icon = "\uD83E\uDDF9",
-            accent = COLOR_LOG,
-            fillColor = COLOR_CARD_ALT,
+            accent = COLOR_ACCENT,
             summaryView = retentionLabel,
             onReset = { updateLogRetention(retentionLabel, StreamCenterLogger.retentionPolicy(null)) },
-            trailingViews = listOf(chevron(COLOR_LOG)),
-            fixedHeight = true,
+            trailingViews = listOf(chevron(COLOR_ACCENT)),
         ) {
             showLogRetentionDialog(retentionLabel)
         }.view
-
-        val archiveLogRow = settingsRow(
-            title = "Archivio Log",
-            summary = "",
-            icon = "\uD83D\uDDC2",
-            accent = COLOR_LOG,
-            fillColor = COLOR_CARD_ALT,
-            trailingViews = listOf(chevron(COLOR_LOG)),
-            fixedHeight = true,
-        ) {
-            showLogArchive()
-        }.view
-        addAdaptiveCardGrid(content, listOf(enabledRow, retentionRow, archiveLogRow))
+        content.addView(sectionHeading("Registrazione", topMargin = 0))
+        addAdaptiveCardGrid(content, listOf(enabledRow, retentionRow))
+        content.addView(sectionHeading("Sessioni"))
+        sessionsContainer = groupColumn().also(content::addView)
+        loadSessions()
 
         return scroll(content, fixedSubmenuHeight = true)
     }
@@ -130,7 +119,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             policy.maximumLogCount?.let { maximumLogCount ->
                 "Conserva gli ultimi $maximumLogCount log"
             },
-        ).joinToString(" · ").ifBlank { "Non configurata" }
+        ).joinToString(", ").ifBlank { "Non configurata" }
     }
 
     private fun showLogRetentionDialog(retentionLabel: TextView) {
@@ -178,10 +167,10 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         fun refreshSelection() {
             fun refreshOption(card: LinearLayout, enabled: Boolean, valueRow: View) {
                 card.background = interactiveBackground(
-                    fill = if (enabled) tint(COLOR_LOG, "1A") else COLOR_CARD_ALT,
-                    accent = COLOR_LOG,
+                    fill = if (enabled) tint(COLOR_ACCENT, "1A") else COLOR_CARD_ALT,
+                    accent = COLOR_ACCENT,
                     radius = 16,
-                    strokeColor = if (enabled) COLOR_LOG else tint(COLOR_LOG, "55"),
+                    strokeColor = if (enabled) COLOR_ACCENT else COLOR_STROKE,
                 )
                 valueRow.visibility = if (enabled) View.VISIBLE else View.GONE
             }
@@ -197,7 +186,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             onReset: () -> Unit,
             onCheckedChanged: (Boolean) -> Unit,
         ): LinearLayout {
-            val toggle = styledSwitch(checked, COLOR_LOG, onChanged = onCheckedChanged)
+            val toggle = styledSwitch(checked, COLOR_ACCENT, onChanged = onCheckedChanged).drivenByRow()
             return LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(12), dp(12), dp(12), dp(12))
@@ -208,7 +197,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 addView(LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = android.view.Gravity.CENTER_VERTICAL
-                    addView(iconBadge(icon, COLOR_LOG, size = 38, marginEnd = 12))
+                    addView(iconBadge(icon, COLOR_ACCENT, size = 36, marginEnd = 12))
                     addView(titleText(title, 16, true).apply {
                         layoutParams = LinearLayout.LayoutParams(
                             0,
@@ -219,7 +208,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                     addView(toggle)
                 })
                 addView(valueRow)
-                addCardTouchFeedback(this, COLOR_LOG)
+                addCardTouchFeedback(this, COLOR_ACCENT)
                 val reset = {
                     toggle.isChecked = false
                     onReset()
@@ -338,80 +327,53 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         }
     }
 
-    private fun showLogArchive() {
-        StreamCenterLogger.logMenu(
-            action = "Consultazione archivio Log dalle impostazioni",
-            metadata = mapOf("origine" to "impostazioni_log"),
-        )
-        val ctx = context ?: return
-        val loadingDialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Archivio Log"))
-            .setMessage("Caricamento delle sessioni in corso…")
-            .setNegativeButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(loadingDialog)
-        loadingDialog.show()
+    private var sessionsContainer: LinearLayout? = null
 
+    override fun onDestroyView() {
+        sessionsContainer = null
+        super.onDestroyView()
+    }
+
+    private fun loadSessions() {
+        val container = sessionsContainer ?: return
+        val ctx = context ?: return
         CoroutineScope(Dispatchers.IO).launch {
             val result = runCatching { StreamCenterLogger.listLogs(ctx.applicationContext) }
             withContext(Dispatchers.Main) {
-                if (!isAdded) return@withContext
-                loadingDialog.dismiss()
-                result.onSuccess(::showLogArchiveDialog).onFailure { error ->
-                    showLogReadError("Archivio non disponibile", error)
+                if (!isAdded || sessionsContainer !== container) return@withContext
+                container.removeAllViews()
+                result.onSuccess { logs -> renderSessions(container, logs) }.onFailure { error ->
+                    container.addView(emptyStateCard("Impossibile leggere le sessioni", COLOR_DANGER, "⚠️"))
+                    StreamCenterLogger.logMenuError("Lettura archivio log non riuscita", error)
                 }
             }
         }
     }
 
-    private fun showLogArchiveDialog(logs: List<LogFileInfo>) {
+    private fun renderSessions(container: LinearLayout, logs: List<LogFileInfo>) {
         val ctx = context ?: return
         if (logs.isEmpty()) {
-            val dialog = AlertDialog.Builder(ctx)
-                .setCustomTitle(dialogTitle("Archivio vuoto"))
-                .setMessage("Non è stata ancora creata alcuna sessione di log.")
-                .setNegativeButton("Chiudi", null)
-                .create()
-            applyDialogBackdrop(dialog)
-            dialog.show()
+            container.addView(emptyStateCard("Nessuna sessione registrata", COLOR_ACCENT, "\uD83D\uDCC4"))
             return
         }
-
-        val entries = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(6), dp(20), dp(16))
-        }
-        lateinit var dialog: AlertDialog
         logs.forEach { log ->
-            val arrow = chevron(COLOR_LOG)
-            val deleteButton = deleteIconButton(
-                description = "Elimina questa sessione di log",
-                size = 34,
-            ) {
-                showDeleteLogConfirmation(log, dialog)
-            }
-            entries.addView(
-                settingsRow(
-                    title = if (log.isCurrent) "Sessione corrente" else "Sessione archiviata",
-                    summary = "${log.createdAt} · ${Formatter.formatFileSize(ctx, log.sizeBytes)}",
-                    icon = if (log.isCurrent) "\uD83D\uDFE2" else "\uD83D\uDCC4",
-                    accent = COLOR_LOG,
-                    fillColor = COLOR_CARD_ALT,
-                    trailingViews = listOf(deleteButton, arrow),
-                    touchTarget = arrow,
-                    topMargin = 8,
-                ) {
-                    showStoredLog(log)
-                }.view,
-            )
+            val size = Formatter.formatFileSize(ctx, log.sizeBytes)
+            container.addView(settingsRow(
+                title = if (log.isCurrent) "Sessione in corso" else log.createdAt,
+                summary = if (log.isCurrent) "${log.createdAt}, $size" else size,
+                icon = if (log.isCurrent) "\uD83D\uDFE2" else "\uD83D\uDCC4",
+                accent = COLOR_ACCENT,
+                trailingViews = listOf(
+                    overflowButton("Altre azioni per questa sessione") {
+                        listOf(
+                            OverflowAction("Apri") { showStoredLog(log) },
+                            OverflowAction("Elimina") { showDeleteLogConfirmation(log) },
+                        )
+                    },
+                    chevron(COLOR_ACCENT),
+                ),
+            ) { showStoredLog(log) }.view)
         }
-        dialog = AlertDialog.Builder(ctx)
-            .setCustomTitle(dialogTitle("Archivio Log"))
-            .setView(ScrollView(ctx).apply { addView(entries) })
-            .setNegativeButton("Chiudi", null)
-            .create()
-        applyDialogBackdrop(dialog)
-        dialog.show()
     }
 
     private fun showStoredLog(log: LogFileInfo) {
@@ -502,7 +464,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         dialog.show()
     }
 
-    private fun showDeleteLogConfirmation(log: LogFileInfo, archiveDialog: AlertDialog) {
+    private fun showDeleteLogConfirmation(log: LogFileInfo) {
         val ctx = context ?: return
         val dialog = AlertDialog.Builder(ctx)
             .setCustomTitle(dialogTitle("Elimina log"))
@@ -521,7 +483,6 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 ),
             )
             dialog.dismiss()
-            archiveDialog.dismiss()
             deleteLog(log)
         }
     }
@@ -538,7 +499,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 if (!isAdded) return@withContext
                 result.onSuccess {
                     saveToast("Log eliminato")
-                    showLogArchive()
+                    loadSessions()
                 }.onFailure { error ->
                     showLogDeletionError(error)
                 }
@@ -565,7 +526,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             setPadding(dp(20), dp(6), dp(20), dp(16))
             val sections = parseLogDisclosureSections(log)
             if (sections.isEmpty()) {
-                addView(bodyText("Il log non contiene informazioni consultabili.", 12).apply {
+                addView(bodyText("Il log non contiene informazioni consultabili", 12).apply {
                     setPadding(dp(4), dp(12), dp(4), dp(12))
                 })
             } else {
@@ -585,7 +546,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             .setCustomTitle(dialogTitle(title))
             .setView(ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = true
-                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_LOG, "44"), 12)
+                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_ACCENT, "44"), 12)
                 addView(content)
             })
             .setPositiveButton("Esporta", null)
@@ -628,7 +589,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             .setCustomTitle(dialogTitle(sectionTitle))
             .setView(ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = true
-                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_LOG, "44"), 12)
+                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_ACCENT, "44"), 12)
                 addView(content)
             })
             .setNegativeButton("Chiudi", null)
@@ -655,7 +616,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
                 setPadding(dp(4), dp(2), dp(4), dp(8))
             })
             addView(TextView(ctx).apply {
-                text = item.content.ifBlank { "Nessun dettaglio registrato." }
+                text = item.content.ifBlank { "Nessun dettaglio registrato" }
                 setTextColor(Color.parseColor(COLOR_TEXT))
                 textSize = 12f
                 typeface = Typeface.MONOSPACE
@@ -668,7 +629,7 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
             .setCustomTitle(dialogTitle(item.title))
             .setView(ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = true
-                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_LOG, "44"), 12)
+                background = cardBackground(COLOR_INPUT_FILL, tint(COLOR_ACCENT, "44"), 12)
                 addView(content)
             })
             .setNegativeButton("Chiudi", null)
@@ -682,11 +643,11 @@ class StreamCenterLogsSettingsFragment : StreamCenterBaseSettingsFragment() {
         summary: String,
         onClick: () -> Unit,
     ): View {
-        val arrow = chevron(COLOR_LOG)
+        val arrow = chevron(COLOR_ACCENT)
         return settingsRow(
             title = title,
             summary = summary,
-            accent = COLOR_LOG,
+            accent = COLOR_ACCENT,
             fillColor = COLOR_CARD_ALT,
             trailingViews = listOf(arrow),
             touchTarget = arrow,
