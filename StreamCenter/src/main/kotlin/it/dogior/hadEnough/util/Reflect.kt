@@ -1,4 +1,4 @@
-package it.dogior.hadEnough.subtitles
+package it.dogior.hadEnough.util
 
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
