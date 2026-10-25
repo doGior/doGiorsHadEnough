@@ -1,11 +1,13 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.util.StreamCenterDevice
 import it.dogior.hadEnough.util.StreamCenterLogger
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import it.dogior.hadEnough.util.runCatchingCancellable
 import it.dogior.hadEnough.extensions.InstalledExtension
 import it.dogior.hadEnough.extensions.InstalledExtensionLogos
+import it.dogior.hadEnough.extensions.StreamCenterOptionalExtension
 import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 
 import android.animation.ArgbEvaluator
@@ -38,6 +40,7 @@ import android.graphics.drawable.RippleDrawable
 import android.graphics.drawable.StateListDrawable
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -63,11 +66,11 @@ import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.utils.AppContextUtils
 import com.lagradost.cloudstream3.utils.ImageLoader
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.cos
+import java.util.Collections
+import java.util.WeakHashMap
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -542,9 +545,18 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         private const val DISPLAY_FONT_FAMILY = "sans-serif-condensed"
         const val OVERFLOW_SYMBOL = "⋮"
         private const val MEDIUM_FONT_FAMILY = "sans-serif-medium"
+        private val openSheets = Collections.newSetFromMap(
+            WeakHashMap<StreamCenterBaseSettingsFragment, Boolean>(),
+        )
+
         private fun dismissActiveSettingsToast() {
             activeSettingsToast?.cancel()
             activeSettingsToast = null
+        }
+
+        fun closeAllForPlayback() {
+            val sheets = synchronized(openSheets) { openSheets.toList() }
+            sheets.filter { it.isAdded && !it.isEmbedded }.forEach { it.closeSettingsForNavigation() }
         }
     }
 
@@ -685,11 +697,33 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     protected fun openSearchResult(card: SearchResponse) {
-        val activity = activity ?: return
+        val activity = closeSettingsForNavigation() ?: return
+        AppContextUtils.run { activity.loadSearchResult(card) }
+    }
+
+    protected fun closeSettingsForNavigation(): Activity? {
+        val activity = activity ?: return null
         val ownWindows = setOfNotNull(dialog?.window?.decorView, settingsHost?.dialog?.window?.decorView)
         (settingsHost ?: this).dismissAllowingStateLoss()
         closeUnderlyingSheets(activity, ownWindows)
-        AppContextUtils.run { activity.loadSearchResult(card) }
+        return activity
+    }
+
+    protected fun remoteControlCard(): View = navigationRow(
+        title = "Telecomando e continuità",
+        summary = "In prova · usa il telefono come telecomando della TV",
+        icon = "🧪",
+        accent = COLOR_EXPERIMENTAL,
+    ) { openScreen(StreamCenterRemoteSettingsFragment(), "StreamCenterRemoteSettings") }
+
+    protected fun experimentalBanner(body: String? = null): View = LinearLayout(requireContext()).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = cardBackground(tint(COLOR_EXPERIMENTAL, "24"), tint(COLOR_EXPERIMENTAL, "99"), 14)
+        layoutParams = verticalParams(top = 4)
+        isFocusable = true
+        addView(titleText("🧪 Funzione in prova", 15).apply { setTextColor(Color.parseColor(COLOR_EXPERIMENTAL)) })
+        body?.let { addView(bodyText(it).apply { layoutParams = verticalParams(top = 4) }) }
     }
 
     private fun closeUnderlyingSheets(activity: Activity, ownWindows: Set<View>) {
@@ -1203,6 +1237,16 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         alertDialog.show()
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        synchronized(openSheets) { openSheets.add(this) }
+    }
+
+    override fun onDestroy() {
+        synchronized(openSheets) { openSheets.remove(this) }
+        super.onDestroy()
+    }
+
     override fun onStart() {
         super.onStart()
         (dialog as? BottomSheetDialog)?.apply {
@@ -1256,16 +1300,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return (value * resources.displayMetrics.density).toInt()
     }
 
-    protected fun isTvLikeDevice(): Boolean {
-        if (StreamCenterPlugin.isForceTvModeEnabled(sharedPref)) return true
-        val ctx = context ?: return false
-        val pm = ctx.packageManager
-        val uiMode = ctx.resources.configuration.uiMode and
-            android.content.res.Configuration.UI_MODE_TYPE_MASK
-        return uiMode == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
-            pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
-            !pm.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TOUCHSCREEN)
-    }
+    protected fun isTvLikeDevice(): Boolean = StreamCenterDevice.isTvLike(context, sharedPref)
 
     protected fun settingsRowHeightDp(): Int {
         return if (isTvLikeDevice()) 80 else SETTINGS_ROW_HEIGHT_DP
@@ -1733,6 +1768,9 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         )
     }
 
+    internal fun optionalExtensionBadge(entry: StreamCenterOptionalExtension): FrameLayout =
+        siteIconBadge(fallback = entry.icon, accent = COLOR_ACCENT, contentDescription = entry.name, bundledLogo = entry.logo)
+
     internal fun installedExtensionBadge(extension: InstalledExtension): FrameLayout = siteIconBadge(
         fallback = "\uD83E\uDDE9",
         accent = COLOR_ACCENT,
@@ -1751,6 +1789,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         marginEnd: Int = 12,
         iconResolver: (suspend () -> String?)? = null,
         showOnlyLoadedImage: Boolean = false,
+        bundledLogo: String? = null,
     ): FrameLayout {
         return FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply {
@@ -1788,7 +1827,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
                 }
             }
             addView(logoView)
-            StreamCenterBundledLogos.bitmap(websiteUrl, iconUrl)?.let { bundled ->
+            (bundledLogo?.let(StreamCenterBundledLogos::named) ?: StreamCenterBundledLogos.bitmap(websiteUrl, iconUrl))?.let { bundled ->
                 logoView.setImageBitmap(bundled)
                 logoView.visibility = View.VISIBLE
                 fallbackView.visibility = View.INVISIBLE
@@ -2146,6 +2185,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         summary: String,
         icon: String,
         accent: String = COLOR_ACCENT,
+        leadingView: View? = null,
         onSummaryReady: ((TextView) -> Unit)? = null,
         onClick: () -> Unit,
     ): LinearLayout {
@@ -2155,6 +2195,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
             summary = summary,
             icon = icon,
             accent = accent,
+            leadingView = leadingView,
             trailingViews = listOf(arrow),
             touchTarget = arrow,
             onClick = onClick,
@@ -3010,7 +3051,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         restartApplication(appContext)
     }
 
-    private fun restartApplication(appContext: Context) {
+    protected fun restartApplication(appContext: Context) {
         StreamCenterLogger.logMenu("Riavvio dell'app confermato")
         val packageManager = appContext.packageManager
         val intent = packageManager.getLaunchIntentForPackage(appContext.packageName)

@@ -8,6 +8,7 @@ internal class PersistentCalendarCache(private val directory: File) {
     private data class Entry(val key: String, val expiresAt: Long, val document: String)
     private val file = File(directory, "calendar.cache")
     private var generation = 0L
+    private var closed = false
 
     @Synchronized fun generation(): Long = generation
 
@@ -21,7 +22,7 @@ internal class PersistentCalendarCache(private val directory: File) {
     }
 
     @Synchronized fun write(key: String, document: String, expiresAt: Long, expectedGeneration: Long) {
-        if (generation != expectedGeneration || expiresAt <= System.currentTimeMillis()) return
+        if (closed || generation != expectedGeneration || expiresAt <= System.currentTimeMillis()) return
         check(directory.isDirectory || directory.mkdirs()) { "Impossibile creare la cache calendario" }
         val encodedKey = URLEncoder.encode(key, "UTF-8")
         AtomicTextFile.write(file, "streamcenter-calendar-v1\n$expiresAt\n$encodedKey\n$document")
@@ -35,6 +36,11 @@ internal class PersistentCalendarCache(private val directory: File) {
     @Synchronized fun clear() {
         generation++
         deleteFiles()
+    }
+
+    @Synchronized fun close() {
+        closed = true
+        clear()
     }
 
     private fun deleteFiles() {

@@ -81,6 +81,10 @@ internal object StreamCenterHomeImports {
         request.name, request.data, request.horizontalImages,
     )
 
+    internal fun extensionRequests(api: MainAPI): List<MainPageRequest> = runCatching {
+        api.mainPage.map { MainPageRequest(it.name, it.data, it.horizontalImages) }.distinct()
+    }.getOrDefault(emptyList()).ifEmpty { listOf(MainPageRequest("Home", "", false)) }
+
     suspend fun discoverExtensionSections(api: MainAPI, requests: List<MainPageRequest>): StreamCenterHomeImportDiscovery {
         val results = requests.distinct().mapChunkedParallel(3) { request ->
             val page = runCatchingCancellable {

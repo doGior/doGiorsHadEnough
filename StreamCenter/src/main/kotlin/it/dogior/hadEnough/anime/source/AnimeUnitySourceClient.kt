@@ -733,6 +733,7 @@ internal class AnimeUnitySourceClient(
     }
 
     private fun persistSession() {
+        if (StreamCenterPlugin.completeResetInProgress) return
         if (!hasSessionHeaders()) return
         val payload = JSONObject()
             .put("baseUrl", sessionBaseUrl)

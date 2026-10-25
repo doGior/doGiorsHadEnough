@@ -3,6 +3,7 @@ package it.dogior.hadEnough.anime.metadata
 import android.util.JsonReader
 import android.util.JsonToken
 import com.lagradost.cloudstream3.app
+import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.runCatchingCancellable
 import kotlinx.coroutines.CancellationException
@@ -158,6 +159,7 @@ internal class AniBridgeEpisodeMappingClient(
                 )
                 return null
             }
+            if (StreamCenterPlugin.completeResetInProgress) return null
             response.body.byteStream().use { input ->
                 temporary.outputStream().buffered().use { output -> input.copyTo(output) }
             }
@@ -172,6 +174,7 @@ internal class AniBridgeEpisodeMappingClient(
                 )
                 return null
             }
+            if (StreamCenterPlugin.completeResetInProgress) return null
             if (archive.exists() && !archive.delete()) {
                 MetadataLog.error(
                     SOURCE,

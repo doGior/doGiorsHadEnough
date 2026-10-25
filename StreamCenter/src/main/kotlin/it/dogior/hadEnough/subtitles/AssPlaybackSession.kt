@@ -1,5 +1,7 @@
 package it.dogior.hadEnough.subtitles
 
+import it.dogior.hadEnough.playback.PlayerSession
+import it.dogior.hadEnough.util.ListenerProxy
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
@@ -29,7 +31,7 @@ internal class AssPlaybackSession(
     private val context: Context,
     val exoPlayer: ExoPlayer,
     private val host: AssPlayerHost,
-) : AssEmbeddedSink {
+) : AssEmbeddedSink, PlayerSession {
     private val engine = LibassEngine()
     private val playerListener: Player.Listener = ListenerProxy.create(
         Player.Listener::class.java,
@@ -39,6 +41,7 @@ internal class AssPlaybackSession(
             "onPlaybackStateChanged" to { args -> onPlaybackStateChanged(args.firstOrNull() as? Int) },
             "onMediaItemTransition" to { _ -> onMediaItemTransition() },
         ),
+        onError = { AssLog.error("Evento del player non gestito", it) },
     )
     private val embeddedTracks = ConcurrentHashMap<String, Long>()
     private val externalTracks = ConcurrentHashMap<String, Long>()
@@ -91,7 +94,7 @@ internal class AssPlaybackSession(
         updateSelection()
     }
 
-    fun onFrame() {
+    override fun onFrame() {
         if (isReleased) return
         val now = SystemClock.uptimeMillis()
         if (now < patchUntil && now >= nextPatchAt) patchMediaGraph()
@@ -107,7 +110,7 @@ internal class AssPlaybackSession(
         requestRender(view, activeTrack, timeMs)
     }
 
-    fun release() {
+    override fun release() {
         if (isReleased) return
         isReleased = true
         mainHandler.removeCallbacksAndMessages(null)

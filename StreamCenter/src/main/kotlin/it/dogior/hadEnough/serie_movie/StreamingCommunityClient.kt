@@ -3,6 +3,7 @@ package it.dogior.hadEnough.serie_movie
 import android.content.SharedPreferences
 import com.lagradost.cloudstream3.ShowStatus
 import com.lagradost.cloudstream3.app
+import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.model.StreamCenterMetadata
 import it.dogior.hadEnough.model.StreamingCommunityEpisode
 import it.dogior.hadEnough.model.StreamingCommunityEpisodeDetails
@@ -540,6 +541,7 @@ internal class StreamingCommunityClient(
     }
 
     private fun persistSession() {
+        if (StreamCenterPlugin.completeResetInProgress) return
         if (!hasSessionHeaders()) return
         val payload = JSONObject()
             .put("cookie", sessionHeaders["Cookie"].orEmpty())

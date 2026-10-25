@@ -367,7 +367,7 @@ internal object StreamCenterTrackingOverrides {
         detected: Map<ManualTrackingService, String>,
         groupedSeasons: Boolean,
     ) {
-        if (response.type == TvType.Live || key.isBlank()) return
+        if (StreamCenterPlugin.completeResetInProgress || response.type == TvType.Live || key.isBlank()) return
         val prefs = seenPrefs() ?: return
         val entry = TrackingIdSeenEntry(
             key = key,

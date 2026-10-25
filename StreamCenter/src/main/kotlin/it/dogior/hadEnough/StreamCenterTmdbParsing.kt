@@ -211,7 +211,7 @@ internal fun StreamCenter.extractTmdbNetworks(doc: Document): String? {
 }
 
 internal suspend fun StreamCenter.extractTmdbWatchProviders(showUrl: String): String? =
-    (apiWatchProviders(showUrl) ?: scrapedWatchProviders(showUrl))?.let { "Piattaforme (dati JustWatch): $it" }
+    apiWatchProviders(showUrl) ?: scrapedWatchProviders(showUrl)
 
 private suspend fun StreamCenter.apiWatchProviders(showUrl: String): String? {
     if (!StreamCenterTmdbApiClient.isActive()) return null

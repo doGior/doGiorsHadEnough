@@ -1,17 +1,14 @@
 package it.dogior.hadEnough.localsync
 
-import android.app.Activity
-import android.app.Application
 import android.content.Context
-import android.os.Bundle
+import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.util.StreamCenterForeground
 import java.util.concurrent.CopyOnWriteArraySet
 
 internal object StreamCenterLocalSyncAutoRunner {
     private var appContext: Context? = null
     private var coordinator: StreamCenterLocalSyncAutoCoordinator? = null
     private val listeners = CopyOnWriteArraySet<StreamCenterLocalSyncListener>()
-    private var startedActivities = 0
-    private var foreground = false
     private var lifecycleRegistered = false
 
     private val fanOut = object : StreamCenterLocalSyncListener {
@@ -39,11 +36,11 @@ internal object StreamCenterLocalSyncAutoRunner {
         val app = context.applicationContext
         appContext = app
         if (coordinator == null) coordinator = StreamCenterLocalSyncAutoCoordinator(app, fanOut)
+        StreamCenterForeground.attach(app)
         if (!lifecycleRegistered) {
-            (app as? Application)?.registerActivityLifecycleCallbacks(callbacks)
+            StreamCenterForeground.addListener { refresh() }
             lifecycleRegistered = true
         }
-        foreground = true
         refresh()
     }
 
@@ -59,7 +56,7 @@ internal object StreamCenterLocalSyncAutoRunner {
     fun refresh() {
         val activeCoordinator = coordinator ?: return
         val context = appContext ?: return
-        if (foreground && StreamCenterLocalSyncAutoConfig.isOperational(context)) {
+        if (!StreamCenterPlugin.completeResetInProgress && StreamCenterForeground.isForeground && StreamCenterLocalSyncAutoConfig.isOperational(context)) {
             activeCoordinator.start()
         } else {
             activeCoordinator.stop()
@@ -67,30 +64,12 @@ internal object StreamCenterLocalSyncAutoRunner {
     }
 
     fun forcePeerSync(peerId: String): Boolean {
+        if (StreamCenterPlugin.completeResetInProgress) return false
         return coordinator?.forcePeerSync(peerId) == true
     }
 
-    private val callbacks = object : Application.ActivityLifecycleCallbacks {
-        override fun onActivityStarted(activity: Activity) {
-            startedActivities += 1
-            if (startedActivities == 1) {
-                foreground = true
-                refresh()
-            }
-        }
-
-        override fun onActivityStopped(activity: Activity) {
-            startedActivities = (startedActivities - 1).coerceAtLeast(0)
-            if (startedActivities == 0) {
-                foreground = false
-                refresh()
-            }
-        }
-
-        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
-        override fun onActivityResumed(activity: Activity) = Unit
-        override fun onActivityPaused(activity: Activity) = Unit
-        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-        override fun onActivityDestroyed(activity: Activity) = Unit
+    suspend fun stopForCompleteReset() {
+        val running = synchronized(this) { coordinator?.stopForCompleteReset() }
+        running?.join()
     }
 }

@@ -25,7 +25,9 @@ import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.model.*
 import it.dogior.hadEnough.playback.StreamingPlaybackLinks
+import it.dogior.hadEnough.playback.PlaybackSource
 import it.dogior.hadEnough.playback.PlaybackSourceGroup
+import it.dogior.hadEnough.playback.StreamCenterPlaybackInsights
 import it.dogior.hadEnough.playback.StreamCenterSourceOrder
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.torrent.*
@@ -183,27 +185,33 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         level = if (playbackData == null) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
     )
     val sourceOrder = StreamCenterSourceOrder()
-    val playbackLinks = StreamingPlaybackLinks(this@resolveStreamCenterLinks::sourceLinkDedupKey) { group, original ->
+    val playbackLinks = StreamingPlaybackLinks(this@resolveStreamCenterLinks::sourceLinkDedupKey) { source, original ->
+        val origin = StreamCenterPlaybackInsights.originFor(source, original)
         val link = sourceOrder.prepare(
-            group, original,
+            source.group, original,
             playbackProvider = name.takeIf { StreamCenterVidxGoExtractor.ownsLink(original) },
+            tier = StreamCenterPlaybackInsights.tierFor(origin),
         )
-        if (group == PlaybackSourceGroup.EXTENSION) InstalledExtensionResolver.retainLinkOwner(original, link)
+        if (source.group == PlaybackSourceGroup.EXTENSION) InstalledExtensionResolver.retainLinkOwner(original, link)
+        StreamCenterPlaybackInsights.remember(link, origin)
         callback(link)
     }
     val emittedSubtitleKeys = ConcurrentHashMap.newKeySet<String>()
     val resultCallbackLock = Any()
-    fun collectLink(group: PlaybackSourceGroup): (ExtractorLink) -> Unit = linkCallback@{ link ->
+    fun collectLink(source: PlaybackSource): (ExtractorLink) -> Unit = linkCallback@{ link ->
         val isPeerToPeer =
             link.type == ExtractorLinkType.MAGNET ||
                 link.type == ExtractorLinkType.TORRENT ||
                 link.url.startsWith("magnet:", ignoreCase = true)
         if (isCasting && isPeerToPeer) return@linkCallback
-        playbackLinks.add(group, link)
+        playbackLinks.add(source, link)
     }
-    val uniqueCallback = collectLink(PlaybackSourceGroup.HTTPS)
-    val torrentCallback = collectLink(PlaybackSourceGroup.TORRENT)
-    val extensionCallback = collectLink(PlaybackSourceGroup.EXTENSION)
+    fun sourceTitle(sourceKey: String): String = StreamCenterPlugin.streamingSources
+        .firstOrNull { source -> source.key == sourceKey }
+        ?.title
+        ?: sourceKey
+    fun siteCallback(sourceKey: String) =
+        collectLink(PlaybackSource(PlaybackSourceGroup.HTTPS, sourceKey, sourceTitle(sourceKey)))
     val uniqueSubtitleCallback: (SubtitleFile) -> Unit = { subtitle ->
         synchronized(resultCallbackLock) {
             if (emittedSubtitleKeys.add(subtitle.url.trim().substringBefore('#'))) {
@@ -256,12 +264,8 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         }
     }
     fun addTask(sourceKey: String, task: suspend () -> Boolean) {
-        val sourceName = StreamCenterPlugin.streamingSources
-            .firstOrNull { source -> source.key == sourceKey }
-            ?.title
-            ?: sourceKey
         tasksBySource.getOrPut(sourceKey) { mutableListOf() } +=
-            loggedSourceTask(sourceName = sourceName, task = task)
+            loggedSourceTask(sourceName = sourceTitle(sourceKey), task = task)
     }
 
     playbackData?.animeUnity
@@ -271,7 +275,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadAnimeUnityLinks(
                     playbackData = animeUnityPlayback,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY),
                 )
             }
         }
@@ -282,7 +286,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadAnimeWorldLink(
                     playbackData = animeWorldPlayback,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD),
                 )
             }
         }
@@ -294,7 +298,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadAnimeSaturnLink(
                     playbackData = animeSaturnPlayback,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN),
                 )
             }
         }
@@ -307,7 +311,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadVixCloudLinks(
                     playbackData = streamingCommunityPlayback,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD),
                 )
             }
         }
@@ -318,7 +322,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadVixSrcLinks(
                     target = target,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_VIXSRC),
                 )
             }
         }
@@ -327,7 +331,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 loadVidxGoLinks(
                     target = target,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = uniqueCallback,
+                    callback = siteCallback(StreamCenterPlugin.PREF_SOURCE_VIDXGO),
                 )
             }
         }
@@ -345,7 +349,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                     domains = domains,
                     context = torrentContext,
                     filters = torrentFilters,
-                    callback = torrentCallback,
+                    callback = collectLink(PlaybackSource(PlaybackSourceGroup.TORRENT, "torrent-ext", "EXT")),
                     performanceMode = performanceMode,
                     logTabName = playbackLogTab,
                 )
@@ -373,7 +377,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                                 addon = addon,
                                 context = stremioContext,
                                 subtitleCallback = uniqueSubtitleCallback,
-                                callback = extensionCallback,
+                                callback = collectLink(PlaybackSource(PlaybackSourceGroup.EXTENSION, addon.key, addon.name)),
                                 stopAfterFirstResult = performanceMode,
                             )
                         } ?: false
@@ -407,7 +411,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                     context = extensionContext,
                     isCasting = isCasting,
                     subtitleCallback = uniqueSubtitleCallback,
-                    callback = extensionCallback,
+                    callback = collectLink(PlaybackSource(PlaybackSourceGroup.EXTENSION, source.key, source.name)),
                     performanceMode = performanceMode,
                     onError = { stage, error ->
                         StreamCenterLogger.logTabError(

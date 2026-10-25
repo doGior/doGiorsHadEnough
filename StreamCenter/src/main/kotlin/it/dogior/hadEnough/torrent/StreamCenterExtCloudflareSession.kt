@@ -9,6 +9,9 @@ import okhttp3.Cookie
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.resume
 
 internal object StreamCenterExtCloudflareSession {
     private const val PREFERENCES = "streamcenter_ext_cloudflare_session"
@@ -33,6 +36,7 @@ internal object StreamCenterExtCloudflareSession {
         if (hasClearanceCookie(url)) storedUserAgent(url) ?: browserUserAgent else browserUserAgent
 
     fun beginVerification(url: String, userAgent: String) {
+        if (StreamCenterPlugin.completeResetInProgress) return
         val host = endpointHost(url) ?: return
         if (userAgent.isBlank()) return
         preferences()?.edit()?.putString("$USER_AGENT_KEY:$host", userAgent.trim())?.apply()
@@ -44,6 +48,34 @@ internal object StreamCenterExtCloudflareSession {
             val cookieManager = CookieManager.getInstance()
             cookieManager.removeAllCookies { cookieManager.flush() }
         }
+    }
+
+    suspend fun clearForCompleteReset() {
+        val prefs = StreamCenterPlugin.activeSharedPref
+        val urls = StreamCenterPlugin.streamingSources.flatMap { source ->
+            listOf(source.defaultUrl, StreamCenterPlugin.getSourceBaseUrl(prefs, source.key))
+        } + StreamCenterExtDomain.entries.map { it.baseUrl } + preferences()?.all.orEmpty().keys
+            .filter { it.startsWith("$USER_AGENT_KEY:") }
+            .map { "https://${it.substringAfter(':')}" }
+        val hosts = urls.mapNotNull { it.toHttpUrlOrNull()?.host?.removePrefix("www.") }.distinct()
+        val manager = CookieManager.getInstance()
+        val expirations = hosts.flatMap { host ->
+            listOf(host, "www.$host").flatMap { cookieHost ->
+                val url = "https://$cookieHost/"
+                StreamCenterExtSessionCookies.parse(manager.getCookie(url)).keys.flatMap { name ->
+                    val expired = "$name=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/"
+                    listOf(url to expired, url to "$expired; Domain=.$host")
+                }
+            }
+        }
+        withTimeout(10_000L) {
+            expirations.forEach { (url, cookie) ->
+                suspendCancellableCoroutine { continuation ->
+                    manager.setCookie(url, cookie) { continuation.resume(Unit) }
+                }
+            }
+        }
+        manager.flush()
     }
 
     fun hasClearanceCookie(url: String): Boolean = clearanceCookie(url) != null
@@ -76,6 +108,7 @@ internal object StreamCenterExtCloudflareSession {
 
     @Synchronized
     fun rememberResponseCookies(response: Response) {
+        if (StreamCenterPlugin.completeResetInProgress) return
         val responses = generateSequence(response) { it.priorResponse }.toList().asReversed()
         if (responses.none { it.headers.values("Set-Cookie").isNotEmpty() }) return
         val manager = runCatching { CookieManager.getInstance() }.getOrNull() ?: return

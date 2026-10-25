@@ -94,6 +94,8 @@ internal class StreamCenterLocalSyncSettingsFragment : StreamCenterBaseSettingsF
         actionCard().also(content::addView)
         content.addView(sectionHeading("Automatico"))
         autoSyncCard().also(content::addView)
+        content.addView(sectionHeading("Telecomando"))
+        content.addView(remoteControlCard())
         content.addView(sectionHeading("Attività"))
         sessionCard().also(content::addView)
         startSessionClock()

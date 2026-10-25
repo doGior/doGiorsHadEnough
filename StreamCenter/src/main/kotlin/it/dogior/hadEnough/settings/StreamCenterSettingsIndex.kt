@@ -3,6 +3,8 @@ package it.dogior.hadEnough.settings
 import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.extensions.InstalledExtensionSources
 import it.dogior.hadEnough.extensions.InstalledExtension
+import it.dogior.hadEnough.extensions.StreamCenterOptionalExtensions
+import it.dogior.hadEnough.extensions.StreamCenterPriSynx
 import it.dogior.hadEnough.stremio.StreamCenterStremioAddon
 
 import android.content.SharedPreferences
@@ -16,12 +18,15 @@ internal enum class SettingsScreenId {
     CARDS,
     BASE_CATALOG,
     SOURCES,
+    OPTIONAL_EXTENSIONS,
     TORRENT,
     INTERFACE,
     CACHE,
     LOGS,
+    PLAYBACK_RANKING,
     TRACKING_IDS,
     WATCHING,
+    REMOTE,
 }
 
 internal data class SettingsToggleBinding(
@@ -56,10 +61,20 @@ private fun booleanPref(key: String, default: Boolean): SettingsToggleBinding {
 
 internal object StreamCenterSettingsIndex {
     fun entries(prefs: SharedPreferences?): List<SettingsIndexEntry> {
-        return staticEntries() + homeCategoryEntries() + sourceEntries() + addonEntries(prefs) + extensionEntries()
+        return staticEntries() + homeCategoryEntries() + sourceEntries() + addonEntries(prefs) + extensionEntries() +
+            StreamCenterOptionalExtensions.entries.map { extension ->
+                SettingsIndexEntry(
+                    title = "${extension.name} (opzionale)", trail = "Estensioni opzionali",
+                    icon = extension.icon, accent = COLOR_ACCENT, screen = SettingsScreenId.OPTIONAL_EXTENSIONS,
+                    keywords = "${extension.author} estensione scarica download installa impostazioni ${extension.summary} " +
+                        if (extension.key == StreamCenterOptionalExtensions.PRISYNX) "prisync cataloghi provider ordine topx kitsu raiplay torrent"
+                        else "italiainstreaming diegon",
+                )
+            }
     }
 
-    private fun extensionEntries(): List<SettingsIndexEntry> = InstalledExtensionSources.available().map { source ->
+    private fun extensionEntries(): List<SettingsIndexEntry> = InstalledExtensionSources.available()
+        .filterNot { StreamCenterPriSynx.isPriSynx(it.name, it.downloadUrl) }.map { source ->
         SettingsIndexEntry(
             title = source.name,
             trail = "Fonti › Estensioni installate",
@@ -113,6 +128,15 @@ internal object StreamCenterSettingsIndex {
             keywords = "tmdb user agent user-agent custom personalizzato header http sito api",
         ),
         SettingsIndexEntry(
+            title = "Riproduzione con un tasto",
+            trail = "Fonti › Riproduzione",
+            icon = "🧪",
+            accent = COLOR_EXPERIMENTAL,
+            screen = SettingsScreenId.SOURCES,
+            keywords = "avvio automatico migliore fonte link play subito salta elenco affidabile timeout",
+            toggle = booleanPref(StreamCenterPlugin.PREF_ONE_TAP_PLAYBACK, false),
+        ),
+        SettingsIndexEntry(
             title = "Cerca su TMDB se non ci sono risultati",
             trail = "Fonti › Ricerca",
             icon = "🔎",
@@ -128,6 +152,14 @@ internal object StreamCenterSettingsIndex {
             accent = COLOR_ACCENT,
             screen = SettingsScreenId.SOURCES,
             keywords = "cloudstream altre estensioni fonti video provider plugin",
+        ),
+        SettingsIndexEntry(
+            title = "Estensioni opzionali",
+            trail = "Integrazioni",
+            icon = "🧩",
+            accent = COLOR_ACCENT,
+            screen = SettingsScreenId.OPTIONAL_EXTENSIONS,
+            keywords = "estensioni integrazioni opzionali autori crediti impostazioni plugin",
         ),
         SettingsIndexEntry(
             title = "Valutazione",
@@ -380,7 +412,7 @@ internal object StreamCenterSettingsIndex {
             accent = COLOR_ACCENT,
             screen = SettingsScreenId.ROOT,
             keywords = "blocca internet privacy tunnel sicurezza killswitch",
-            toggle = booleanPref(StreamCenterPlugin.PREF_REQUIRE_VPN, true),
+            toggle = booleanPref(StreamCenterPlugin.PREF_REQUIRE_VPN, false),
         ),
         SettingsIndexEntry(
             title = StreamCenterLegalNotice.TITLE,
@@ -413,6 +445,23 @@ internal object StreamCenterSettingsIndex {
             accent = COLOR_ACCENT,
             screen = SettingsScreenId.CACHE,
             keywords = "memoria svuota spazio schede calendario temporanea",
+        ),
+        SettingsIndexEntry(
+            title = "Telecomando e continuità",
+            trail = "Dati",
+            icon = "🧪",
+            accent = COLOR_EXPERIMENTAL,
+            screen = SettingsScreenId.REMOTE,
+            keywords = "telecomando continua tv telefono coda prossimi da guardare remoto prova sperimentale pausa sottotitoli",
+            toggle = booleanPref(StreamCenterPlugin.PREF_REMOTE_CONTROL, false),
+        ),
+        SettingsIndexEntry(
+            title = "Classifica fonti",
+            trail = "Dati",
+            icon = "🧪",
+            accent = COLOR_EXPERIMENTAL,
+            screen = SettingsScreenId.PLAYBACK_RANKING,
+            keywords = "ranking statistiche prova sperimentale affidabilità avvio buffering blocchi errori qualità host misurazione cancella",
         ),
         SettingsIndexEntry(
             title = "Log",

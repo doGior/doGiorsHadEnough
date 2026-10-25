@@ -28,6 +28,7 @@ import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class StreamCenterLocalNetworkEndpoint(
     val interfaceName: String,
@@ -179,12 +180,19 @@ internal class StreamCenterLocalSyncCancellation : Closeable {
     }
 }
 
+internal enum class StreamCenterLocalSyncChannel(
+    val presencePort: Int,
+    val presenceIntervalMs: Long,
+    val label: String,
+) {
+    SYNC(39_483, 3_000L, "auto"),
+    REMOTE(39_484, 2_000L, "remote"),
+}
+
 internal object StreamCenterLocalSyncNetwork {
     private const val MAGIC = "SCLS"
     private const val PROTOCOL_VERSION = 3
     private const val DISCOVERY_PORT = 39_482
-    private const val AUTO_PRESENCE_PORT = 39_483
-    private const val AUTO_PRESENCE_INTERVAL_MS = 3_000L
     private const val DISCOVERY_INTERVAL_MS = 1_000L
     private const val SESSION_TIMEOUT_MS = 10 * 60 * 1_000L
     private const val SOCKET_TIMEOUT_MS = 30_000
@@ -500,6 +508,8 @@ internal object StreamCenterLocalSyncNetwork {
         isTrusted: (identityKey: String) -> Boolean,
         cancellation: StreamCenterLocalSyncCancellation,
         listener: StreamCenterLocalSyncListener,
+        channel: StreamCenterLocalSyncChannel = StreamCenterLocalSyncChannel.SYNC,
+        maximumSessions: Int = Int.MAX_VALUE,
         onSession: suspend (
             peerName: String,
             peerIdentityKey: String,
@@ -519,9 +529,10 @@ internal object StreamCenterLocalSyncNetwork {
         serverSocket.soTimeout = 1_000
         val presence = endpoints.map { networkEndpoint ->
             launch(Dispatchers.IO) {
-                broadcastPresence(networkEndpoint, localIdentityKey, localName, serverSocket.localPort, cancellation)
+                broadcastPresence(networkEndpoint, localIdentityKey, localName, serverSocket.localPort, channel, cancellation)
             }
         }
+        val activeSessions = AtomicInteger()
         try {
             while (!cancellation.isCancelled) {
                 ensureActive()
@@ -534,12 +545,17 @@ internal object StreamCenterLocalSyncNetwork {
                     throw error
                 }
                 cancellation.track(socket)
+                if (activeSessions.incrementAndGet() > maximumSessions) {
+                    activeSessions.decrementAndGet()
+                    cancellation.close(socket)
+                    continue
+                }
                 launch(Dispatchers.IO) {
                     try {
                         require(StreamCenterLocalNetworkPolicy.routeTo(socket.inetAddress) != null) {
                             "Dispositivo fuori dalla rete locale privata."
                         }
-                        handleAutoServer(socket, localIdentity, localIdentityKey, isTrusted, listener, onSession)
+                        handleAutoServer(socket, localIdentity, localIdentityKey, isTrusted, channel, listener, onSession)
                     } catch (error: Exception) {
                         if (!cancellation.isCancelled) {
                             listener.onEvent(
@@ -550,6 +566,7 @@ internal object StreamCenterLocalSyncNetwork {
                             )
                         }
                     } finally {
+                        activeSessions.decrementAndGet()
                         cancellation.close(socket)
                     }
                 }
@@ -565,10 +582,11 @@ internal object StreamCenterLocalSyncNetwork {
         localIdentityKey: String,
         timeoutMs: Long,
         cancellation: StreamCenterLocalSyncCancellation,
+        channel: StreamCenterLocalSyncChannel = StreamCenterLocalSyncChannel.SYNC,
     ): List<StreamCenterLocalSyncPresence> = withContext(Dispatchers.IO) {
         val socket = cancellation.track(DatagramSocket(null))
         socket.reuseAddress = true
-        socket.bind(InetSocketAddress(AUTO_PRESENCE_PORT))
+        socket.bind(InetSocketAddress(channel.presencePort))
         socket.soTimeout = 500
         val found = linkedMapOf<String, StreamCenterLocalSyncPresence>()
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -608,6 +626,7 @@ internal object StreamCenterLocalSyncNetwork {
         localName: String,
         cancellation: StreamCenterLocalSyncCancellation,
         listener: StreamCenterLocalSyncListener,
+        channel: StreamCenterLocalSyncChannel = StreamCenterLocalSyncChannel.SYNC,
         onSession: suspend (
             peerName: String,
             peerIdentityKey: String,
@@ -629,7 +648,7 @@ internal object StreamCenterLocalSyncNetwork {
             val output = DataOutputStream(socket.getOutputStream().buffered())
             val sessionId = StreamCenterLocalSyncCrypto.sessionId()
             val keys = StreamCenterLocalSyncCrypto.deriveKeysFromIdentities(localIdentity, peer.identityKey, sessionId)
-            val transcript = autoTranscript(sessionId, localIdentityKey, peer.identityKey)
+            val transcript = autoTranscript(sessionId, localIdentityKey, peer.identityKey, channel)
             val clientProof = StreamCenterLocalSyncCrypto.authenticationProof(
                 keys.clientAuthenticationKey,
                 "client|$transcript",
@@ -662,6 +681,7 @@ internal object StreamCenterLocalSyncNetwork {
         localIdentity: KeyPair,
         localIdentityKey: String,
         isTrusted: (identityKey: String) -> Boolean,
+        channel: StreamCenterLocalSyncChannel,
         listener: StreamCenterLocalSyncListener,
         onSession: suspend (
             peerName: String,
@@ -682,7 +702,7 @@ internal object StreamCenterLocalSyncNetwork {
         require(isTrusted(peerIdentityKey)) { "Dispositivo non fidato." }
         val peerName = hello.optString("name", "Dispositivo").take(80)
         val keys = StreamCenterLocalSyncCrypto.deriveKeysFromIdentities(localIdentity, peerIdentityKey, sessionId)
-        val transcript = autoTranscript(sessionId, peerIdentityKey, localIdentityKey)
+        val transcript = autoTranscript(sessionId, peerIdentityKey, localIdentityKey, channel)
         val expectedClientProof = StreamCenterLocalSyncCrypto.authenticationProof(
             keys.clientAuthenticationKey,
             "client|$transcript",
@@ -806,26 +826,40 @@ internal object StreamCenterLocalSyncNetwork {
         keys: StreamCenterLocalSyncSessionKeys,
         json: JSONObject,
         step: String,
-    ) {
-        val encrypted = StreamCenterLocalSyncCrypto.encrypt(
-            key = keys.payloadEncryptionKey,
-            plaintext = json.toString().toByteArray(StandardCharsets.UTF_8),
-            associatedData = "$MAGIC|$PROTOCOL_VERSION|merge|$step",
-        )
-        writeEncrypted(output, encrypted, null, step)
-        output.flush()
-    }
+    ) = writeSecureMessage(output, keys.payloadEncryptionKey, json, "merge|$step")
 
     private fun readSecureJson(
         input: DataInputStream,
         keys: StreamCenterLocalSyncSessionKeys,
         step: String,
+    ): JSONObject = readSecureMessage(input, keys.payloadEncryptionKey, "merge|$step", MAX_TRANSFER_BYTES + 32)
+
+    fun writeSecureMessage(
+        output: DataOutputStream,
+        key: ByteArray,
+        json: JSONObject,
+        associatedData: String,
+    ) {
+        val encrypted = StreamCenterLocalSyncCrypto.encrypt(
+            key = key,
+            plaintext = json.toString().toByteArray(StandardCharsets.UTF_8),
+            associatedData = "$MAGIC|$PROTOCOL_VERSION|$associatedData",
+        )
+        writeEncrypted(output, encrypted, null, associatedData)
+        output.flush()
+    }
+
+    fun readSecureMessage(
+        input: DataInputStream,
+        key: ByteArray,
+        associatedData: String,
+        maximumCiphertextBytes: Int = MAX_CONTROL_BYTES,
     ): JSONObject {
-        val encrypted = readEncrypted(input, MAX_TRANSFER_BYTES + 32, null, NoopListener, step)
+        val encrypted = readEncrypted(input, maximumCiphertextBytes, null, NoopListener, associatedData)
         val plaintext = StreamCenterLocalSyncCrypto.decrypt(
-            key = keys.payloadEncryptionKey,
+            key = key,
             encrypted = encrypted,
-            associatedData = "$MAGIC|$PROTOCOL_VERSION|merge|$step",
+            associatedData = "$MAGIC|$PROTOCOL_VERSION|$associatedData",
         )
         return JSONObject(String(plaintext, StandardCharsets.UTF_8))
     }
@@ -844,6 +878,7 @@ internal object StreamCenterLocalSyncNetwork {
         localIdentityKey: String,
         localName: String,
         tcpPort: Int,
+        channel: StreamCenterLocalSyncChannel,
         cancellation: StreamCenterLocalSyncCancellation,
     ) {
         val socket = cancellation.track(DatagramSocket(InetSocketAddress(endpoint.address, 0)))
@@ -851,8 +886,8 @@ internal object StreamCenterLocalSyncNetwork {
         val bytes = encodePresence(localIdentityKey, localName, tcpPort).toByteArray(StandardCharsets.UTF_8)
         try {
             while (!cancellation.isCancelled) {
-                socket.send(DatagramPacket(bytes, bytes.size, endpoint.broadcastAddress, AUTO_PRESENCE_PORT))
-                delay(AUTO_PRESENCE_INTERVAL_MS)
+                socket.send(DatagramPacket(bytes, bytes.size, endpoint.broadcastAddress, channel.presencePort))
+                delay(channel.presenceIntervalMs)
             }
         } finally {
             cancellation.close(socket)
@@ -889,7 +924,8 @@ internal object StreamCenterLocalSyncNetwork {
         sessionId: String,
         clientIdentityKey: String,
         serverIdentityKey: String,
-    ): String = "$MAGIC|$PROTOCOL_VERSION|auto|$sessionId|$clientIdentityKey|$serverIdentityKey"
+        channel: StreamCenterLocalSyncChannel,
+    ): String = "$MAGIC|$PROTOCOL_VERSION|${channel.label}|$sessionId|$clientIdentityKey|$serverIdentityKey"
 
     private suspend fun broadcastOffer(
         endpoint: StreamCenterLocalNetworkEndpoint,

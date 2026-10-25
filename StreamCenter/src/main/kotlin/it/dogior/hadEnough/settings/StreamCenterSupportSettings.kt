@@ -19,6 +19,7 @@ import android.text.format.Formatter
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.CheckBox
@@ -40,6 +41,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -116,6 +118,15 @@ abstract class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFra
         openScreen(StreamCenterCacheSettingsFragment(), "StreamCenterCacheSettings")
     }
 
+    protected fun playbackRankingCard(): View = navigationRow(
+        icon = "🧪",
+        title = "Classifica fonti",
+        summary = "In prova · quali fonti partono meglio su questo dispositivo",
+        accent = COLOR_EXPERIMENTAL,
+    ) {
+        openScreen(StreamCenterPlaybackRankingFragment(), "StreamCenterPlaybackRanking")
+    }
+
     protected fun feedbackCard(): View = navigationRow(
         icon = "💬",
         title = "Invia feedback",
@@ -171,7 +182,7 @@ abstract class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFra
     protected fun resetCard(): View = navigationRow(
         icon = "♻️",
         title = "Ripristina tutto",
-        summary = "Riporta StreamCenter alla configurazione iniziale",
+        summary = "Tieni premuto 5 secondi per il Reset COMPLETO",
         accent = COLOR_DANGER,
     ) {
         val alertDialog = AlertDialog.Builder(requireContext())
@@ -200,6 +211,63 @@ abstract class StreamCenterSupportSettingsFragment : StreamCenterBaseSettingsFra
             .create()
         applyDialogBackdrop(alertDialog)
         alertDialog.show()
+    }.also { card -> bindCompleteResetHold(card, Color.parseColor(COLOR_DANGER)) { confirmCompleteReset() } }
+
+    private fun confirmCompleteReset() {
+        val resetDialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Reset COMPLETO", COLOR_DANGER))
+            .setMessage(
+                "Eliminare TUTTI i dati di StreamCenter?\n\n" +
+                    "Saranno cancellati anche chiave TMDB, ID manuali, cache, log, sessioni, " +
+                    "dispositivi associati e backup nell'archivio privato dell'app. " +
+                    "I backup esportati in altre cartelle restano disponibili.\n\n" +
+                    "L'operazione è irreversibile. CloudStream verrà riavviato.",
+            )
+            .setNegativeButton("Annulla", null)
+            .setPositiveButton("Elimina tutto e riavvia") { _, _ -> performCompleteReset() }
+            .create()
+        var awaitFreshKeyPress = true
+        resetDialog.setOnKeyListener { _, key, event ->
+            val activationKey = key in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_BUTTON_A)
+            if (!activationKey || !awaitFreshKeyPress) false
+            else if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                awaitFreshKeyPress = false
+                false
+            } else true
+        }
+        applyDialogBackdrop(resetDialog)
+        resetDialog.show()
+    }
+
+    private fun performCompleteReset() {
+        val appContext = requireContext().applicationContext
+        if (appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)?.component == null) {
+            showBackupError("Reset completo non disponibile", IllegalStateException("Impossibile riavviare CloudStream."))
+            return
+        }
+        val preferences = sharedPref
+        val progress = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Reset COMPLETO", COLOR_DANGER))
+            .setMessage("Cancellazione dei dati di StreamCenter…")
+            .setCancelable(false)
+            .create()
+        applyDialogBackdrop(progress)
+        progress.show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            withContext(NonCancellable) {
+                runCatching {
+                    StreamCenterFullReset.reset(appContext, preferences)
+                    resetRestartNeeded()
+                    restartApplication(appContext)
+                }
+                    .onFailure {
+                        progress.dismiss()
+                        markRestartNeeded()
+                        if (isAdded) showBackupError("Reset completo non riuscito", it)
+                    }
+            }
+        }
     }
 
     private fun showLocalSyncWarningDialog() {

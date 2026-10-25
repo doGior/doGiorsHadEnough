@@ -494,6 +494,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 push(StreamCenterHomeSettingsFragment(), "StreamCenterHomeSettings")
             SettingsScreenId.SOURCES ->
                 push(StreamCenterSourcesSettingsFragment(), "StreamCenterSourcesSettings")
+            SettingsScreenId.OPTIONAL_EXTENSIONS ->
+                push(StreamCenterOptionalExtensionsSettingsFragment(), "StreamCenterOptionalExtensions")
             SettingsScreenId.TORRENT ->
                 push(StreamCenterTorrentSettingsFragment(), "StreamCenterTorrentSettings")
             SettingsScreenId.INTERFACE ->
@@ -502,10 +504,14 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
                 push(StreamCenterCacheSettingsFragment(), "StreamCenterCacheSettings")
             SettingsScreenId.LOGS ->
                 push(StreamCenterLogsSettingsFragment(), "StreamCenterLogsSettings")
+            SettingsScreenId.PLAYBACK_RANKING ->
+                push(StreamCenterPlaybackRankingFragment(), "StreamCenterPlaybackRanking")
             SettingsScreenId.TRACKING_IDS ->
                 push(StreamCenterTrackingIdsSettingsFragment(), "StreamCenterTrackingIdsSettings")
             SettingsScreenId.WATCHING ->
                 push(StreamCenterWatchingSettingsFragment(), "StreamCenterWatchingSettings")
+            SettingsScreenId.REMOTE ->
+                push(StreamCenterRemoteSettingsFragment(), "StreamCenterRemoteSettings")
         }
     }
 

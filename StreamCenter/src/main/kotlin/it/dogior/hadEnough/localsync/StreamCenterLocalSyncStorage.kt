@@ -3,6 +3,7 @@ package it.dogior.hadEnough.localsync
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import it.dogior.hadEnough.remote.StreamCenterRemoteQueue
 import it.dogior.hadEnough.settings.StreamCenterConfigurationStore
 import org.json.JSONArray
 import org.json.JSONObject
@@ -389,6 +390,9 @@ internal object StreamCenterLocalSyncStorage {
         if (StreamCenterLocalSyncCategory.LIBRARY in categories) {
             val account = currentAccount(datastore)
             libraryValues(datastore.all, account).forEach { (key, value) -> result["lib|$key"] = value }
+            StreamCenterRemoteQueue.preferences(context).all.forEach { (key, value) ->
+                if (value is String && StreamCenterRemoteQueue.isValidId(key)) result["rq|$key"] = value
+            }
         }
         if (StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG in categories) {
             StreamCenterConfigurationStore.snapshot(StreamCenterConfigurationStore.preferences(context))
@@ -400,7 +404,7 @@ internal object StreamCenterLocalSyncStorage {
     private fun categoryOfKey(key: String): StreamCenterLocalSyncCategory? =
         when (key.substringBefore('|', "")) {
             "ds", "st" -> StreamCenterLocalSyncCategory.CLOUDSTREAM_CONFIG
-            "lib" -> StreamCenterLocalSyncCategory.LIBRARY
+            "lib", "rq" -> StreamCenterLocalSyncCategory.LIBRARY
             "sc" -> StreamCenterLocalSyncCategory.STREAMCENTER_CONFIG
             else -> null
         }
@@ -413,6 +417,7 @@ internal object StreamCenterLocalSyncStorage {
             "st" -> isTransferable(relative)
             "sc" -> true
             "lib" -> isValidLibraryPayloadKey(relative)
+            "rq" -> StreamCenterRemoteQueue.isValidId(relative)
             else -> false
         }
     }
@@ -424,6 +429,7 @@ internal object StreamCenterLocalSyncStorage {
             "ds", "lib" -> datastore(context)
             "st" -> settings(context)
             "sc" -> StreamCenterConfigurationStore.preferences(context)
+            "rq" -> StreamCenterRemoteQueue.preferences(context)
             else -> return
         }
         val targetKey = if (namespace == "lib") {

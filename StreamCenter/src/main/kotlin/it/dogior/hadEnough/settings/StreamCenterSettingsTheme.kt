@@ -223,6 +223,7 @@ internal val COLOR_TRACK_OFF get() = StreamCenterThemes.active.trackOff
 
 internal const val COLOR_TRANSPARENT = "#00000000"
 internal const val COLOR_STREMIO = "#D946EF"
+internal const val COLOR_EXPERIMENTAL = "#F59E0B"
 internal const val COLOR_TELEGRAM = "#229ED9"
 
 internal const val STREAMING_COMMUNITY_UPDATED_LINK_PAGE =

@@ -39,4 +39,11 @@ internal object StreamCenterHomeCalendarCache {
     fun storage(): PersistentCalendarCache? = storage
 
     fun clear() = storage?.clear()
+
+    @Synchronized fun stopForCompleteReset() {
+        cleanup?.cancel()
+        cleanup = null
+        storage?.close()
+        storage = null
+    }
 }

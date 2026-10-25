@@ -17,6 +17,7 @@ import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.iptv.StreamCenterIptv
 import it.dogior.hadEnough.model.*
+import it.dogior.hadEnough.remote.StreamCenterRemoteCards
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.torrent.*
 import it.dogior.hadEnough.tracking.*
@@ -50,6 +51,7 @@ internal fun StreamCenter.logLoadedResponse(response: LoadResponse, route: Strin
     response.url = identityUrl
     response.recommendations = response.recommendations?.let(::animeSeasonCards)
     if (attachExtensions && InstalledExtensionSources.enabledKeys(sharedPref).isNotEmpty()) response.attachExtensionPlayback()
+    StreamCenterRemoteCards.remember(response)
     if (!StreamCenterLogger.isEnabled(sharedPref)) {
         pendingCardProvenance.remove(response)
         return response

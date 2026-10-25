@@ -455,8 +455,14 @@ class StreamCenterMenuFragment : StreamCenterSupportSettingsFragment() {
                 },
             ),
         )
+        content.addView(sectionHeading("Integrazioni"))
+        content.addView(navigationRow(
+            title = "Estensioni opzionali",
+            summary = "PriSynx, SleepGuard, WatchParty e Wrapped",
+            icon = "🧩",
+        ) { openScreen(StreamCenterOptionalExtensionsSettingsFragment(), "StreamCenterOptionalExtensions") })
         content.addView(sectionHeading("Dati"))
-        addAdaptiveCardGrid(content, listOf(backupCard(), syncLocaleCard(), cacheCard()))
+        addAdaptiveCardGrid(content, listOf(backupCard(), syncLocaleCard(), cacheCard(), playbackRankingCard(), remoteControlCard()))
         content.addView(sectionHeading("App"))
         addAdaptiveCardGrid(
             content,

@@ -1,15 +1,20 @@
 package it.dogior.hadEnough
 
+import android.content.Context
 import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newHomePageResponse
+import com.lagradost.cloudstream3.newMovieSearchResponse
 import it.dogior.hadEnough.StreamCenter.Companion.AU_ARCHIVE_BATCH_SIZE
 import it.dogior.hadEnough.catalog.*
 import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.model.*
+import it.dogior.hadEnough.remote.StreamCenterRemote
+import it.dogior.hadEnough.remote.StreamCenterRemoteQueue
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.torrent.*
 import it.dogior.hadEnough.tracking.*
@@ -103,6 +108,7 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
         )
     }
     val data = request.data
+    if (data == REMOTE_QUEUE_SECTION_DATA) return remoteQueuePage(request)
     if (data == "library:catch_up") {
         val result = catchUp.page(page, StreamCenterPlugin.getHomeSectionCount(sharedPref, data))
         return newHomePageResponse(
@@ -316,4 +322,31 @@ internal suspend fun StreamCenter.importedHomePage(page: Int, request: MainPageR
     }.getOrDefault(emptyList())
     val title = StreamCenterPlugin.resolveHomeTitlePlaceholders(request.name, Calendar.getInstance(), itemCount = items.size)
     return newHomePageResponse(HomePageList(title, items, horizontal), hasNext = hasNext && items.isNotEmpty())
+}
+
+internal const val REMOTE_QUEUE_SECTION_DATA = "remote:queue"
+
+internal fun StreamCenter.remoteQueueSection(): List<Pair<String, String>> {
+    val context = StreamCenterPlugin.activeContext ?: return emptyList()
+    if (searchSection != StreamCenter.SEARCH_SECTION_MAIN || !StreamCenterRemote.isEnabled()) return emptyList()
+    if (remoteQueueItems(context).isEmpty()) return emptyList()
+    return listOf(REMOTE_QUEUE_SECTION_DATA to "Prossimi da guardare")
+}
+
+private fun StreamCenter.remoteQueueItems(context: Context) = StreamCenterRemoteQueue.items(context)
+    .filter { it.apiName == name || it.apiName.startsWith("$name ") }
+
+private fun StreamCenter.remoteQueuePage(request: MainPageRequest): HomePageResponse {
+    val context = StreamCenterPlugin.activeContext
+    val items = if (context == null || !StreamCenterRemote.isEnabled()) emptyList() else remoteQueueItems(context)
+    return newHomePageResponse(
+        HomePageList(
+            name = request.name,
+            list = items.map { item ->
+                newMovieSearchResponse(item.name, item.url, TvType.Movie) { posterUrl = item.poster }
+            },
+            isHorizontalImages = false,
+        ),
+        hasNext = false,
+    )
 }

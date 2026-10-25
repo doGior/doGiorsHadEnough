@@ -12,6 +12,7 @@ import it.dogior.hadEnough.tmdb.TmdbAttribution
 import it.dogior.hadEnough.tmdb.TmdbLogoDrawable
 import it.dogior.hadEnough.tmdb.TmdbVerifyResult
 import it.dogior.hadEnough.extensions.InstalledExtensionSources
+import it.dogior.hadEnough.extensions.StreamCenterPriSynx
 import it.dogior.hadEnough.torrent.StreamCenterTorrentPreferences
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
@@ -139,6 +140,20 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         rowsContainer = rowsView
         content.addView(rowsView)
         renderRows()
+
+        content.addView(sectionHeading("Riproduzione"))
+        content.addView(switchRow(
+            title = "Riproduzione con un tasto",
+            summary = "In prova · impara quali fonti partono meglio, avvia subito la più affidabile",
+            checked = StreamCenterPlugin.isOneTapPlaybackEnabled(sharedPref),
+            defaultChecked = StreamCenterPlugin.isOneTapPlaybackEnabled(null),
+            accent = COLOR_EXPERIMENTAL,
+            icon = "🧪",
+        ) { enabled ->
+            sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_ONE_TAP_PLAYBACK, enabled) }
+            saveToast(if (enabled) "Vale dal prossimo video che apri" else "Riproduzione con un tasto disattivata")
+        })
+        content.addView(playbackRankingCard())
 
         content.addView(sectionHeading("TMDB"))
         content.addView(tmdbCredentialRow())
@@ -923,7 +938,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
 
     private fun installedExtensionsCategoryCard(): LinearLayout {
         val categoryKey = EXTENSIONS_CATEGORY_KEY
-        val sources = InstalledExtensionSources.available()
+        val sources = InstalledExtensionSources.available().filterNot { StreamCenterPriSynx.isPriSynx(it.name, it.downloadUrl) }
         val expanded = expandedCategoryKey == categoryKey
         fun statusText(): String {
             val selected = InstalledExtensionSources.enabledKeys(sharedPref)

@@ -17,6 +17,8 @@ import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.catalog.StreamCenterHomeImport
 import it.dogior.hadEnough.catalog.StreamCenterHomeImports
 import it.dogior.hadEnough.extensions.InstalledExtensionSources
+import it.dogior.hadEnough.extensions.InstalledExtension
+import it.dogior.hadEnough.extensions.StreamCenterPriSynx
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 import it.dogior.hadEnough.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +27,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragment() {
+    companion object {
+        private const val ARG_EXTENSION_KEY = "extensionKey"
+
+        internal fun forExtension(key: String) = StreamCenterBaseCatalogSettingsFragment().apply {
+            arguments = Bundle().apply { putString(ARG_EXTENSION_KEY, key) }
+        }
+    }
+
     override val screenTitle = "Ordine delle sezioni"
     override val screenIcon = "⇅"
     private var listContainer: LinearLayout? = null
@@ -54,6 +64,11 @@ class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragme
             title = "Aggiungi da un'estensione", summary = "Sezioni delle altre estensioni CloudStream installate",
             icon = "+", accent = COLOR_ACCENT,
         ) { chooseExtension() }.view)
+        content.addView(settingsRow(
+            title = "Ripristina sezioni",
+            summary = "Elimina le sezioni aggiunte e ripristina quelle predefinite",
+            icon = "↩", accent = COLOR_ACCENT,
+        ) { confirmResetSections() }.view)
         content.addView(sectionHeading("Ordine delle sezioni", COLOR_ACCENT))
         listContainer = LinearLayout(requireContext()).apply { orientation = LinearLayout.VERTICAL }
         content.addView(listContainer)
@@ -62,6 +77,15 @@ class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragme
     }
 
     override fun onSectionsEdited() = renderSections()
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        val extensionKey = arguments?.getString(ARG_EXTENSION_KEY) ?: return
+        arguments?.remove(ARG_EXTENSION_KEY)
+        val extension = InstalledExtensionSources.available(forHome = true).firstOrNull { it.key == extensionKey }
+        if (extension == null) saveToast("Cataloghi dell'estensione non disponibili")
+        else view.post { if (isAdded && this.view === view) chooseExtensionSource(extension) }
+    }
 
     private fun renderSections() {
         val container = listContainer ?: return
@@ -107,6 +131,22 @@ class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragme
             ) { editSection(section, countManagedBySource = imported != null) { confirmRemoveSection(section) } }.view
             container.addView(sectionRow)
         }
+    }
+
+    private fun confirmResetSections() {
+        showDialog(AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("Ripristina sezioni"))
+            .setMessage(
+                "Eliminare tutte le sezioni aggiunte, anche da cataloghi ed estensioni, e ripristinare " +
+                    "le sezioni predefinite con ordine, nomi, quantità e attivazione iniziali?",
+            )
+            .setNegativeButton("Annulla", null)
+            .setPositiveButton("Ripristina") { _, _ ->
+                discoveryJob?.cancel()
+                StreamCenterPlugin.resetHomeSectionsConfiguration(sharedPref)
+                renderSections()
+                saveToast("Sezioni ripristinate")
+            }.create())
     }
 
     private fun confirmRemoveSection(section: StreamCenterHomeSectionDefinition) {
@@ -157,15 +197,18 @@ class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragme
         showSourcePicker(
             title = "Scegli un'estensione", items = extensions, accent = COLOR_ACCENT,
             name = { it.name }, badge = { installedExtensionBadge(it) }, summary = { it.summary },
-        ) { extension ->
-            val sources = extension.sources
-            if (sources.size == 1) chooseExtensionRequest(sources.single().api)
-            else showSourcePicker(
-                title = extension.name, items = sources, accent = COLOR_ACCENT,
-                name = { it.api.name }, badge = { installedExtensionBadge(extension) },
-                summary = { it.api.lang.uppercase(Locale.ROOT) },
-            ) { source -> chooseExtensionRequest(source.api) }
-        }
+        ) { extension -> chooseExtensionSource(extension) }
+    }
+
+    private fun chooseExtensionSource(extension: InstalledExtension) {
+        val sources = extension.sources
+        val combinedHome = StreamCenterPriSynx.isPriSynx(extension.name, extension.downloadUrl)
+        if (sources.size == 1) chooseExtensionRequest(sources.single().api, combinedHome)
+        else showSourcePicker(
+            title = extension.name, items = sources, accent = COLOR_ACCENT,
+            name = { it.api.name }, badge = { installedExtensionBadge(extension) },
+            summary = { it.api.lang.uppercase(Locale.ROOT) },
+        ) { source -> chooseExtensionRequest(source.api, combinedHome) }
     }
 
     private fun <T> showSourcePicker(
@@ -199,17 +242,16 @@ class StreamCenterBaseCatalogSettingsFragment : StreamCenterSectionEditingFragme
         showDialog(dialog)
     }
 
-    private fun chooseExtensionRequest(api: MainAPI) {
-        val requests = runCatching { api.mainPage.map { MainPageRequest(it.name, it.data, it.horizontalImages) } }
-            .getOrDefault(emptyList())
-        if (requests.isEmpty()) {
-            discoverSections(api, listOf(MainPageRequest("Home", "", false)), selectionConfirmed = false)
+    private fun chooseExtensionRequest(api: MainAPI, combinedHome: Boolean = false) {
+        val requests = StreamCenterHomeImports.extensionRequests(api)
+        if (combinedHome || requests.size == 1) {
+            discoverSections(api, requests, selectionConfirmed = false)
             return
         }
         val checked = BooleanArray(requests.size)
         lateinit var dialog: AlertDialog
         dialog = AlertDialog.Builder(requireContext()).setCustomTitle(dialogTitle(api.name))
-            .setMultiChoiceItems(requests.map { it.name }.toTypedArray(), checked) { _, index, selected ->
+            .setMultiChoiceItems(requests.mapIndexed { index, request -> request.name.ifBlank { "Catalogo ${index + 1}" } }.toTypedArray(), checked) { _, index, selected ->
                 checked[index] = selected
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = checked.any { it }
             }

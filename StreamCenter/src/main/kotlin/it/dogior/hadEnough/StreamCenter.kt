@@ -132,6 +132,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
@@ -403,7 +404,7 @@ class StreamCenter internal constructor(
 
     override val mainPage
         get() = when {
-            catalogDefinition == null -> StreamCenterPlugin.getConfiguredHomeSections(sharedPref)
+            catalogDefinition == null -> remoteQueueSection() + StreamCenterPlugin.getConfiguredHomeSections(sharedPref)
                 .map { it.definition.data to it.title }
             !catalogIsActive -> emptyList()
             else -> StreamCenterCatalogs.selectedSections(sharedPref, catalogDefinition)
@@ -611,6 +612,14 @@ class StreamCenter internal constructor(
 
     override suspend fun load(url: String): LoadResponse {
         StreamCenterVpnGuard.requireInternetAccess(sharedPref)
+        val account = com.lagradost.cloudstream3.utils.DataStoreHelper.currentAccount
+        suspend fun finish(response: LoadResponse): LoadResponse {
+            if (account != com.lagradost.cloudstream3.utils.DataStoreHelper.currentAccount) {
+                throw CancellationException("Account cambiato durante il caricamento")
+            }
+            catchUp.remember(response)
+            return response
+        }
         val original = if (AnimeSeasonRoutes.isGrouped(url)) {
             AnimeSeasonRoutes.unwrap(url) ?: error("Collegamento stagioni anime non valido")
         } else url
@@ -622,7 +631,7 @@ class StreamCenter internal constructor(
         if (!StreamCenterPlugin.shouldGroupAnimeSeasons(sharedPref) || selected !is AnimeLoadResponse ||
             selected.type == TvType.AnimeMovie) {
             rememberTrackingIds(trackingKey, selected, detectedTrackingIds, groupedSeasons = false)
-            return selected.also(catchUp::remember)
+            return finish(selected)
         }
         rememberTrackingIds(trackingKey, selected, detectedTrackingIds, groupedSeasons = true)
         val anilistId = selected.getAniListId()?.toIntOrNull()?.takeIf { it > 0 }
@@ -637,10 +646,10 @@ class StreamCenter internal constructor(
         if (series.complete && StreamCenterMediaCache.isEnabled(sharedPref)) {
             StreamCenterMediaCache.rememberAnimeRelations(entries)
         }
-        return logLoadedResponse(
+        return finish(logLoadedResponse(
             groupAnimeSeasons(selected, resolvedId, entries, groupedUrl, relatedEpisodes),
             "anime:stagioni", groupedUrl, attachExtensions = false,
-        ).also(catchUp::remember)
+        ))
     }
 
     internal suspend fun loadSingleMedia(url: String): LoadResponse {
@@ -852,6 +861,14 @@ class StreamCenter internal constructor(
             resetSourceDomainChecks()
             val instances = synchronized(activeInstances) { activeInstances.toList() }
             instances.forEach { it.clearRuntimeConfiguration() }
+        }
+
+        internal suspend fun prepareForCompleteReset() {
+            val instances = synchronized(activeInstances) { activeInstances.toList() }
+            val jobs = instances.mapNotNull { it.backgroundScope.coroutineContext[kotlinx.coroutines.Job] }
+            instances.forEach { it.backgroundScope.cancel() }
+            jobs.forEach { it.join() }
+            resetRuntimeConfiguration()
         }
 
         fun clearHomeCalendarCache() {

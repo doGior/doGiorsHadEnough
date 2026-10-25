@@ -28,6 +28,7 @@ internal object StreamCenterBundledLogos {
         "nowtv.it" to "nowtv",
         "max.com" to "max",
     )
+    private val namedLogos = setOf("prisynx", "sleepguard", "watchparty", "wrapped")
 
     @Volatile
     private var pluginFile: String? = null
@@ -42,8 +43,9 @@ internal object StreamCenterBundledLogos {
 
     fun covers(url: String?): Boolean = logoName(url) != null
 
-    fun bitmap(vararg urls: String?): Bitmap? {
-        val name = urls.firstNotNullOfOrNull(::logoName) ?: return null
+    fun bitmap(vararg urls: String?): Bitmap? = urls.firstNotNullOfOrNull(::logoName)?.let(::named)
+
+    fun named(name: String): Bitmap? {
         decoded[name]?.let { return it }
         val bytes = encodedLogos()[name] ?: return null
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
@@ -65,7 +67,7 @@ internal object StreamCenterBundledLogos {
         val source = pluginFile?.let(::File)?.takeIf { it.isFile } ?: return emptyMap()
         val logos = runCatching {
             ZipFile(source).use { zip ->
-                logosByDomain.values.toSet().mapNotNull { name ->
+                (logosByDomain.values + namedLogos).toSet().mapNotNull { name ->
                     val entry = zip.getEntry("$ENTRY_ROOT/$name.png") ?: return@mapNotNull null
                     name to zip.getInputStream(entry).use { it.readBytes() }
                 }.toMap()

@@ -82,6 +82,12 @@ internal class StreamCenterLocalSyncAutoCoordinator(
         log("Auto-sync fermato")
     }
 
+    fun stopForCompleteReset(): kotlinx.coroutines.Job? {
+        val running = scope?.coroutineContext?.get(kotlinx.coroutines.Job)
+        stop()
+        return running
+    }
+
     private suspend fun delayUntilNextSharedCycle() {
         val intervalMs = StreamCenterLocalSyncAutoConfig.intervalMinutes(appContext) * 60_000L
         val now = System.currentTimeMillis()

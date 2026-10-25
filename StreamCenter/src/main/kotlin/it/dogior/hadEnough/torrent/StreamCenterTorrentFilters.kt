@@ -5,7 +5,7 @@ import java.util.Locale
 import kotlin.math.ln
 import kotlin.math.roundToLong
 
-private const val DEFAULT_TORRENT_RESULT_LIMIT = 25
+private const val DEFAULT_TORRENT_RESULT_LIMIT = 10
 private const val MIN_TORRENT_RESULT_LIMIT = 1
 private const val MAX_TORRENT_RESULT_LIMIT = 100
 

@@ -459,6 +459,7 @@ internal object StreamCenterMediaCache {
     }
 
     private fun directory(): File? {
+        if (StreamCenterPlugin.completeResetInProgress) return null
         val context = StreamCenterPlugin.activeContext ?: return null
         val directory = File(context.applicationContext.filesDir, DIRECTORY_NAME)
         if (!directory.exists() && !directory.mkdirs() && !directory.exists()) return null

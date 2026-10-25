@@ -94,6 +94,12 @@ object StreamCenterLogger {
         val records: List<ParsedRecord>,
     )
 
+    fun stopForCompleteReset() = synchronized(lock) {
+        writingEnabled = false
+        activeSession = null
+        activePreferences = null
+    }
+
     fun isEnabled(preferences: SharedPreferences?): Boolean {
         return preferences?.getBoolean(PREF_ENABLED, false) ?: false
     }

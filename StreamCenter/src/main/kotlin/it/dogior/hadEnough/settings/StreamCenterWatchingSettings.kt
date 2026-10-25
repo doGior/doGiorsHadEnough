@@ -126,14 +126,19 @@ class StreamCenterWatchingSettingsFragment : StreamCenterBaseSettingsFragment() 
     private fun refresh(force: Boolean) {
         loadJob?.cancel()
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
-            render(withContext(Dispatchers.IO) { StreamCenterCatchUp.watching() })
+            refreshing = false
+            renderSnapshot()
             val job = withContext(Dispatchers.IO) { StreamCenterCatchUp.refreshWatching(force) } ?: return@launch
             refreshing = true
-            render(withContext(Dispatchers.IO) { StreamCenterCatchUp.watching() })
+            renderSnapshot()
             job.join()
             refreshing = false
-            render(withContext(Dispatchers.IO) { StreamCenterCatchUp.watching() })
+            renderSnapshot()
         }
+    }
+
+    private suspend fun renderSnapshot() {
+        render(withContext(Dispatchers.IO) { StreamCenterCatchUp.watching() })
     }
 
     private fun render(series: List<WatchingSeries>?) {

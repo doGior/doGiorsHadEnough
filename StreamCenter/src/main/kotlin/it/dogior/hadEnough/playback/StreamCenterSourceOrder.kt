@@ -16,14 +16,14 @@ internal enum class PlaybackSourceGroup(val label: String) {
 
 internal class StreamingPlaybackLinks(
     private val dedupKey: (ExtractorLink) -> String,
-    private val emit: (PlaybackSourceGroup, ExtractorLink) -> Unit,
+    private val emit: (PlaybackSource, ExtractorLink) -> Unit,
 ) {
     private val emittedKeys = mutableSetOf<String>()
 
     val size: Int get() = synchronized(emittedKeys) { emittedKeys.size }
 
-    fun add(group: PlaybackSourceGroup, link: ExtractorLink) = synchronized(emittedKeys) {
-        if (emittedKeys.add(dedupKey(link))) emit(group, link)
+    fun add(source: PlaybackSource, link: ExtractorLink) = synchronized(emittedKeys) {
+        if (emittedKeys.add(dedupKey(link))) emit(source, link)
     }
 }
 
@@ -43,17 +43,43 @@ private object CloudStreamPlaybackPriorities : PlaybackPriorityStore {
 }
 
 internal class StreamCenterSourceOrder(private val store: PlaybackPriorityStore = CloudStreamPlaybackPriorities) {
+    companion object {
+        private const val PINNED_BONUS = 100
+        private const val PINNED_LABEL = "StreamCenter · Scelta dal telefono"
+
+        @Volatile
+        private var pinned: Pair<String, Long>? = null
+
+        fun pinOnce(linkName: String, durationMs: Long) {
+            pinned = linkName to System.currentTimeMillis() + durationMs
+        }
+
+        private fun pinnedLink(): String? {
+            val (name, until) = pinned ?: return null
+            return name.takeIf { System.currentTimeMillis() < until }
+        }
+    }
+
     private val profiles by lazy { store.profiles().associateWith { id ->
         Qualities.entries.associateWith { store.qualityPriority(id, it) }
     } }
     private val configuredSources = mutableSetOf<String>()
     private var available = true
 
-    fun prepare(group: PlaybackSourceGroup, link: ExtractorLink, playbackProvider: String? = null): ExtractorLink {
+    fun prepare(
+        group: PlaybackSourceGroup,
+        link: ExtractorLink,
+        playbackProvider: String? = null,
+        tier: PlaybackTier = PlaybackTier.NORMAL,
+    ): ExtractorLink {
         if (!available && playbackProvider == null) return link
         val quality = Qualities.entries.minBy { kotlin.math.abs(it.value.toLong() - link.quality) }
         val qualityLabel = if (quality == Qualities.Unknown) "N/D" else "${quality.value}p"
-        val source = playbackProvider ?: "StreamCenter · ${group.label} · $qualityLabel"
+        val pin = pinnedLink()
+        val isPinned = pin != null && pin == link.name
+        val appliedTier = if (playbackProvider == null && pin == null) tier else PlaybackTier.NORMAL
+        val source = if (isPinned) PINNED_LABEL else playbackProvider
+            ?: listOfNotNull("StreamCenter", group.label, qualityLabel, appliedTier.label).joinToString(" · ")
         try {
             if (available && configuredSources.add(source)) {
                 profiles.forEach { (profile, priorities) ->
@@ -61,7 +87,8 @@ internal class StreamCenterSourceOrder(private val store: PlaybackPriorityStore 
                     val visiblePriorities = priorities.values.filter { it >= -1 }.distinct().sorted()
                     val qualityRank = if (visiblePriorities.size <= 1) 0 else
                         (visiblePriorities.indexOf(original).coerceAtLeast(0) * 2 / (visiblePriorities.size - 1))
-                    val total = if (original < -1) original + 1 else (2 - group.ordinal) * 3 + qualityRank
+                    val total = if (original < -1) original + 1 else
+                        (2 - group.ordinal) * 3 + qualityRank + appliedTier.bonus + if (isPinned) PINNED_BONUS else 0
                     val priority = total - original
                     if (store.sourcePriority(profile, source) != priority) store.setSourcePriority(profile, source, priority)
                 }
