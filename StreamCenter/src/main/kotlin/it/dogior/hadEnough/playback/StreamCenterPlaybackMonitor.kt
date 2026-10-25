@@ -191,13 +191,22 @@ private class PlaybackInsightSession(
     private fun isAutomatic(link: ExtractorLink): Boolean {
         val viewModel = Reflect.get(fragment, "viewModel") as? PlayerGeneratorViewModel ?: return false
         val profile = Reflect.get(fragment, "currentQualityProfile") as? Int ?: return false
-        val sorted = runCatching { viewModel.state.sortLinks(profile).map { it.first?.url } }.getOrNull() ?: return false
+        val sorted = sortedLinkUrls(viewModel, profile) ?: return false
         val index = sorted.indexOf(link.url)
         if (index == 0) return true
         val failedIndex = state.lastFailedUrl?.let(sorted::indexOf) ?: return false
         val recent = SystemClock.uptimeMillis() - state.lastFailureAt <= AUTO_SWITCH_WINDOW_MS
         return recent && failedIndex >= 0 && index == failedIndex + 1
     }
+
+    private fun sortedLinkUrls(viewModel: PlayerGeneratorViewModel, profile: Int): List<String?>? = runCatching {
+        val videoState = viewModel.state
+        val links = videoState.javaClass.getMethod("sortLinks", Int::class.javaPrimitiveType).invoke(videoState, profile) as List<*>
+        links.map { entry ->
+            val pair = entry as? Pair<*, *> ?: entry?.let { Reflect.get(it, "link") } as? Pair<*, *>
+            (pair?.first as? ExtractorLink)?.url
+        }
+    }.getOrNull()
 
     private fun timeoutFor(origin: PlaybackOrigin): Long =
         if (origin.source.group == PlaybackSourceGroup.TORRENT) TORRENT_START_TIMEOUT_MS else START_TIMEOUT_MS
