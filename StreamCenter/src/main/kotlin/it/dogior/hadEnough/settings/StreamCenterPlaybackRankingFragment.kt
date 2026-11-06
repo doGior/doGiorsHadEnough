@@ -7,8 +7,10 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.lifecycleScope
+import it.dogior.hadEnough.playback.DiscoveryOutcome
 import it.dogior.hadEnough.playback.PlaybackInsightSummary
 import it.dogior.hadEnough.playback.PlaybackTier
+import it.dogior.hadEnough.playback.SourceDiscoverySummary
 import it.dogior.hadEnough.playback.StreamCenterPlaybackInsights
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -55,19 +57,19 @@ class StreamCenterPlaybackRankingFragment : StreamCenterBaseSettingsFragment() {
 
     private fun loadRanking() {
         lifecycleScope.launch {
-            val summaries = withContext(Dispatchers.IO) {
-                runCatching { StreamCenterPlaybackInsights.summaries() }.getOrDefault(emptyList())
+            val (summaries, discoveries) = withContext(Dispatchers.IO) {
+                runCatching { StreamCenterPlaybackInsights.summaries() }.getOrDefault(emptyList()) to
+                    runCatching { StreamCenterPlaybackInsights.discoverySummaries() }.getOrDefault(emptyList())
             }
-            renderRanking(summaries)
+            renderRanking(summaries, discoveries)
         }
     }
 
-    private fun renderRanking(summaries: List<PlaybackInsightSummary>) {
+    private fun renderRanking(summaries: List<PlaybackInsightSummary>, discoveries: List<SourceDiscoverySummary>) {
         val container = rankingContainer ?: return
         container.removeAllViews()
         if (summaries.isEmpty()) {
             container.addView(emptyStateCard("Nessuna riproduzione misurata finora", COLOR_EXPERIMENTAL, "🎯"))
-            return
         }
         var position = 0
         summaries.groupBy(PlaybackInsightSummary::tier).toSortedMap(compareBy(PlaybackTier::ordinal)).forEach { (tier, group) ->
@@ -77,7 +79,58 @@ class StreamCenterPlaybackRankingFragment : StreamCenterBaseSettingsFragment() {
                 container.addView(rankingRow(position, summary))
             }
         }
+        container.addView(sectionHeading("Ritrovamento · dalla più veloce a trovare i link"))
+        if (discoveries.isEmpty()) {
+            container.addView(emptyStateCard("Nessuna ricerca di fonti misurata finora", COLOR_EXPERIMENTAL, "⏱️"))
+            return
+        }
+        discoveries.forEachIndexed { index, summary -> container.addView(discoveryRow(index + 1, summary)) }
     }
+
+    private fun discoveryRow(position: Int, summary: SourceDiscoverySummary): View = settingsRow(
+        title = summary.sourceName,
+        summary = discoverySummaryText(summary),
+        accent = COLOR_EXPERIMENTAL,
+        leadingView = iconBadge("$position", COLOR_EXPERIMENTAL, size = 36, marginEnd = 12),
+    ) { showDiscoveryDetails(position, summary) }.view
+
+    private fun discoverySummaryText(summary: SourceDiscoverySummary): String {
+        val speed = summary.medianFirstLinkMs?.let { "primo link in ${seconds(it)}" } ?: "mai trovata"
+        return "${summary.group.label} · ${foundText(summary)} · $speed"
+    }
+
+    private fun foundText(summary: SourceDiscoverySummary): String = when {
+        !summary.isProvider -> "trovata ${summary.found} su ${summary.attempts}"
+        summary.found == 1 -> "trovata 1 volta"
+        else -> "trovata ${summary.found} volte"
+    }
+
+    private fun showDiscoveryDetails(position: Int, summary: SourceDiscoverySummary) {
+        val lines = buildList {
+            add("Posizione: $position")
+            add("Tipo: ${summary.group.label}")
+            add(
+                if (summary.isProvider) foundText(summary).replaceFirstChar(Char::uppercase)
+                else "Trovata: ${summary.found} su ${summary.attempts} ricerche (${(summary.foundRate * 100).toInt()}%)",
+            )
+            summary.medianFirstLinkMs?.let { add("Primo link, tempo tipico: ${seconds(it)}") }
+            summary.fastestFirstLinkMs?.let { add("Primo link, più veloce: ${seconds(it)}") }
+            summary.medianDurationMs?.let { add("Durata tipica della ricerca: ${seconds(it)}") }
+            if (summary.found > 0) add("Link per ricerca: %.1f".format(Locale.ITALIAN, summary.averageLinks))
+            DiscoveryOutcome.entries.filter { it != DiscoveryOutcome.FOUND }.forEach { outcome ->
+                summary.outcomes[outcome]?.takeIf { it > 0 }?.let { add("${outcome.label}: $it") }
+            }
+        }
+        val alertDialog = AlertDialog.Builder(requireContext())
+            .setCustomTitle(dialogTitle("⏱️ ${summary.sourceName}", COLOR_EXPERIMENTAL))
+            .setMessage(lines.joinToString("\n"))
+            .setPositiveButton("Chiudi", null)
+            .create()
+        applyDialogBackdrop(alertDialog)
+        alertDialog.show()
+    }
+
+    private fun seconds(ms: Long): String = "%.1f s".format(Locale.ITALIAN, ms / 1000.0)
 
     private fun tierHeading(tier: PlaybackTier): String = when (tier) {
         PlaybackTier.RELIABLE -> "Affidabili · partono subito"
@@ -105,7 +158,7 @@ class StreamCenterPlaybackRankingFragment : StreamCenterBaseSettingsFragment() {
             add("Fascia: ${summary.tier.title}")
             add("Punteggio: ${summary.score?.let { "$it su 100" } ?: "non ancora calcolato"}")
             add("Partite: ${summary.started} su ${summary.attempts} delle ultime prove")
-            summary.medianStartupMs?.let { add("Avvio tipico: %.1f s".format(Locale.ITALIAN, it / 1000.0)) }
+            summary.medianStartupMs?.let { add("Avvio tipico: ${seconds(it)}") }
             add("Blocchi: %.1f a visione".format(Locale.ITALIAN, summary.stallsPerPlay))
             summary.height?.let { add("Qualità reale: ${it}p") }
         }
@@ -126,7 +179,7 @@ class StreamCenterPlaybackRankingFragment : StreamCenterBaseSettingsFragment() {
                 lifecycleScope.launch {
                     val result = withContext(Dispatchers.IO) { runCatching { StreamCenterPlaybackInsights.clear() } }
                     saveToast(if (result.isSuccess) "Classifica cancellata" else "Impossibile cancellare la classifica")
-                    if (result.isSuccess) renderRanking(emptyList())
+                    if (result.isSuccess) renderRanking(emptyList(), emptyList())
                 }
             }
             .setNegativeButton("Annulla", null)

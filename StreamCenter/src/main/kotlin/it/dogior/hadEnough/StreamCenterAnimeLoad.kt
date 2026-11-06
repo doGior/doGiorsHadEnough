@@ -321,7 +321,6 @@ internal suspend fun StreamCenter.resolveAnilistLoadResponse(
                 syncIds = sourceSyncIds,
                 aniZipIds = resolvedAnilistId to resolvedMalId,
                 includeAniZip = includeAniZip,
-                ignoreSourceFailures = true,
             )
         }
         val simklIdDeferred = async(Dispatchers.IO) {
@@ -339,11 +338,6 @@ internal suspend fun StreamCenter.resolveAnilistLoadResponse(
     val animeWorldSources = resolvedSources.animeWorldSources
     val animeSaturnSources = resolvedSources.animeSaturnSources
     val aniZipCatalog = resolvedSources.aniZipCatalog
-    val recommendations = buildBaseCatalogAnimeUnityRecommendations(
-        sources = animeUnitySources,
-        anilistId = resolvedAnilistId,
-        malId = resolvedMalId,
-    )
     val stremioContext = StreamCenterStremioPlaybackContext(
         contentTypes = if (isMovie) listOf("movie", "anime") else listOf("series", "anime"),
         anilistId = resolvedAnilistId,
@@ -359,24 +353,50 @@ internal suspend fun StreamCenter.resolveAnilistLoadResponse(
         else -> metadata.titleEnglish
             ?: metadata.titleRomaji
     }?.trim()?.takeIf(String::isNotBlank) ?: metadata.title
-    val torrentContext = animeTorrentPlaybackContext(
-        titles = listOf(
-            cardTitle,
-            metadata.title,
-            metadata.titleRomaji,
-            metadata.titleEnglish,
-            metadata.titleNative,
-            metadata.originalTitle,
-        ) + metadata.titleCandidates,
-        year = metadata.year,
-        isMovie = isMovie,
-        tabName = cardTitle,
-        aniZipCatalog = aniZipCatalog,
-        anilistId = resolvedAnilistId,
-        malId = resolvedMalId,
-        kitsuId = resolvedKitsuId,
-        knownAniListTitle = metadata.titleNative,
+    val sourceEpisodeNumbers = animeSourceEpisodeNumbers(
+        animeUnitySources,
+        animeWorldSources,
+        animeSaturnSources,
     )
+    val (recommendations, torrentContext, tmdbMetadata) = coroutineScope {
+        val recommendationsDeferred = async(Dispatchers.IO) {
+            buildBaseCatalogAnimeUnityRecommendations(
+                sources = animeUnitySources,
+                anilistId = resolvedAnilistId,
+                malId = resolvedMalId,
+            )
+        }
+        val tmdbMetadataDeferred = async(Dispatchers.IO) {
+            resolveTmdbAnimeMetadata(
+                anilistId = resolvedAnilistId,
+                malId = resolvedMalId,
+                titleCandidates = listOfNotNull(metadata.titleNative, metadata.titleEnglish, metadata.titleRomaji, metadata.title) + metadata.titleCandidates,
+                year = metadata.year,
+                sourceEpisodeNumbers = sourceEpisodeNumbers,
+                aniZipCatalog = aniZipCatalog,
+                isMovie = isMovie,
+            )
+        }
+        val torrent = animeTorrentPlaybackContext(
+            titles = listOf(
+                cardTitle,
+                metadata.title,
+                metadata.titleRomaji,
+                metadata.titleEnglish,
+                metadata.titleNative,
+                metadata.originalTitle,
+            ) + metadata.titleCandidates,
+            year = metadata.year,
+            isMovie = isMovie,
+            tabName = cardTitle,
+            aniZipCatalog = aniZipCatalog,
+            anilistId = resolvedAnilistId,
+            malId = resolvedMalId,
+            kitsuId = resolvedKitsuId,
+            knownAniListTitle = metadata.titleNative,
+        )
+        Triple(recommendationsDeferred.await(), torrent, tmdbMetadataDeferred.await())
+    }
     StreamCenterLogger.logTab(
         tabName = cardTitle,
         action = "Risoluzione fonti anime completata",
@@ -414,20 +434,6 @@ internal suspend fun StreamCenter.resolveAnilistLoadResponse(
         },
     )
     val sourceUrl = markAnilistUrl(resolvedAnilistId, resolvedMalId)
-    val sourceEpisodeNumbers = animeSourceEpisodeNumbers(
-        animeUnitySources,
-        animeWorldSources,
-        animeSaturnSources,
-    )
-    val tmdbMetadata = resolveTmdbAnimeMetadata(
-        anilistId = resolvedAnilistId,
-        malId = resolvedMalId,
-        titleCandidates = listOfNotNull(metadata.titleNative, metadata.titleEnglish, metadata.titleRomaji, metadata.title) + metadata.titleCandidates,
-        year = metadata.year,
-        sourceEpisodeNumbers = sourceEpisodeNumbers,
-        aniZipCatalog = aniZipCatalog,
-        isMovie = isMovie,
-    )
     val animeType = if (isMovie) {
         TvType.AnimeMovie
     } else {
@@ -524,7 +530,6 @@ internal suspend fun StreamCenter.resolveAnimePlaybackSources(
     syncIds: List<AnimeSyncIds>,
     aniZipIds: Pair<Int?, Int?>? = null,
     includeAniZip: Boolean,
-    ignoreSourceFailures: Boolean = false,
 ): ResolvedLoadSources = coroutineScope {
     StreamCenterLogger.logTab(
         tabName = metadata.title,
@@ -537,12 +542,11 @@ internal suspend fun StreamCenter.resolveAnimePlaybackSources(
             "animeworld_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD),
             "animesaturn_abilitata" to isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN),
             "anizip_richiesto" to (includeAniZip && aniZipIds != null),
-            "fallimenti_ignorati" to ignoreSourceFailures,
         ),
     )
     val animeUnityDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) {
         async(Dispatchers.IO) {
-            fetchAnimeSource(metadata.title, "AnimeUnity", ignoreSourceFailures) {
+            fetchAnimeSource(metadata.title, "AnimeUnity", StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) {
                 animeUnitySourceClient.fetchSources(metadata, matchMetadata, syncIds)
             }
         }
@@ -551,7 +555,7 @@ internal suspend fun StreamCenter.resolveAnimePlaybackSources(
     }
     val animeWorldDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) {
         async(Dispatchers.IO) {
-            fetchAnimeSource(metadata.title, "AnimeWorld", ignoreSourceFailures) {
+            fetchAnimeSource(metadata.title, "AnimeWorld", StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD) {
                 animeWorldSourceClient.fetchSources(metadata, matchMetadata, syncIds)
             }
         }
@@ -560,7 +564,7 @@ internal suspend fun StreamCenter.resolveAnimePlaybackSources(
     }
     val animeSaturnDeferred = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) {
         async(Dispatchers.IO) {
-            fetchAnimeSource(metadata.title, "AnimeSaturn", ignoreSourceFailures) {
+            fetchAnimeSource(metadata.title, "AnimeSaturn", StreamCenterPlugin.PREF_SOURCE_ANIMESATURN) {
                 animeSaturnSourceClient.fetchSources(metadata, matchMetadata, syncIds)
             }
         }
@@ -644,15 +648,23 @@ internal suspend fun StreamCenter.resolveAnimePlaybackSources(
 internal suspend fun <T> StreamCenter.fetchAnimeSource(
     tabName: String,
     source: String,
-    ignoreFailures: Boolean,
+    sourceKey: String,
     fetch: suspend () -> List<T>,
 ): List<T> {
+    if (!isSourceReachableNow(sourceKey)) {
+        StreamCenterLogger.logMetadata(
+            tabName = tabName,
+            source = source,
+            action = "Fonte anime non raggiungibile, saltata",
+            level = StreamCenterLogger.Level.WARNING,
+        )
+        return emptyList()
+    }
     return try {
         StreamCenterLogger.logMetadata(
             tabName = tabName,
             source = source,
             action = "Ricerca fonte anime avviata",
-            metadata = mapOf("fallimenti_ignorati" to ignoreFailures),
         )
         val result = fetch()
         StreamCenterLogger.logMetadata(
@@ -670,9 +682,9 @@ internal suspend fun <T> StreamCenter.fetchAnimeSource(
             tabName = tabName,
             action = "Ricerca fonte anime non riuscita",
             throwable = error,
-            metadata = mapOf("fonte_metadati" to source, "fallimenti_ignorati" to ignoreFailures),
+            metadata = mapOf("fonte_metadati" to source),
         )
-        if (ignoreFailures) emptyList() else throw error
+        emptyList()
     }
 }
 
@@ -735,13 +747,22 @@ internal suspend fun StreamCenter.resolveTmdbAnimeMetadata(
     val kind = if (isMovie) "movie" else "tv"
     val showUrl = "https://www.themoviedb.org/$kind/$tmdbId"
     val season = ref.season
-    val englishTitle = runCatchingCancellable { tmdbCatalog.englishTitle(kind, tmdbId.toString()) }.getOrNull()
-    val apiMedia = fetchTmdbApiMedia(isTv = !isMovie, tmdbId = tmdbId, minimal = false, isAnime = true)
-    val artwork = if (apiMedia != null) {
-        apiAnimeArtwork(apiMedia, tmdbId, season, isMovie)
-    } else {
-        scrapedAnimeArtwork(showUrl, tmdbId, season, isMovie)
-    } ?: return null
+    val (englishTitle, scrapedArtwork, streamingPlatforms) = coroutineScope {
+        val englishTitleDeferred = async(Dispatchers.IO) {
+            runCatchingCancellable { tmdbCatalog.englishTitle(kind, tmdbId.toString()) }.getOrNull()
+        }
+        val streamingPlatformsDeferred = async(Dispatchers.IO) {
+            if (isMovie) null else extractTmdbWatchProviders(showUrl)
+        }
+        val apiMedia = fetchTmdbApiMedia(isTv = !isMovie, tmdbId = tmdbId, minimal = false, isAnime = true)
+        val resolvedArtwork = if (apiMedia != null) {
+            apiAnimeArtwork(apiMedia, tmdbId, season, isMovie)
+        } else {
+            scrapedAnimeArtwork(showUrl, tmdbId, season, isMovie)
+        }
+        Triple(englishTitleDeferred.await(), resolvedArtwork, streamingPlatformsDeferred.await())
+    }
+    val artwork = scrapedArtwork ?: return null
     val base = artwork.base
     if (base.title.isBlank() || base.title == "Sconosciuto") return null
     return TmdbAnimeMetadata(
@@ -758,7 +779,7 @@ internal suspend fun StreamCenter.resolveTmdbAnimeMetadata(
                 it.contains("We don't have an overview", ignoreCase = true)
         },
         genres = artwork.genres,
-        streamingPlatforms = if (isMovie) null else extractTmdbWatchProviders(showUrl),
+        streamingPlatforms = streamingPlatforms,
         budget = artwork.budget,
         revenue = artwork.revenue,
         duration = base.duration ?: if (isMovie) null else {
@@ -816,20 +837,29 @@ private suspend fun StreamCenter.scrapedAnimeArtwork(
     tmdbId: Int,
     season: Int?,
     isMovie: Boolean,
-): TmdbAnimeArtwork? {
-    val doc = runCatchingCancellable { getTmdbDocument(showUrl) }.getOrNull() ?: return null
-    val seasonDocument = if (isMovie) null else season?.let {
-        runCatchingCancellable { getTmdbDocument("$showUrl/season/$season") }.getOrNull()
-            ?.takeIf { TmdbArtwork.isSeason(it, tmdbId, season) }
+): TmdbAnimeArtwork? = coroutineScope {
+    val seasonDocumentDeferred = async(Dispatchers.IO) {
+        if (isMovie) null else season?.let {
+            runCatchingCancellable { getTmdbDocument("$showUrl/season/$season") }.getOrNull()
+                ?.takeIf { TmdbArtwork.isSeason(it, tmdbId, season) }
+        }
     }
-    return TmdbAnimeArtwork(
+    val logoDeferred = async(Dispatchers.IO) { resolveTmdbLogo(isMovie, tmdbId, isAnime = true) }
+    val doc = runCatchingCancellable { getTmdbDocument(showUrl) }.getOrNull()
+    if (doc == null) {
+        seasonDocumentDeferred.cancel()
+        logoDeferred.cancel()
+        return@coroutineScope null
+    }
+    val seasonDocument = seasonDocumentDeferred.await()
+    TmdbAnimeArtwork(
         base = buildMetadata(doc, showUrl, minimalMetadata = false),
         genres = doc.select("span.genres a")
             .mapNotNull { cleanText(it.text()) }
             .distinctBy { it.lowercase(Locale.ROOT) },
         budget = extractAnyFact(doc, "Budget"),
         revenue = extractAnyFact(doc, "Incasso", "Revenue"),
-        logo = resolveTmdbLogo(isMovie, tmdbId, isAnime = true),
+        logo = logoDeferred.await(),
         seasonPoster = seasonDocument?.let { TmdbArtwork.seasonPoster(it, tmdbId, season!!) },
         seasonBackground = seasonDocument?.let { TmdbArtwork.seasonStill(it, tmdbId, season!!) },
         seasonName = seasonDocument?.let { AnimeSeasonInfo.tmdbSeasonName(it, tmdbId, season!!) },

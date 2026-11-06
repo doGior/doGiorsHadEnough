@@ -840,9 +840,13 @@ internal object StreamCenterLocalSyncNetwork {
         json: JSONObject,
         associatedData: String,
     ) {
+        val plaintext = json.toString().toByteArray(StandardCharsets.UTF_8)
+        if (associatedData.startsWith("remote|")) {
+            require(plaintext.size <= MAX_CONTROL_BYTES - 32) { "Messaggio telecomando troppo grande." }
+        }
         val encrypted = StreamCenterLocalSyncCrypto.encrypt(
             key = key,
-            plaintext = json.toString().toByteArray(StandardCharsets.UTF_8),
+            plaintext = plaintext,
             associatedData = "$MAGIC|$PROTOCOL_VERSION|$associatedData",
         )
         writeEncrypted(output, encrypted, null, associatedData)

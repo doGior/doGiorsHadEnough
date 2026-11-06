@@ -8,6 +8,8 @@ import it.dogior.hadEnough.model.AniZipEpisodeCatalog
 import it.dogior.hadEnough.model.TmdbAnimeEpisodeMetadata
 import it.dogior.hadEnough.model.TmdbAnimeShowRef
 import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbPages
+import it.dogior.hadEnough.tmdb.TmdbPage
 import it.dogior.hadEnough.tmdb.TmdbApiMapping
 import it.dogior.hadEnough.tmdb.TmdbApiSeason
 import it.dogior.hadEnough.tmdb.TmdbEpisodeTitleFallback
@@ -86,18 +88,19 @@ internal class TmdbAnimeEpisodeMetadataClient(
         requestDetails: Map<String, Any?>,
     ): TmdbAnimeShowRef? {
         if (anilistId <= 0 || episodeNumbers.isEmpty()) return null
-        val references = mappingClient.fetch(anilistId, episodeNumbers)
-        if (references.isEmpty()) {
+        val bridgeReferences = mappingClient.fetch(anilistId, episodeNumbers)
+        if (bridgeReferences.isEmpty()) {
             MetadataLog.info(SOURCE, "Nessuna mappatura AniBridge", requestDetails)
             return null
         }
-        val seasonEpisodes = references.values
+        val seasonEpisodes = bridgeReferences.values
             .map { it.tmdbId to it.season }
             .distinct()
             .mapChunkedParallel(SEASON_REQUEST_CONCURRENCY) { (tmdbId, season) ->
                 (tmdbId to season) to fetchSeason(tmdbId, season)
             }
             .toMap()
+        val references = bridgeReferences + continuedReferences(bridgeReferences, episodeNumbers, seasonEpisodes)
         val bySource = references.mapNotNull { (sourceEpisode, reference) ->
             seasonEpisodes[reference.tmdbId to reference.season]
                 ?.firstOrNull { it.episode == reference.episode }
@@ -129,6 +132,21 @@ internal class TmdbAnimeEpisodeMetadataClient(
             episodes = matchedEpisodes,
             seasonEpisodes = dominantSeasonEpisodes.map { it.toMetadata() },
         )
+    }
+
+    private fun continuedReferences(
+        references: Map<Int, TmdbAnimeEpisodeReference>,
+        episodeNumbers: Set<Int>,
+        seasonEpisodes: Map<Pair<Int, Int>, List<TmdbEpisode>>,
+    ): Map<Int, TmdbAnimeEpisodeReference> {
+        val anchor = references.values.map { it.tmdbId to it.season }.distinct().singleOrNull() ?: return emptyMap()
+        val offset = references.map { (source, reference) -> reference.episode - source }.distinct().singleOrNull()
+            ?: return emptyMap()
+        val lastMapped = references.keys.max()
+        val available = seasonEpisodes[anchor].orEmpty().mapTo(HashSet(), TmdbEpisode::episode)
+        return episodeNumbers
+            .filter { it > lastMapped && (it + offset) in available }
+            .associateWith { TmdbAnimeEpisodeReference(anchor.first, anchor.second, it + offset) }
     }
 
     private suspend fun resolveViaAirDate(
@@ -296,18 +314,25 @@ internal class TmdbAnimeEpisodeMetadataClient(
 
     private suspend fun scrapeSeason(tmdbId: Int, season: Int, details: Map<String, Any?>): List<TmdbEpisode> {
         val url = "$TMDB_BASE_URL/tv/$tmdbId/season/$season"
-        val episodes = document(url, "Episodi stagione TMDB", details)
+        var episodes = document(url, "Episodi stagione TMDB", details)
             ?.let { parseSeasonEpisodes(it, season) }
             .orEmpty()
-        if (episodes.none { it.title == null }) return episodes
-        val japaneseTitles = document(url, "Titoli episodi TMDB giapponesi", details, TmdbEpisodeTitleFallback.JAPANESE)
-            ?.let { parseSeasonEpisodes(it, season) }
-            .orEmpty()
-            .mapNotNull { episode -> episode.title?.let { (episode.season to episode.episode) to it } }
-            .toMap()
-        return episodes.map { episode ->
-            if (episode.title != null) episode else episode.copy(title = japaneseTitles[episode.season to episode.episode])
+        for (language in TmdbEpisodeTitleFallback.apiLanguages(isAnime = true)) {
+            val withOverview = TmdbEpisodeTitleFallback.fillsOverview(language)
+            if (episodes.none { it.title == null || (withOverview && it.description == null) }) continue
+            val fallback = document(url, "Testi episodi TMDB ($language)", details, language)
+                ?.let { parseSeasonEpisodes(it, season) }
+                .orEmpty()
+                .associateBy { it.season to it.episode }
+            episodes = episodes.map { episode ->
+                val other = fallback[episode.season to episode.episode] ?: return@map episode
+                episode.copy(
+                    title = episode.title ?: other.title,
+                    description = episode.description ?: other.description.takeIf { withOverview },
+                )
+            }
         }
+        return episodes
     }
 
     private suspend fun document(
@@ -322,13 +347,16 @@ internal class TmdbAnimeEpisodeMetadataClient(
             "timeout_secondi" to TMDB_TIMEOUT_SECONDS,
         )
         val responseResult = runCatchingCancellable {
-            StreamCenterHostGate.request(requestUrl) {
-                app.get(
-                    requestUrl,
-                    headers = StreamCenterTmdbUserAgent.webHeaders(headers),
-                    cacheTime = 0,
-                    timeout = TMDB_TIMEOUT_SECONDS,
-                )
+            StreamCenterTmdbPages.page(requestUrl) {
+                val response = StreamCenterHostGate.request(requestUrl) {
+                    app.get(
+                        requestUrl,
+                        headers = StreamCenterTmdbUserAgent.webHeaders(headers),
+                        cacheTime = 0,
+                        timeout = TMDB_TIMEOUT_SECONDS,
+                    )
+                }
+                TmdbPage(response.code, response.text)
             }
         }
         val response = responseResult.getOrNull() ?: run {

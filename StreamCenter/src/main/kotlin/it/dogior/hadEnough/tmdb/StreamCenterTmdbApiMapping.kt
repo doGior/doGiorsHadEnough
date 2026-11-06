@@ -301,7 +301,7 @@ internal object TmdbApiMapping {
         value.takeIf { it > 0 }?.let { String.format(Locale.ITALY, "$%,.2f", it.toDouble()) }
 
     private fun languageName(code: String): String? =
-        Locale(code).getDisplayLanguage(ITALIAN)
+        Locale.forLanguageTag(code).getDisplayLanguage(ITALIAN)
             .takeIf { it.isNotBlank() && !it.equals(code, ignoreCase = true) }
             ?.replaceFirstChar { it.titlecase(ITALIAN) }
 

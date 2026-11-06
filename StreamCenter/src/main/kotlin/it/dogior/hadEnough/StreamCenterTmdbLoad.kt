@@ -34,6 +34,9 @@ import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.model.*
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbPages
+import it.dogior.hadEnough.tmdb.TmdbPage
+import it.dogior.hadEnough.tmdb.TmdbEpisodeTitleFallback
 import it.dogior.hadEnough.tmdb.TmdbApiEpisode
 import it.dogior.hadEnough.tmdb.TmdbApiMapping
 import it.dogior.hadEnough.tmdb.TmdbApiSeason
@@ -46,13 +49,17 @@ import it.dogior.hadEnough.util.cleanText
 import it.dogior.hadEnough.util.cleanTmdbEpisodeDescription
 import it.dogior.hadEnough.util.parseMetadataDate
 import it.dogior.hadEnough.util.parseMetadataRuntime
+import it.dogior.hadEnough.util.runCatchingCancellable
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 
 internal suspend fun StreamCenter.loadTmdbMedia(
     actualUrl: String,
@@ -79,7 +86,15 @@ internal suspend fun StreamCenter.loadTmdbMedia(
     }
     val minimalMetadata = performanceMode && !strictTmdbMetadata
     val apiMedia = fetchTmdbApiMedia(isTvSeries, extractTmdbId(actualUrl)?.toIntOrNull(), minimalMetadata)
-    val (doc, tmdbEnglishTitle) = coroutineScope {
+    if (apiMedia == null && isTvSeries) prefetchTmdbSeasons(actualUrl)
+    val (doc, tmdbEnglishTitle, scrapedLogo) = coroutineScope {
+        val logoDeferred = async(Dispatchers.IO) {
+            if (apiMedia == null) {
+                runCatchingCancellable { resolveTmdbLogo(!isTvSeries, extractTmdbId(actualUrl)?.toIntOrNull()) }.getOrNull()
+            } else {
+                null
+            }
+        }
         val englishTitleDeferred = async(Dispatchers.IO) {
             runCatching {
                 resolveTmdbEnglishTitle(
@@ -93,7 +108,7 @@ internal suspend fun StreamCenter.loadTmdbMedia(
             needsTmdbSourceIdentifiers() -> runCatching { getTmdbDocument(actualUrl) }.getOrNull()
             else -> null
         }
-        page to englishTitleDeferred.await()
+        Triple(page, englishTitleDeferred.await(), logoDeferred.await())
     }
     val metadata = apiMedia?.metadata ?: buildMetadata(
         requireNotNull(doc),
@@ -101,7 +116,7 @@ internal suspend fun StreamCenter.loadTmdbMedia(
         minimalMetadata = minimalMetadata,
     ).let { base ->
         base.copy(
-            logo = resolveTmdbLogo(!isTvSeries, base.tmdbId?.toIntOrNull()) ?: base.logo,
+            logo = scrapedLogo ?: base.logo,
             trailerUrl = if (!performanceMode || strictTmdbMetadata) findTmdbTrailer(actualUrl, doc) else null,
         )
     }
@@ -109,9 +124,13 @@ internal suspend fun StreamCenter.loadTmdbMedia(
     val cardTitle = streamCenterUrlParameter(actualUrl, "title")
     val cardPoster = streamCenterUrlParameter(actualUrl, "poster")
     val streamingCommunityTitle = scHint ?: if (
-        catalogDefinition == null && isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
+        catalogDefinition == null && isSourceAvailable(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
     ) {
-        sourceMetadata?.let { runCatching { streamingCommunityClient.findTitle(it, isTvSeries) }.getOrNull() }
+        sourceMetadata?.let {
+            withTimeoutOrNull(StreamCenter.SC_TITLE_LOOKUP_TIMEOUT_MS) {
+                runCatchingCancellable { streamingCommunityClient.findTitle(it, isTvSeries) }.getOrNull()
+            }
+        }
     } else {
         null
     }
@@ -239,9 +258,11 @@ internal suspend fun StreamCenter.loadTmdbMedia(
         val episodeMinimalMetadata = performanceMode && !strictTmdbMetadata
         val streamingCommunityEpisodeDetails = streamingCommunityTitle
             ?.let {
-                runCatching {
-                    streamingCommunityClient.episodeDetails(it, includeMetadata = !episodeMinimalMetadata)
-                }.getOrNull()
+                withTimeoutOrNull(StreamCenter.SC_EPISODE_DETAILS_TIMEOUT_MS) {
+                    runCatchingCancellable {
+                        streamingCommunityClient.episodeDetails(it, includeMetadata = !episodeMinimalMetadata)
+                    }.getOrNull()
+                }
             }
             .orEmpty()
         val streamingCommunityEpisodes = streamingCommunityEpisodeDetails.mapValues { it.value.playback }
@@ -695,16 +716,26 @@ internal suspend fun StreamCenter.getTmdbDocument(
     url: String,
     page: Int? = null,
 ): Document {
-    val requestUrl = stripStreamCenterParams(normalizeTmdbUrl(url, page))
-    val html = fetchText {
-        StreamCenterHostGate.request(requestUrl) {
-            app.get(
-                requestUrl,
-                headers = StreamCenterTmdbUserAgent.webHeaders(headers, sharedPref),
-            )
-        }.text
+    val requestUrl = tmdbRequestUrl(url, page)
+    return Jsoup.parse(StreamCenterTmdbPages.page(requestUrl) { fetchTmdbPage(requestUrl) }.text, requestUrl)
+}
+
+internal fun StreamCenter.prefetchTmdbDocument(url: String) {
+    val requestUrl = tmdbRequestUrl(url)
+    StreamCenterTmdbPages.prefetch(requestUrl) { fetchTmdbPage(requestUrl) }
+}
+
+private fun StreamCenter.tmdbRequestUrl(url: String, page: Int? = null): String =
+    stripStreamCenterParams(normalizeTmdbUrl(url, page))
+
+private suspend fun StreamCenter.fetchTmdbPage(requestUrl: String): TmdbPage {
+    val response = StreamCenterHostGate.request(requestUrl) {
+        app.get(
+            requestUrl,
+            headers = StreamCenterTmdbUserAgent.webHeaders(headers, sharedPref),
+        )
     }
-    return Jsoup.parse(html, requestUrl)
+    return TmdbPage(response.code, response.text)
 }
 
 internal suspend fun StreamCenter.fetchText(fetch: suspend () -> String): String = fetch()
@@ -793,15 +824,18 @@ internal suspend fun StreamCenter.fetchEpisodes(
                 val fallbackSeason = extractSeasonNumber(seasonUrl)
                 runCatching { getTmdbDocument(seasonUrl) }
                     .getOrNull()
-                    ?.let {
+                    ?.let { seasonDoc ->
                         parseSeasonEpisodes(
-                            seasonDoc = it,
+                            seasonDoc = seasonDoc,
                             fallbackSeason = fallbackSeason,
                             streamingCommunityEpisodes = streamingCommunityEpisodes,
                             stremioContext = stremioContext,
                             torrentContext = torrentContext,
                             fallbackPoster = fallbackPoster,
                             minimalMetadata = minimalMetadata,
+                            fallbackTexts = if (minimalMetadata) emptyMap() else {
+                                englishEpisodeTexts(seasonUrl, seasonDoc, fallbackSeason)
+                            },
                         )
                     }
                     .orEmpty()
@@ -856,9 +890,9 @@ internal suspend fun StreamCenter.fetchEpisodeGroupEpisodes(
         async(Dispatchers.IO) {
             runCatching { getTmdbDocument(groupUrl) }
                 .getOrNull()
-                ?.let {
+                ?.let { groupDoc ->
                     parseSeasonEpisodes(
-                        seasonDoc = it,
+                        seasonDoc = groupDoc,
                         fallbackSeason = seasonNumber,
                         streamingCommunityEpisodes = streamingCommunityEpisodes,
                         stremioContext = stremioContext,
@@ -866,6 +900,9 @@ internal suspend fun StreamCenter.fetchEpisodeGroupEpisodes(
                         fallbackPoster = fallbackPoster,
                         minimalMetadata = minimalMetadata,
                         digitalSeason = seasonNumber,
+                        fallbackTexts = if (minimalMetadata) emptyMap() else {
+                            englishEpisodeTexts(groupUrl, groupDoc, seasonNumber)
+                        },
                     )
                 }
                 .orEmpty()
@@ -904,6 +941,12 @@ internal suspend fun StreamCenter.fetchSeasonUrls(doc: Document?, actualUrl: Str
     return seasonUrls.ifEmpty { doc?.let(this@fetchSeasonUrls::extractSeasonLinks).orEmpty() }
 }
 
+internal fun StreamCenter.prefetchTmdbSeasons(actualUrl: String) {
+    backgroundScope.launch {
+        runCatchingCancellable { fetchSeasonUrls(null, actualUrl).forEach(::prefetchTmdbDocument) }
+    }
+}
+
 internal fun StreamCenter.buildTmdbSeasonUrl(actualUrl: String, seasonNumber: Int): String {
     val baseUrl = stripStreamCenterParams(normalizeTmdbUrl(actualUrl)).substringBefore("?").trimEnd('/')
     return normalizeTmdbUrl("$baseUrl/season/$seasonNumber")
@@ -927,6 +970,50 @@ internal fun StreamCenter.extractSeasonNumber(url: String): Int? {
     return Regex("""/season/(\d+)""").find(url)?.groupValues?.getOrNull(1)?.toIntOrNull()
 }
 
+internal data class TmdbEpisodeCard(
+    val rawHref: String?,
+    val airedSeason: Int?,
+    val airedEpisode: Int?,
+    val title: String?,
+    val description: String?,
+)
+
+internal fun StreamCenter.tmdbEpisodeCard(card: Element, fallbackSeason: Int?): TmdbEpisodeCard {
+    val anchor = card.selectFirst("a[data-episode-number][data-season-number]")
+        ?: card.selectFirst("a[href*=/episode/]")
+    val rawHref = anchor?.attr("href")?.takeIf { it.isNotBlank() && it.contains("/episode/") }
+        ?: card.attr("data-url").takeIf { it.isNotBlank() && it.contains("/episode/") }
+    return TmdbEpisodeCard(
+        rawHref = rawHref,
+        airedSeason = anchor?.attr("data-season-number")?.toIntOrNull()
+            ?: rawHref?.let { extractSeasonNumber(it) }
+            ?: fallbackSeason,
+        airedEpisode = anchor?.attr("data-episode-number")?.toIntOrNull()
+            ?: rawHref?.let { Regex("""/episode/(\d+)""").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() },
+        title = cleanMetadataEpisodeTitle(card.selectFirst("div.episode_title h3 a")?.text() ?: anchor?.text()),
+        description = cleanTmdbEpisodeDescription(card.selectFirst("div.overview p")?.text()),
+    )
+}
+
+internal suspend fun StreamCenter.englishEpisodeTexts(
+    url: String,
+    italian: Document,
+    fallbackSeason: Int?,
+): Map<Pair<Int?, Int?>, TmdbEpisodeCard> {
+    val cards = italian.select("div.episode_list div.card").map { tmdbEpisodeCard(it, fallbackSeason) }
+    if (cards.none { it.title == null || it.description == null }) return emptyMap()
+    val base = stripStreamCenterParams(url)
+    val englishUrl = if ("language=" in base) {
+        base.replace(Regex("language=[^&]*"), "language=${TmdbEpisodeTitleFallback.ENGLISH}")
+    } else {
+        base + (if ('?' in base) "&" else "?") + "language=${TmdbEpisodeTitleFallback.ENGLISH}"
+    }
+    val english = runCatchingCancellable { getTmdbDocument(englishUrl) }.getOrNull() ?: return emptyMap()
+    return english.select("div.episode_list div.card")
+        .map { tmdbEpisodeCard(it, fallbackSeason) }
+        .associateBy { it.airedSeason to it.airedEpisode }
+}
+
 internal fun StreamCenter.parseSeasonEpisodes(
     seasonDoc: Document,
     fallbackSeason: Int?,
@@ -936,32 +1023,22 @@ internal fun StreamCenter.parseSeasonEpisodes(
     fallbackPoster: String? = null,
     minimalMetadata: Boolean = false,
     digitalSeason: Int? = null,
+    fallbackTexts: Map<Pair<Int?, Int?>, TmdbEpisodeCard> = emptyMap(),
 ): List<Episode> {
     return seasonDoc.select("div.episode_list div.card").mapIndexedNotNull { index, card ->
-        val anchor = card.selectFirst("a[data-episode-number][data-season-number]")
-            ?: card.selectFirst("a[href*=/episode/]")
-        val rawHref = anchor?.attr("href")?.takeIf { it.isNotBlank() && it.contains("/episode/") }
-            ?: card.attr("data-url").takeIf { it.isNotBlank() && it.contains("/episode/") }
+        val parsed = tmdbEpisodeCard(card, fallbackSeason)
+        val fallbackText = fallbackTexts[parsed.airedSeason to parsed.airedEpisode]
+        val rawHref = parsed.rawHref
         val dataUrl = rawHref?.let { normalizeTmdbUrl(it) }.orEmpty()
-        val airedEpisode = anchor?.attr("data-episode-number")?.toIntOrNull()
-            ?: rawHref?.let { Regex("""/episode/(\d+)""").find(it)?.groupValues?.getOrNull(1)?.toIntOrNull() }
-        val airedSeason = anchor?.attr("data-season-number")?.toIntOrNull()
-            ?: rawHref?.let { extractSeasonNumber(it) }
-            ?: fallbackSeason
+        val airedEpisode = parsed.airedEpisode
+        val airedSeason = parsed.airedSeason
         val displaySeason = digitalSeason ?: airedSeason
         val displayEpisode = if (digitalSeason != null) {
             card.selectFirst("span.episode_number")?.text()?.trim()?.toIntOrNull() ?: (index + 1)
         } else {
             airedEpisode
         }
-        val title = if (minimalMetadata) {
-            null
-        } else {
-            cleanMetadataEpisodeTitle(
-                card.selectFirst("div.episode_title h3 a")?.text()
-                    ?: anchor?.text()
-            )
-        }
+        val title = if (minimalMetadata) null else parsed.title ?: fallbackText?.title
 
         if (dataUrl.isBlank() && displayEpisode == null && title == null) return@mapIndexedNotNull null
 
@@ -974,7 +1051,7 @@ internal fun StreamCenter.parseSeasonEpisodes(
             title = title,
             airDate = parseMetadataDate(card.selectFirst("div.date span.date")?.text()),
             posterUrl = card.selectFirst("img.backdrop")?.extractImageUrl() ?: card.selectFirst("img")?.extractImageUrl(),
-            description = cleanTmdbEpisodeDescription(card.selectFirst("div.overview p")?.text()),
+            description = parsed.description ?: fallbackText?.description,
             runtime = parseMetadataRuntime(card.selectFirst("span.runtime")?.text()),
             ratingPercent = (
                 card.selectFirst("div.rating")?.text()

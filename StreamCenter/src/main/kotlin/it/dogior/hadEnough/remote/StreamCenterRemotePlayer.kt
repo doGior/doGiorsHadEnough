@@ -1,17 +1,14 @@
 package it.dogior.hadEnough.remote
 
 import android.content.Context
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
-import androidx.fragment.app.FragmentActivity
 import androidx.media3.exoplayer.ExoPlayer
 import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.ui.player.AbstractPlayerFragment
@@ -26,6 +23,8 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.UIHelper
 import it.dogior.hadEnough.playback.PlayerSession
 import it.dogior.hadEnough.playback.PlayerSessionFactory
+import it.dogior.hadEnough.playback.StreamCenterPlayerOverlay
+import it.dogior.hadEnough.playback.StreamCenterPlayerOverlay.findViewByName
 import it.dogior.hadEnough.util.Reflect
 import it.dogior.hadEnough.util.StreamCenterDevice
 import it.dogior.hadEnough.util.StreamCenterLogger
@@ -158,11 +157,12 @@ internal object StreamCenterRemotePlayer : PlayerSessionFactory {
         private var cachedHandoff: RemoteHandoff? = null
 
         override fun onFrame() {
-            val now = System.currentTimeMillis()
-            if (now - lastSnapshotAt < SNAPSHOT_INTERVAL_MS) return
-            lastSnapshotAt = now
-            state = snapshot()
-            cachedHandoff = buildHandoff()
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+                lastSnapshotAt = now
+                state = snapshot()
+                cachedHandoff = buildHandoff()
+            }
             updateButton()
         }
 
@@ -182,7 +182,7 @@ internal object StreamCenterRemotePlayer : PlayerSessionFactory {
 
         fun close() {
             fragment.player.handleEvent(CSPlayerEvent.Pause, PlayerEventSource.UI)
-            val activity = fragment.activity as? FragmentActivity ?: return
+            val activity = fragment.activity ?: return
             runCatching { with(UIHelper) { activity.popCurrentPage("remote") } }.onFailure {
                 StreamCenterLogger.warning("Telecomando: chiusura player non riuscita", mapOf("errore" to it.toString()))
             }
@@ -263,16 +263,17 @@ internal object StreamCenterRemotePlayer : PlayerSessionFactory {
         private fun updateButton() {
             val root = fragment.view ?: return
             val top = topHolder ?: root.findViewByName("player_top_holder")?.also { topHolder = it }
-            val host = buttonHost
-                ?: (root.findViewByName("player_holder") as? FrameLayout ?: root as? FrameLayout)?.also { buttonHost = it }
-                ?: return
-            val visible = enabled() && cachedHandoff != null && top != null &&
-                top.visibility == View.VISIBLE && top.alpha > 0.1f
+            val host = buttonHost ?: StreamCenterPlayerOverlay.host(root)?.also { buttonHost = it } ?: return
+            val visible = enabled() && cachedHandoff != null && StreamCenterPlayerOverlay.controlsVisible(top)
             val current = button ?: if (visible) createButton(host).also {
                 button = it
                 linkFocus(root, it)
             } else return
-            current.visibility = if (visible) View.VISIBLE else View.GONE
+            val wanted = if (visible) View.VISIBLE else View.GONE
+            if (current.visibility != wanted) {
+                current.visibility = wanted
+                StreamCenterPlayerOverlay.updateSideBarMargins(current)
+            }
         }
 
         private fun linkFocus(root: View, button: TextView) {
@@ -294,41 +295,13 @@ internal object StreamCenterRemotePlayer : PlayerSessionFactory {
         }
 
         private fun createButton(host: FrameLayout): TextView {
-            val context = host.context
-            val density = context.resources.displayMetrics.density
-            val tv = StreamCenterDevice.isTvLike(context)
-            return TextView(context).apply {
-                text = if (tv) "📱 Continua sul telefono" else "📺 Continua sulla TV"
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                gravity = Gravity.CENTER
-                isFocusable = true
-                val padding = (10 * density).toInt()
-                setPadding(padding * 2, padding, padding * 2, padding)
-                val normal = GradientDrawable().apply {
-                    cornerRadius = 22 * density
-                    setColor(Color.parseColor("#B3000000"))
-                }
-                val focused = GradientDrawable().apply {
-                    cornerRadius = 22 * density
-                    setColor(Color.parseColor("#E6000000"))
-                    setStroke((2 * density).toInt(), Color.WHITE)
-                }
-                background = normal
-                setOnFocusChangeListener { _, hasFocus -> background = if (hasFocus) focused else normal }
+            val tv = StreamCenterDevice.isTvLike(host.context)
+            val text = if (tv) "📱 Continua sul telefono" else "📺 Continua sulla TV"
+            return StreamCenterPlayerOverlay.pill(host.context, text, focusable = true).apply {
                 setOnClickListener { cachedHandoff?.let(onContinue) }
-                host.addView(this, FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.END or Gravity.CENTER_VERTICAL,
-                ).apply { marginEnd = (24 * density).toInt() })
+                StreamCenterPlayerOverlay.addToSideBar(host, this, first = false)
             }
         }
-    }
-
-    private fun View.findViewByName(name: String): View? {
-        val id = resources.getIdentifier(name, "id", context.packageName).takeIf { it != 0 } ?: return null
-        return findViewById(id)
     }
 
     private val currentMetaMethod: Method? by lazy {

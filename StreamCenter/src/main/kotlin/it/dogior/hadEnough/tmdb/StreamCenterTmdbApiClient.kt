@@ -67,8 +67,11 @@ internal object StreamCenterTmdbApiClient {
     suspend fun getWithEpisodeTitles(path: String, isAnime: Boolean): JSONObject? {
         var json = get(path) ?: return null
         for (language in TmdbEpisodeTitleFallback.apiLanguages(isAnime)) {
-            if (!TmdbEpisodeTitleFallback.hasMissingTitles(json)) break
-            get(path, mapOf("language" to language))?.let { json = TmdbEpisodeTitleFallback.fill(json, it) }
+            val withOverview = TmdbEpisodeTitleFallback.fillsOverview(language)
+            if (!TmdbEpisodeTitleFallback.hasMissingText(json, withOverview)) continue
+            get(path, mapOf("language" to language))?.let {
+                json = TmdbEpisodeTitleFallback.fill(json, it, withOverview)
+            }
         }
         return json
     }

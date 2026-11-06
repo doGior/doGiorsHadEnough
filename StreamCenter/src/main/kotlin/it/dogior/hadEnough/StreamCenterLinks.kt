@@ -17,7 +17,6 @@ import it.dogior.hadEnough.StreamCenter.Companion.MAGNET_FILE_INDEX_REGEX
 import it.dogior.hadEnough.StreamCenter.Companion.MAGNET_INFO_HASH_REGEX
 import it.dogior.hadEnough.StreamCenter.Companion.STREMIO_ADDON_CONCURRENCY
 import it.dogior.hadEnough.StreamCenter.Companion.STREMIO_ADDON_TIMEOUT_MS
-import it.dogior.hadEnough.StreamCenter.Companion.checkedSourceDomains
 import it.dogior.hadEnough.anime.metadata.selectAnimeSeasonEpisode
 import it.dogior.hadEnough.anime.source.absoluteProviderUrl
 import it.dogior.hadEnough.catalog.*
@@ -25,9 +24,12 @@ import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
 import it.dogior.hadEnough.model.*
 import it.dogior.hadEnough.playback.StreamingPlaybackLinks
+import it.dogior.hadEnough.remote.StreamCenterRemoteDirectLink
 import it.dogior.hadEnough.playback.PlaybackSource
 import it.dogior.hadEnough.playback.PlaybackSourceGroup
 import it.dogior.hadEnough.playback.StreamCenterPlaybackInsights
+import it.dogior.hadEnough.playback.SourceDiscoveryTracker
+import it.dogior.hadEnough.playback.forLink
 import it.dogior.hadEnough.playback.StreamCenterSourceOrder
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.torrent.*
@@ -44,7 +46,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -116,6 +117,9 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
 ): Boolean {
     if (currentCoroutineContext()[ExtensionCall.Key] != null) return false
     StreamCenterVpnGuard.requireInternetAccess(sharedPref)
+    val directEmitted = StreamCenterRemoteDirectLink.take(name, data)?.let { direct ->
+        StreamCenterRemoteDirectLink.emit(direct, subtitleCallback, callback)
+    } == true
     val iptv = runCatching { JSONObject(data) }.getOrNull()
         ?.takeIf { it.optBoolean("streamcenterIptv") }
     if (iptv != null) {
@@ -127,7 +131,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 metadata = mapOf("motivo" to "url_mancante", "casting" to isCasting),
                 level = StreamCenterLogger.Level.WARNING,
             )
-            return false
+            return directEmitted
         }
         StreamCenterLogger.logTab(
             tabName = channelName,
@@ -157,10 +161,10 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
     playbackData?.animeSeason?.let { target ->
         require(target.anilistId > 0 && target.episode in 1..3000) { "Episodio anime non valido" }
         val release = loadAnilistMedia(target.anilistId, target.malId, cacheable = true) as? AnimeLoadResponse
-            ?: return false
+            ?: return directEmitted
         if (InstalledExtensionSources.enabledKeys(sharedPref).isNotEmpty()) release.attachExtensionPlayback()
-        val episode = selectAnimeSeasonEpisode(release, target) ?: return false
-        return loadLinks(episode.data, isCasting, subtitleCallback, callback)
+        val episode = selectAnimeSeasonEpisode(release, target) ?: return directEmitted
+        return loadLinks(episode.data, isCasting, subtitleCallback, callback) || directEmitted
     }
     val playbackLogTab = playbackData?.stremio?.anilistId?.let { "Anime AniList $it" }
         ?: playbackData?.stremio?.tmdbId?.let { "Contenuto TMDB $it" }
@@ -185,8 +189,9 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         level = if (playbackData == null) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
     )
     val sourceOrder = StreamCenterSourceOrder()
+    val discovery = SourceDiscoveryTracker()
     val playbackLinks = StreamingPlaybackLinks(this@resolveStreamCenterLinks::sourceLinkDedupKey) { source, original ->
-        val origin = StreamCenterPlaybackInsights.originFor(source, original)
+        val origin = StreamCenterPlaybackInsights.originFor(source.forLink(original), original)
         val link = sourceOrder.prepare(
             source.group, original,
             playbackProvider = name.takeIf { StreamCenterVidxGoExtractor.ownsLink(original) },
@@ -196,6 +201,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         StreamCenterPlaybackInsights.remember(link, origin)
         callback(link)
     }
+    fun hasResolvedLink(): Boolean = playbackLinks.size > 0
     val emittedSubtitleKeys = ConcurrentHashMap.newKeySet<String>()
     val resultCallbackLock = Any()
     fun collectLink(source: PlaybackSource): (ExtractorLink) -> Unit = linkCallback@{ link ->
@@ -203,8 +209,11 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
             link.type == ExtractorLinkType.MAGNET ||
                 link.type == ExtractorLinkType.TORRENT ||
                 link.url.startsWith("magnet:", ignoreCase = true)
-        if (isCasting && isPeerToPeer) return@linkCallback
-        playbackLinks.add(source, link)
+        if (isCasting && isPeerToPeer) {
+            discovery.skippedForCasting(source.key)
+            return@linkCallback
+        }
+        if (playbackLinks.add(source, link)) discovery.link(source, link)
     }
     fun sourceTitle(sourceKey: String): String = StreamCenterPlugin.streamingSources
         .firstOrNull { source -> source.key == sourceKey }
@@ -263,9 +272,21 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
             throw error
         }
     }
+    val unreachableSources = linkedSetOf<String>()
     fun addTask(sourceKey: String, task: suspend () -> Boolean) {
+        if (!isSourceReachable(sourceKey)) {
+            unreachableSources += sourceTitle(sourceKey)
+            StreamCenterLogger.logTab(
+                tabName = playbackLogTab,
+                action = "Fonte non raggiungibile, saltata",
+                metadata = mapOf("fonte" to sourceTitle(sourceKey)),
+                level = StreamCenterLogger.Level.WARNING,
+            )
+            return
+        }
+        val source = PlaybackSource(PlaybackSourceGroup.HTTPS, sourceKey, sourceTitle(sourceKey))
         tasksBySource.getOrPut(sourceKey) { mutableListOf() } +=
-            loggedSourceTask(sourceName = sourceTitle(sourceKey), task = task)
+            loggedSourceTask(sourceName = source.name) { discovery.track(source) { task() } }
     }
 
     playbackData?.animeUnity
@@ -305,7 +326,10 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
     }
 
     playbackData?.streamingCommunity
-        ?.takeIf { isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD) }
+        ?.takeIf {
+            isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD) &&
+                isSourceReachable(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
+        }
         ?.let { streamingCommunityPlayback ->
             addTask(StreamCenterPlugin.PREF_SOURCE_VIXCLOUD) {
                 loadVixCloudLinks(
@@ -341,18 +365,25 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         playbackData?.torrent?.let { torrentContext ->
             val torrentFilters = StreamCenterTorrentPreferences.read(sharedPref)
             val domains = StreamCenterTorrentPreferences.enabledDomains(sharedPref)
+            val torrentSource = PlaybackSource(PlaybackSourceGroup.TORRENT, "torrent-ext", "EXT")
             torrentTasks["torrent-ext"] = loggedSourceTask(
                 sourceName = "EXT",
                 warnWhenEmpty = false,
             ) {
-                StreamCenterTorrentResolver.load(
-                    domains = domains,
-                    context = torrentContext,
-                    filters = torrentFilters,
-                    callback = collectLink(PlaybackSource(PlaybackSourceGroup.TORRENT, "torrent-ext", "EXT")),
-                    performanceMode = performanceMode,
-                    logTabName = playbackLogTab,
-                )
+                discovery.track(torrentSource) {
+                    StreamCenterTorrentResolver.load(
+                        domains = domains,
+                        context = torrentContext,
+                        filters = torrentFilters,
+                        callback = collectLink(torrentSource),
+                        performanceMode = performanceMode,
+                        logTabName = playbackLogTab,
+                        onFailure = { timedOut ->
+                            if (timedOut) discovery.timeout(torrentSource.key)
+                            else discovery.fail(torrentSource.key)
+                        },
+                    )
+                }
             }
         }
     }
@@ -372,14 +403,21 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                         metadata = mapOf("add_on" to addon.name, "modalita_prestazioni" to performanceMode),
                     )
                     try {
+                        val addonSource = PlaybackSource(PlaybackSourceGroup.STREMIO, addon.key, addon.name)
                         val result = withTimeoutOrNull(STREMIO_ADDON_TIMEOUT_MS) {
-                            StreamCenterStremioAddonClient.load(
-                                addon = addon,
-                                context = stremioContext,
-                                subtitleCallback = uniqueSubtitleCallback,
-                                callback = collectLink(PlaybackSource(PlaybackSourceGroup.EXTENSION, addon.key, addon.name)),
-                                stopAfterFirstResult = performanceMode,
-                            )
+                            discovery.track(addonSource) {
+                                StreamCenterStremioAddonClient.load(
+                                    addon = addon,
+                                    context = stremioContext,
+                                    subtitleCallback = uniqueSubtitleCallback,
+                                    callback = collectLink(addonSource),
+                                    stopAfterFirstResult = performanceMode,
+                                    onFailure = { timedOut ->
+                                        if (timedOut) discovery.timeout(addonSource.key)
+                                        else discovery.fail(addonSource.key)
+                                    },
+                                )
+                            }
                         } ?: false
                         StreamCenterLogger.logTab(
                             tabName = playbackLogTab,
@@ -405,23 +443,32 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
 
     playbackData?.extensions?.let { extensionContext ->
         InstalledExtensionSources.enabled(sharedPref).forEach { source ->
+            val extensionSource = PlaybackSource(PlaybackSourceGroup.EXTENSION, source.key, source.name)
             extensionTasks[source.key] = loggedSourceTask(source.name) {
-                InstalledExtensionResolver.resolve(
-                    extension = source,
-                    context = extensionContext,
-                    isCasting = isCasting,
-                    subtitleCallback = uniqueSubtitleCallback,
-                    callback = collectLink(PlaybackSource(PlaybackSourceGroup.EXTENSION, source.key, source.name)),
-                    performanceMode = performanceMode,
-                    onError = { stage, error ->
-                        StreamCenterLogger.logTabError(
-                            tabName = playbackLogTab,
-                            action = "Estensione installata: $stage non riuscita",
-                            throwable = error,
-                            metadata = mapOf("fonte" to source.name),
-                        )
-                    },
-                )
+                discovery.track(extensionSource) {
+                    InstalledExtensionResolver.resolve(
+                        extension = source,
+                        context = extensionContext,
+                        isCasting = isCasting,
+                        subtitleCallback = uniqueSubtitleCallback,
+                        callback = collectLink(extensionSource),
+                        performanceMode = performanceMode,
+                        onError = { stage, error ->
+                            if (stage == "timeout" || error is kotlinx.coroutines.TimeoutCancellationException) {
+                                discovery.timeout(extensionSource.key)
+                            } else {
+                                discovery.fail(extensionSource.key, error)
+                            }
+                            StreamCenterLogger.logTabError(
+                                tabName = playbackLogTab,
+                                action = "Estensione installata: $stage non riuscita",
+                                throwable = error,
+                                metadata = mapOf("fonte" to source.name),
+                            )
+                        },
+                        onSkippedForCasting = { discovery.skippedForCasting(extensionSource.key) },
+                    )
+                }
             }
         }
     }
@@ -444,10 +491,16 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
             "timeout_torrent_totale_ms" to TORRENT_TOTAL_TIMEOUT_MS,
         ),
     )
-    if (playbackData != null && listOf(tasksBySource, torrentTasks, stremioTasks, extensionTasks).all { it.isEmpty() }) {
+    try {
+    if (!directEmitted && playbackData != null && listOf(tasksBySource, torrentTasks, stremioTasks, extensionTasks).all { it.isEmpty() }) {
+        StreamCenterPlugin.streamingSources
+            .filter { source -> isSourceEnabled(source.key) && !isSourceReachable(source.key) }
+            .forEach { source -> unreachableSources += source.title }
         val torrentOnly = isCasting && playbackData.torrent != null && StreamCenterPlugin.isTorrentEnabled(sharedPref)
         CommonActivity.showToast(
-            if (torrentOnly) {
+            if (unreachableSources.isNotEmpty()) {
+                "Fonti non raggiungibili: ${unreachableSources.joinToString(", ")}. Attiva ${if (isCasting) "un add-on Stremio o un'estensione" else "torrent, un add-on Stremio o un'estensione"} in Impostazioni › Contenuti › Fonti"
+            } else if (torrentOnly) {
                 "I torrent non si possono trasmettere: attiva un add-on Stremio o un'estensione in Impostazioni › Contenuti › Fonti"
             } else {
                 "Nessuna fonte attiva: abilitane una in Impostazioni › Contenuti › Fonti"
@@ -489,7 +542,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 }
                     ?: false
             }
-            if (playbackLinks.size > 0) {
+            if (hasResolvedLink()) {
                 StreamCenterLogger.logTab(
                     tabName = playbackLogTab,
                     action = "Risoluzione fonti di riproduzione completata",
@@ -503,7 +556,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
                 return true
             }
         }
-        val result = playbackLinks.size > 0
+        val result = directEmitted || hasResolvedLink()
         StreamCenterLogger.logTab(
             tabName = playbackLogTab,
             action = "Risoluzione fonti di riproduzione completata",
@@ -548,7 +601,7 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         torrentDeferred?.await()
         stremioDeferred?.await()
         extensionDeferred?.await()
-        playbackLinks.size > 0
+        directEmitted || hasResolvedLink()
     }
     StreamCenterLogger.logTab(
         tabName = playbackLogTab,
@@ -561,6 +614,9 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         level = if (result) StreamCenterLogger.Level.INFO else StreamCenterLogger.Level.WARNING,
     )
     return result
+    } finally {
+        discovery.commit()
+    }
 }
 
 internal fun StreamCenter.sourceLinkDedupKey(link: ExtractorLink): String {
@@ -619,46 +675,6 @@ internal suspend fun StreamCenter.runParallelSourceTasks(
 
 internal fun StreamCenter.isSourceEnabled(prefKey: String): Boolean {
     return StreamCenterPlugin.isStreamingSourceEnabled(sharedPref, prefKey)
-}
-
-internal fun StreamCenter.ensureUpdatedSourceDomain(prefKey: String) {
-    if (!StreamCenterPlugin.isSourceUrlAutoUpdateEnabled(sharedPref)) return
-    synchronized(checkedSourceDomains) {
-        if (!checkedSourceDomains.add(prefKey)) return
-    }
-    backgroundScope.launch {
-        val result = runCatching {
-            val baseUrl = StreamCenterPlugin.getSourceBaseUrl(sharedPref, prefKey)
-            if (baseUrl.isBlank()) return@runCatching false
-            val response = app.get(baseUrl, headers = headers, timeout = 15L)
-            val finalUrl = response.url
-            val newHost = hostOf(finalUrl)
-            val moved = response.code in 200..299 &&
-                finalUrl.startsWith("http") &&
-                newHost.isNotBlank() &&
-                !newHost.equals(hostOf(baseUrl), ignoreCase = true)
-            if (moved) {
-                val scheme = finalUrl.substringBefore("://")
-                StreamCenterPlugin.setSourceBaseUrl(sharedPref, prefKey, "$scheme://$newHost")
-            }
-            moved
-        }
-        when {
-            result.isFailure -> synchronized(checkedSourceDomains) { checkedSourceDomains.remove(prefKey) }
-            result.getOrDefault(false) -> resetSourceSession(prefKey)
-        }
-    }
-}
-
-internal fun StreamCenter.resetSourceSession(prefKey: String) {
-    when (prefKey) {
-        StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY -> {
-            streamingCommunityClient.resetSession()
-        }
-        StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY -> {
-                animeUnitySourceClient.resetSession()
-        }
-    }
 }
 
 internal fun StreamCenter.buildAnimeUnityPlayerSources(playbackData: AnimeUnityPlaybackData): List<AnimeUnityPlayerSource> {

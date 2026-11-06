@@ -19,7 +19,6 @@ internal object PlaybackInsightSessionFactory : PlayerSessionFactory {
     private val states = WeakHashMap<AbstractPlayerFragment<*>, PlaybackSwitchState>()
 
     override fun create(fragment: AbstractPlayerFragment<*>, exoPlayer: ExoPlayer): PlayerSession? {
-        if (!StreamCenterPlaybackInsights.enabled()) return null
         val state = states.getOrPut(fragment) { PlaybackSwitchState() }
         return PlaybackInsightSession(fragment, exoPlayer, state).also { it.start() }
     }
@@ -91,7 +90,7 @@ private class PlaybackInsightSession(
         val current = attempt ?: return
         if (current.finished || current.startupMs != null) return
         if (exoPlayer.playWhenReady) current.waitedMs += delta
-        if (current.automatic && current.waitedMs >= timeoutFor(current.origin)) onTimeout(current)
+        if (current.automatic && StreamCenterPlaybackInsights.enabled() && current.waitedMs >= timeoutFor(current.origin)) onTimeout(current)
     }
 
     override fun release() {

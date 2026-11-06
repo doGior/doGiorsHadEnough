@@ -52,6 +52,7 @@ import org.json.JSONObject
 import org.jsoup.Connection
 import org.jsoup.Jsoup
 import java.util.Locale
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
 
 private const val CATALOG_ICON_SIZE_DP = 42
 
@@ -151,6 +152,9 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
             icon = "⇅",
         ) { openScreen(StreamCenterBaseCatalogSettingsFragment(), "StreamCenterBaseCatalogSettings") })
 
+        content.addView(sectionHeading("Caricamento"))
+        addAdaptiveCardGrid(content, loadingRows())
+
         content.addView(sectionHeading("Categorie"))
 
         val rowsView = LinearLayout(requireContext()).apply {
@@ -169,6 +173,86 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
 
         return scroll(content, fixedSubmenuHeight = true)
     }
+
+    private fun loadingRows(): List<View> {
+        val waitLabel = bodyText(lazyHomeWaitLabel(StreamCenterPlugin.lazyHomeWaitMs(sharedPref)), 12)
+        val waitRow = settingsRow(
+            title = "Attesa iniziale",
+            summaryView = waitLabel,
+            icon = "⏱️",
+            accent = COLOR_ACCENT,
+            trailingViews = listOf(chevron(COLOR_ACCENT)),
+            fixedHeight = true,
+            onReset = {
+                sharedPref?.edit { remove(StreamCenterPlugin.PREF_LAZY_HOME_WAIT_MS) }
+                waitLabel.text = lazyHomeWaitLabel(StreamCenterPlugin.lazyHomeWaitMs(sharedPref))
+            },
+        ) {
+            showSettingsChoiceDialog(
+                title = "Attesa iniziale",
+                options = StreamCenterPlugin.LAZY_HOME_WAIT_OPTIONS_MS.map {
+                    SettingsChoiceOption(lazyHomeWaitLabel(it), it, "⏱️")
+                },
+                selectedValue = StreamCenterPlugin.lazyHomeWaitMs(sharedPref),
+                defaultValue = StreamCenterPlugin.LAZY_HOME_DEFAULT_WAIT_MS,
+                accent = COLOR_ACCENT,
+                closeLabel = "Chiudi",
+            ) { selected ->
+                sharedPref?.edit { putInt(StreamCenterPlugin.PREF_LAZY_HOME_WAIT_MS, selected.value) }
+                waitLabel.text = selected.label
+            }
+        }.view
+        val parallelLabel = bodyText(lazyHomeParallelLabel(StreamCenterPlugin.lazyHomeParallelSections(sharedPref)), 12)
+        val parallelRow = settingsRow(
+            title = "Sezioni insieme",
+            summaryView = parallelLabel,
+            icon = "🔀",
+            accent = COLOR_ACCENT,
+            trailingViews = listOf(chevron(COLOR_ACCENT)),
+            fixedHeight = true,
+            onReset = {
+                sharedPref?.edit { remove(StreamCenterPlugin.PREF_LAZY_HOME_PARALLEL_SECTIONS) }
+                parallelLabel.text = lazyHomeParallelLabel(StreamCenterPlugin.lazyHomeParallelSections(sharedPref))
+            },
+        ) {
+            showSettingsChoiceDialog(
+                title = "Sezioni insieme",
+                options = StreamCenterPlugin.LAZY_HOME_PARALLEL_OPTIONS.map {
+                    SettingsChoiceOption(lazyHomeParallelLabel(it), it, it.toString())
+                },
+                selectedValue = StreamCenterPlugin.lazyHomeParallelSections(sharedPref),
+                defaultValue = StreamCenterPlugin.LAZY_HOME_DEFAULT_PARALLEL_SECTIONS,
+                accent = COLOR_ACCENT,
+                closeLabel = "Chiudi",
+            ) { selected ->
+                sharedPref?.edit { putInt(StreamCenterPlugin.PREF_LAZY_HOME_PARALLEL_SECTIONS, selected.value) }
+                parallelLabel.text = selected.label
+            }
+        }.view
+        val dependentRows = listOf(waitRow, parallelRow)
+        val lazyRow = switchRow(
+            title = "Home progressiva",
+            summary = "Apre subito la Home e riempie le righe man mano",
+            checked = StreamCenterPlugin.isLazyHomeEnabled(sharedPref),
+            defaultChecked = StreamCenterPlugin.isLazyHomeEnabled(null),
+            accent = COLOR_ACCENT,
+            icon = "⚡",
+            fixedHeight = true,
+        ) { enabled ->
+            sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_LAZY_HOME, enabled) }
+            dependentRows.forEach { animateRowEnabledAppearance(it, enabled) }
+        }
+        if (!StreamCenterPlugin.isLazyHomeEnabled(sharedPref)) dependentRows.forEach { it.alpha = settingsRowDisabledAlpha }
+        return listOf(lazyRow) + dependentRows
+    }
+
+    private fun lazyHomeWaitLabel(waitMs: Int): String = when (waitMs) {
+        500 -> "Mezzo secondo"
+        1_000 -> "1 secondo"
+        else -> "${waitMs / 1_000} secondi"
+    }
+
+    private fun lazyHomeParallelLabel(count: Int): String = "$count alla volta"
 
     private fun loadRows() {
         rows.clear()
@@ -2121,6 +2205,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
     }
 
     private fun isCatalogSectionAvailable(section: StreamCenterCatalogSection): Boolean {
+        if (section.requiresTmdbApiKey && !StreamCenterTmdbApiClient.isActive()) return false
         if (section.trackingServiceKey == null) return true
         return catalogTrackingService(section)?.let(::isTrackingServiceConnected) == true
     }
@@ -2635,6 +2720,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                         renderSectionList()
                 }
                 val sectionType = when {
+                    !available && section.requiresTmdbApiKey -> "Serve la chiave TMDB"
                     trackingService != null -> "Tracciamento"
                     section.type == TvType.Movie -> "Film"
                     section.type in setOf(TvType.Anime, TvType.AnimeMovie, TvType.OVA) -> "Anime"
@@ -2656,6 +2742,8 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                 ) {
                         if (available) {
                             sectionSwitch.isChecked = !sectionSwitch.isChecked
+                        } else if (section.requiresTmdbApiKey) {
+                            saveToast("Serve la chiave TMDB personale: il sito non mostra più questa lista")
                         } else {
                             saveToast("Collega l'account ${trackingService?.title ?: catalog.title} in CloudStream")
                         }

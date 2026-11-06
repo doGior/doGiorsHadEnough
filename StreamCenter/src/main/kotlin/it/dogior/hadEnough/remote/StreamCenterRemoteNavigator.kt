@@ -13,6 +13,7 @@ import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.playback.StreamCenterSourceOrder
 import it.dogior.hadEnough.settings.StreamCenterBaseSettingsFragment
 import it.dogior.hadEnough.util.StreamCenterLogger
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal data class RemoteCard(val url: String, val apiName: String, val name: String)
 
@@ -37,7 +38,8 @@ internal object StreamCenterRemoteNavigator {
     }
 
     fun openCard(card: RemoteCard) {
-        if (StreamCenterPlugin.completeResetInProgress) return
+        if (StreamCenterPlugin.completeResetInProgress || !card.url.isRemoteWebUrl()) return
+        StreamCenterRemoteDirectLink.clear()
         mainHandler.post {
             if (StreamCenterRemotePlayer.isActive) {
                 pendingCard = card
@@ -49,13 +51,14 @@ internal object StreamCenterRemoteNavigator {
     }
 
     fun play(handoff: RemoteHandoff) {
-        if (StreamCenterPlugin.completeResetInProgress) return
+        if (StreamCenterPlugin.completeResetInProgress || !handoff.url.isRemoteWebUrl()) return
         mainHandler.post {
             val episodeId = handoff.episodeId
             if (episodeId != null && handoff.positionMs > 0) {
                 runCatching { DataStoreHelper.setViewPos(episodeId, handoff.positionMs, handoff.durationMs) }
             }
-            handoff.linkName?.let { StreamCenterSourceOrder.pinOnce(it, PINNED_SOURCE_MS) }
+            StreamCenterRemoteDirectLink.put(handoff)
+            if (handoff.link == null) handoff.linkName?.let { StreamCenterSourceOrder.pinOnce(it, PINNED_SOURCE_MS) }
             val card = RemoteCard(handoff.url, handoff.apiName, handoff.name)
             if (episodeId != null) load(card, START_ACTION_LOAD_EP, episodeId)
             else load(card, START_ACTION_RESUME_LATEST, 0)
@@ -80,6 +83,7 @@ internal object StreamCenterRemoteNavigator {
     fun clear() {
         pendingCard = null
         parked = null
+        StreamCenterRemoteDirectLink.clear()
     }
 
     fun toast(message: String) {
@@ -94,3 +98,5 @@ internal object StreamCenterRemoteNavigator {
         }
     }
 }
+
+private fun String.isRemoteWebUrl(): Boolean = toHttpUrlOrNull() != null

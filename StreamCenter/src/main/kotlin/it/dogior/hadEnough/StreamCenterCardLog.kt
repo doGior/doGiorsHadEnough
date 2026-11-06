@@ -49,7 +49,7 @@ internal data class CardProvenance(
 
 internal fun StreamCenter.logLoadedResponse(response: LoadResponse, route: String, identityUrl: String, attachExtensions: Boolean = true): LoadResponse {
     response.url = identityUrl
-    response.recommendations = response.recommendations?.let(::animeSeasonCards)
+    response.recommendations = response.recommendations?.let(::presentedCards)
     if (attachExtensions && InstalledExtensionSources.enabledKeys(sharedPref).isNotEmpty()) response.attachExtensionPlayback()
     StreamCenterRemoteCards.remember(response)
     if (!StreamCenterLogger.isEnabled(sharedPref)) {

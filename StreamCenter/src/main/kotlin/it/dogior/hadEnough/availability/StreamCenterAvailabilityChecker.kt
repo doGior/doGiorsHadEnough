@@ -115,7 +115,8 @@ internal object StreamCenterAvailabilityChecker {
                 timeoutMs = 30_000L,
             ) {
                 withContext(ExtensionCall) {
-                    val response = api.getMainPage(1, MainPageRequest(section.name, section.data, section.horizontalImages))
+                    val request = MainPageRequest(section.name, section.data, section.horizontalImages)
+                    val response = (api as? StreamCenter)?.presentedMainPage(1, request) ?: api.getMainPage(1, request)
                         ?: return@withContext failure("La sezione non ha restituito una risposta")
                     val count = response.items.sumOf { it.list.size }
                     val emptyLists = response.items.count { it.list.isEmpty() }

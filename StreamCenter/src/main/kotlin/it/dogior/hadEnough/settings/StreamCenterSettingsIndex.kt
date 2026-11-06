@@ -67,8 +67,11 @@ internal object StreamCenterSettingsIndex {
                     title = "${extension.name} (opzionale)", trail = "Estensioni opzionali",
                     icon = extension.icon, accent = COLOR_ACCENT, screen = SettingsScreenId.OPTIONAL_EXTENSIONS,
                     keywords = "${extension.author} estensione scarica download installa impostazioni ${extension.summary} " +
-                        if (extension.key == StreamCenterOptionalExtensions.PRISYNX) "prisync cataloghi provider ordine topx kitsu raiplay torrent"
-                        else "italiainstreaming diegon",
+                        when (extension.key) {
+                            StreamCenterOptionalExtensions.PRISYNX -> "prisync cataloghi provider ordine topx kitsu raiplay torrent"
+                            StreamCenterOptionalExtensions.ITALIAVERSE -> "diegon repository megarepo"
+                            else -> "italiainstreaming diegon"
+                        },
                 )
             }
     }
@@ -502,6 +505,24 @@ internal object StreamCenterSettingsIndex {
             accent = COLOR_ACCENT,
             screen = SettingsScreenId.CACHE,
             keywords = "scadenza giorni conclusi in corso",
+        ),
+        SettingsIndexEntry(
+            title = "Voti in cache",
+            trail = "Cache › Voti TMDB",
+            icon = "⭐",
+            accent = COLOR_ACCENT,
+            screen = SettingsScreenId.CACHE,
+            keywords = "voto punteggio rating tmdb svuota veloce home",
+            toggle = booleanPref(StreamCenterPlugin.PREF_TMDB_SCORE_CACHE_ENABLED, true),
+        ),
+        SettingsIndexEntry(
+            title = "Home progressiva",
+            trail = "Home › Caricamento",
+            icon = "⚡",
+            accent = COLOR_ACCENT,
+            screen = SettingsScreenId.HOME,
+            keywords = "lazy veloce lenta caricamento subito righe attesa sezioni insieme parallelo",
+            toggle = booleanPref(StreamCenterPlugin.PREF_LAZY_HOME, true),
         ),
         SettingsIndexEntry(
             title = "Calendario anime in cache",

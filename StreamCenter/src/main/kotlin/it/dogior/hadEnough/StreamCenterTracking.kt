@@ -39,6 +39,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Calendar
 import java.util.Locale
 import org.json.JSONObject
+import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
 
 internal suspend fun StreamCenter.resolveKitsuLibraryMediaId(id: Int): Int {
     val account = AccountManager.syncApis
@@ -215,6 +216,7 @@ internal fun StreamCenter.catalogTrackingConfig(
 }
 
 internal fun StreamCenter.isCatalogSectionAvailable(section: StreamCenterCatalogSection): Boolean {
+    if (section.requiresTmdbApiKey && !StreamCenterTmdbApiClient.isActive()) return false
     if (section.trackingServiceKey == null) return true
     return catalogTrackingService(section)?.let { trackingServiceIsConnected(it.syncIdName) } == true
 }

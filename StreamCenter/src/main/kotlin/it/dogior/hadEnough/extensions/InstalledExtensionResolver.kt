@@ -13,6 +13,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import java.util.concurrent.TimeoutException
 import okhttp3.Interceptor
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.AbstractCoroutineContextElement
@@ -62,17 +64,20 @@ internal object InstalledExtensionResolver {
         callback: (ExtractorLink) -> Unit,
         performanceMode: Boolean = false,
         onError: (String, Throwable) -> Unit = { _, _ -> },
+        onSkippedForCasting: () -> Unit = {},
     ): Boolean {
         val emitted = AtomicBoolean(false)
-        withTimeoutOrNull(if (performanceMode) 15_000L else PROVIDER_TIMEOUT_MS) {
+        val completed = withTimeoutOrNull(if (performanceMode) 15_000L else PROVIDER_TIMEOUT_MS) {
             for (source in extension.sources) {
                 val found = resolve(source, context, isCasting, subtitleCallback, { link ->
                     emitted.set(true)
                     callback(link)
-                }, performanceMode, onError)
+                }, performanceMode, onError, onSkippedForCasting)
                 if (performanceMode && (found || emitted.get())) break
             }
+            true
         }
+        if (completed != true) onError("timeout", TimeoutException("Estensione: tempo scaduto"))
         return emitted.get()
     }
 
@@ -84,15 +89,19 @@ internal object InstalledExtensionResolver {
         callback: (ExtractorLink) -> Unit,
         performanceMode: Boolean = false,
         onError: (String, Throwable) -> Unit = { _, _ -> },
+        onSkippedForCasting: () -> Unit = {},
     ): Boolean {
         if (currentCoroutineContext()[ExtensionCall.Key] != null) return false
         val api = source.api
         val movieTypes = setOf(TvType.Movie, TvType.AnimeMovie)
         val seriesTypes = setOf(TvType.TvSeries, TvType.Anime, TvType.OVA)
         if (api.supportedTypes.none { it in if (context.isMovie) movieTypes else seriesTypes }) return false
-        if (isCasting && !api.hasChromecastSupport) return false
+        if (isCasting && !api.hasChromecastSupport) {
+            onSkippedForCasting()
+            return false
+        }
         val emitted = AtomicBoolean(false)
-        withTimeoutOrNull(if (performanceMode) 15_000L else PROVIDER_TIMEOUT_MS) {
+        val completed = withTimeoutOrNull(if (performanceMode) 15_000L else PROVIDER_TIMEOUT_MS) {
             withContext(ExtensionCall) {
                 val job = currentCoroutineContext()
                 val safeSubtitle: (SubtitleFile) -> Unit = { subtitle ->
@@ -102,7 +111,10 @@ internal object InstalledExtensionResolver {
                 val safeLink: (ExtractorLink) -> Unit = callback@{ link ->
                     job.ensureActive()
                     if (isCasting && (link.type == ExtractorLinkType.MAGNET || link.type == ExtractorLinkType.TORRENT ||
-                            link.url.startsWith("magnet:", ignoreCase = true))) return@callback
+                            link.url.startsWith("magnet:", ignoreCase = true))) {
+                        onSkippedForCasting()
+                        return@callback
+                    }
                     if (link.url.isBlank()) return@callback
                     linkOwners.put(linkKey(link), api to link)
                     link.extractorData?.takeIf(String::isNotBlank)?.let { verifierOwners.put(it, api) }
@@ -114,14 +126,14 @@ internal object InstalledExtensionResolver {
                 suspend fun tryMedia(url: String, idKind: String? = null): Boolean {
                     if (url.isBlank() || !visited.add(url) || loads >= 5) return false
                     loads++
-                    val response = providerCall("scheda", onError) {
-                        withTimeoutOrNull(REQUEST_TIMEOUT_MS) { api.load(url) }
+                    val response = providerCall("scheda", onError, REQUEST_TIMEOUT_MS) {
+                        api.load(url)
                     } ?: return false
                     if (!ExtensionMediaMatcher.matches(context, response, idKind)) return false
                     val data = ExtensionMediaMatcher.playbackData(context, response)
                     for (payload in data) {
-                        providerCall("video", onError) {
-                            withTimeoutOrNull(25_000L) { api.loadLinks(payload, isCasting, safeSubtitle, safeLink) }
+                        providerCall("video", onError, 25_000L) {
+                            api.loadLinks(payload, isCasting, safeSubtitle, safeLink)
                         }
                         if (performanceMode && emitted.get()) break
                     }
@@ -131,16 +143,16 @@ internal object InstalledExtensionResolver {
                 for ((kind, syncName) in syncNames) {
                     val id = context.ids[kind] ?: continue
                     if (syncName !in api.supportedSyncNames) continue
-                    val url = providerCall("identificativo", onError) {
-                        withTimeoutOrNull(REQUEST_TIMEOUT_MS) { api.getLoadUrl(syncName, id) }
+                    val url = providerCall("identificativo", onError, REQUEST_TIMEOUT_MS) {
+                        api.getLoadUrl(syncName, id)
                     } ?: continue
                     if (tryMedia(url, kind)) return@withContext
                 }
                 val queries = context.titles.filter(String::isNotBlank)
                     .distinctBy(ExtensionMediaMatcher::normalizedTitle).take(3)
                 for (query in queries) {
-                    val results = providerCall("ricerca", onError) {
-                        withTimeoutOrNull(REQUEST_TIMEOUT_MS) { api.search(query, 1)?.items }
+                    val results = providerCall("ricerca", onError, REQUEST_TIMEOUT_MS) {
+                        api.search(query, 1)?.items
                     }.orEmpty()
                     for (result in results) {
                         if (!ExtensionMediaMatcher.titleMatches(context, listOf(result.name))) continue
@@ -149,13 +161,20 @@ internal object InstalledExtensionResolver {
                     if (loads >= 5) break
                 }
             }
+            true
         }
+        if (completed != true) onError("timeout", TimeoutException("Estensione: tempo scaduto"))
         return emitted.get()
     }
 
-    private suspend fun <T> providerCall(stage: String, onError: (String, Throwable) -> Unit, block: suspend () -> T): T? {
+    private suspend fun <T> providerCall(
+        stage: String,
+        onError: (String, Throwable) -> Unit,
+        timeoutMs: Long? = null,
+        block: suspend () -> T,
+    ): T? {
         return try {
-            block()
+            if (timeoutMs == null) block() else withTimeout(timeoutMs) { block() }
         } catch (error: TimeoutCancellationException) {
             currentCoroutineContext().ensureActive()
             onError(stage, error)

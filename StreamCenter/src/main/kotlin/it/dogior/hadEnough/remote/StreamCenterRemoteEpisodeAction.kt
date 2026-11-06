@@ -13,6 +13,7 @@ import com.lagradost.cloudstream3.ui.result.ResultViewModel2
 import com.lagradost.cloudstream3.utils.DOWNLOAD_HEADER_CACHE
 import com.lagradost.cloudstream3.utils.DOWNLOAD_HEADER_CACHE_BACKUP
 import com.lagradost.cloudstream3.utils.DataStoreHelper
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.UiText
 import com.lagradost.cloudstream3.utils.downloader.DownloadObjects
 import com.lagradost.cloudstream3.utils.txt
@@ -22,19 +23,19 @@ import it.dogior.hadEnough.util.StreamCenterDevice
 class StreamCenterRemoteEpisodeAction : StreamCenterRemoteTvAction() {
     override val name: UiText = txt("📺 Riproduci sulla TV (StreamCenter)")
 
-    override fun chosenLink(result: LinkLoadingResult, index: Int?): String? = null
+    override fun chosenLink(result: LinkLoadingResult, index: Int?): ExtractorLink? = null
 }
 
 class StreamCenterRemoteSourceAction : StreamCenterRemoteTvAction() {
     override val name: UiText = txt("📺 Scegli fonte per la TV (StreamCenter)")
     override val oneSource: Boolean = true
 
-    override fun chosenLink(result: LinkLoadingResult, index: Int?): String? =
-        result.links.getOrNull(index ?: 0)?.name
+    override fun chosenLink(result: LinkLoadingResult, index: Int?): ExtractorLink? =
+        result.links.getOrNull(index ?: 0)
 }
 
 abstract class StreamCenterRemoteTvAction : VideoClickAction() {
-    protected abstract fun chosenLink(result: LinkLoadingResult, index: Int?): String?
+    protected abstract fun chosenLink(result: LinkLoadingResult, index: Int?): ExtractorLink?
 
     override fun shouldShow(context: Context?, video: ResultEpisode?): Boolean =
         context != null && StreamCenterRemote.isEnabled() &&
@@ -48,6 +49,8 @@ abstract class StreamCenterRemoteTvAction : VideoClickAction() {
     ) {
         val page = currentPage(video) ?: return StreamCenterRemoteNavigator.toast("Scheda non trovata, riaprila e riprova")
         val position = DataStoreHelper.getViewPos(video.id)
+        val chosen = chosenLink(result, index)
+        val directLink = RemoteLink.of(chosen)
         StreamCenterRemote.sendToTv(RemoteHandoff(
             url = page.url,
             apiName = page.apiName,
@@ -57,12 +60,19 @@ abstract class StreamCenterRemoteTvAction : VideoClickAction() {
             episode = video.episode,
             positionMs = position?.position ?: video.position,
             durationMs = position?.duration ?: video.duration,
-            linkName = chosenLink(result, index),
+            linkName = chosen?.name?.takeUnless {
+                chosen.type == com.lagradost.cloudstream3.utils.ExtractorLinkType.TORRENT ||
+                    chosen.type == com.lagradost.cloudstream3.utils.ExtractorLinkType.MAGNET ||
+                    chosen.url.startsWith("magnet:", ignoreCase = true)
+            },
+            link = directLink,
+            subtitles = if (directLink == null) emptyList() else RemoteSubtitleFile.listOf(result.subs),
+            episodeData = video.data,
         ))
     }
 
     private fun currentPage(video: ResultEpisode): RemoteCard? =
-        StreamCenterRemoteCards.find(video.apiName, video.headerName ?: "")
+        StreamCenterRemoteCards.find(video.apiName, video.headerName)
             ?: openedPage(video)
             ?: cachedHeader(video)
 

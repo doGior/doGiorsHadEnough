@@ -34,18 +34,19 @@ internal suspend fun StreamCenter.fetchStreamingCommunityHome(
     limit: Int,
     showScore: Boolean,
 ): List<SearchResponse> {
-    ensureUpdatedSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
     val parts = data.split(":")
     val type = parts.getOrNull(1) ?: "tv"
     val sliderName = parts.getOrNull(2) ?: "trending"
-    val pageUrl = when {
-        type == "tv" && sliderName == "upcoming" -> streamingCommunityMainUrl
-        type == "tv" -> "$streamingCommunityMainUrl/tv-shows"
-        type == "movie" -> "$streamingCommunityMainUrl/movies"
-        else -> streamingCommunityMainUrl
-    }
-
-    val props = streamingCommunityClient.fetchPageProps(pageUrl) ?: return emptyList()
+    val props = withSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) {
+        streamingCommunityClient.fetchPageProps(
+            when {
+                type == "tv" && sliderName == "upcoming" -> streamingCommunityMainUrl
+                type == "tv" -> "$streamingCommunityMainUrl/tv-shows"
+                type == "movie" -> "$streamingCommunityMainUrl/movies"
+                else -> streamingCommunityMainUrl
+            },
+        )
+    } ?: return emptyList()
     val sliders = props.optJSONArray("sliders") ?: return emptyList()
     val titles = (0 until sliders.length())
         .asSequence()
@@ -62,13 +63,14 @@ internal suspend fun StreamCenter.fetchStreamingCommunityArchiveHome(
     limit: Int,
     showScore: Boolean,
 ): List<SearchResponse> {
-    ensureUpdatedSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
     val parts = data.split(":")
     val type = parts.getOrNull(2) ?: "movie"
     val genreId = parts.getOrNull(3)?.toIntOrNull() ?: return emptyList()
-    val pageUrl = "$streamingCommunityMainUrl/archive?type=$type&genre%5B%5D=$genreId&sort=views"
-
-    val props = streamingCommunityClient.fetchPageProps(pageUrl) ?: return emptyList()
+    val props = withSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) {
+        streamingCommunityClient.fetchPageProps(
+            "$streamingCommunityMainUrl/archive?type=$type&genre%5B%5D=$genreId&sort=views",
+        )
+    } ?: return emptyList()
     val titles = props.optJSONArray("titles") ?: return emptyList()
     return titles.toStreamingCommunityHomeResponses(type, streamingCommunityClient.cdnUrl(props), limit, showScore)
 }
@@ -98,7 +100,6 @@ internal suspend fun StreamCenter.fetchStreamingCommunityArchiveByType(
     limit: Int,
     showScore: Boolean,
 ): List<SearchResponse> {
-    ensureUpdatedSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)
     val query = buildList {
         add("type=$type")
         filters.genreId?.let { add("genre%5B%5D=$it") }
@@ -109,8 +110,9 @@ internal suspend fun StreamCenter.fetchStreamingCommunityArchiveByType(
         add("sort=${filters.sort ?: "release_date"}")
         if (page > 1) add("page=$page")
     }.joinToString("&")
-    val props = streamingCommunityClient.fetchPageProps("$streamingCommunityMainUrl/archive?$query")
-        ?: return emptyList()
+    val props = withSourceDomain(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) {
+        streamingCommunityClient.fetchPageProps("$streamingCommunityMainUrl/archive?$query")
+    } ?: return emptyList()
     val titles = props.optJSONArray("titles") ?: return emptyList()
     return titles.toStreamingCommunityHomeResponses(
         type = type,

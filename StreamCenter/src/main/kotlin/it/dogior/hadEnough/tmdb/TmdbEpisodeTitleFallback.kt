@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.tmdb
 
 import it.dogior.hadEnough.util.cleanMetadataEpisodeTitle
+import it.dogior.hadEnough.util.cleanTmdbEpisodeDescription
 import org.json.JSONObject
 
 internal object TmdbEpisodeTitleFallback {
@@ -9,20 +10,28 @@ internal object TmdbEpisodeTitleFallback {
 
     fun apiLanguages(isAnime: Boolean): List<String> = listOfNotNull(ENGLISH, JAPANESE.takeIf { isAnime })
 
-    fun hasMissingTitles(json: JSONObject): Boolean =
-        episodeObjects(json).any { cleanMetadataEpisodeTitle(it.optString("name")) == null }
+    fun fillsOverview(language: String): Boolean = language == ENGLISH
 
-    fun fill(json: JSONObject, fallback: JSONObject): JSONObject {
-        val names = episodeObjects(fallback).mapNotNull { episode ->
+    fun hasMissingText(json: JSONObject, withOverview: Boolean): Boolean =
+        episodeObjects(json).any { episode ->
+            cleanMetadataEpisodeTitle(episode.optString("name")) == null ||
+                (withOverview && cleanTmdbEpisodeDescription(episode.optString("overview")) == null)
+        }
+
+    fun fill(json: JSONObject, fallback: JSONObject, withOverview: Boolean): JSONObject {
+        val texts = episodeObjects(fallback).mapNotNull { episode ->
             val id = episode.optLong("id").takeIf { it > 0 } ?: return@mapNotNull null
-            val name = cleanMetadataEpisodeTitle(episode.optString("name")) ?: return@mapNotNull null
-            id to name
+            id to (cleanMetadataEpisodeTitle(episode.optString("name")) to
+                cleanTmdbEpisodeDescription(episode.optString("overview")).takeIf { withOverview })
         }.toMap()
-        if (names.isEmpty()) return json
+        if (texts.isEmpty()) return json
         val filled = JSONObject(json.toString())
         episodeObjects(filled).forEach { episode ->
-            if (cleanMetadataEpisodeTitle(episode.optString("name")) != null) return@forEach
-            names[episode.optLong("id")]?.let { episode.put("name", it) }
+            val (name, overview) = texts[episode.optLong("id")] ?: return@forEach
+            if (cleanMetadataEpisodeTitle(episode.optString("name")) == null && name != null) episode.put("name", name)
+            if (cleanTmdbEpisodeDescription(episode.optString("overview")) == null && overview != null) {
+                episode.put("overview", overview)
+            }
         }
         return filled
     }

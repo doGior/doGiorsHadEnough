@@ -49,6 +49,7 @@ internal data class PlaybackInsightEntry(
 internal data class PlaybackInsightSnapshot(
     val schemaVersion: Int = StreamCenterPlaybackInsights.SCHEMA_VERSION,
     val entries: List<PlaybackInsightEntry> = emptyList(),
+    val discoveries: List<SourceDiscoveryEntry> = emptyList(),
 )
 
 internal data class PlaybackInsightSummary(
@@ -69,9 +70,9 @@ private class PlaybackMetrics(samples: List<PlaybackSample>, val group: Playback
     val recent = samples.takeLast(StreamCenterPlaybackInsights.RECENT_SAMPLES)
     val plays = recent.filter(PlaybackSample::started)
     val successRate = if (recent.isEmpty()) 0.0 else plays.size.toDouble() / recent.size
-    val medianStartupMs = median(plays.mapNotNull(PlaybackSample::startupMs))
+    val medianStartupMs = medianLong(plays.mapNotNull(PlaybackSample::startupMs))
     val stallsPerPlay = plays.map(PlaybackSample::stalls).average().takeUnless(Double::isNaN) ?: 0.0
-    val medianHeight = median(plays.mapNotNull { it.height?.toLong() })?.toInt()
+    val medianHeight = medianLong(plays.mapNotNull { it.height?.toLong() })?.toInt()
     val qualityMismatch = plays.count { sample ->
         val declared = sample.declaredHeight ?: return@count false
         val measured = sample.height ?: return@count false
@@ -107,11 +108,6 @@ private class PlaybackMetrics(samples: List<PlaybackSample>, val group: Playback
         const val MAX_SCORED_STALLS = 4.0
         const val QUALITY_MISMATCH_RATIO = 0.6
 
-        fun median(values: List<Long>): Long? {
-            if (values.isEmpty()) return null
-            val sorted = values.sorted()
-            return sorted[sorted.size / 2]
-        }
     }
 }
 
@@ -121,6 +117,7 @@ internal object StreamCenterPlaybackInsights {
     const val TAB = "Riproduzione con un tasto"
     private const val FILE_NAME = "streamcenter_playback_insights.json"
     private const val MAX_SAMPLES = 12
+    private const val MAX_DISCOVERY_SAMPLES = 20
     private const val MAX_ENTRIES = 200
     const val RECENT_SAMPLES = 10
     const val MIN_SAMPLES = 3
@@ -133,6 +130,7 @@ internal object StreamCenterPlaybackInsights {
     private var appContext: Context? = null
     private var isEnabled: () -> Boolean = { false }
     private var entries: MutableMap<String, PlaybackInsightEntry>? = null
+    private var discoveries: MutableMap<String, SourceDiscoveryEntry>? = null
 
     fun install(context: Context, enabled: () -> Boolean) {
         appContext = context.applicationContext
@@ -146,7 +144,7 @@ internal object StreamCenterPlaybackInsights {
         PlaybackOrigin(source, hostOf(link.url), link.quality.takeIf { it > 0 })
 
     fun remember(link: ExtractorLink, origin: PlaybackOrigin) {
-        if (enabled()) origins.put(link.url, origin)
+        origins.put(link.url, origin)
     }
 
     fun originOf(url: String): PlaybackOrigin? = origins[url]
@@ -187,6 +185,36 @@ internal object StreamCenterPlaybackInsights {
         }
     }
 
+    fun recordDiscoveries(samples: List<Pair<PlaybackSource, DiscoverySample>>) {
+        if (samples.isEmpty()) return
+        writer.execute {
+            runCatching {
+                synchronized(this) {
+                    val all = loadedDiscoveries()
+                    samples.forEach { (source, sample) ->
+                        val current = all[source.key] ?: SourceDiscoveryEntry(sourceKey = source.key, group = source.group.name)
+                        all[source.key] = current.copy(
+                            sourceName = source.name,
+                            group = source.group.name,
+                            samples = (current.samples + sample).takeLast(MAX_DISCOVERY_SAMPLES),
+                        )
+                    }
+                    prune(loaded())
+                    persist(loaded())
+                }
+            }.onFailure {
+                StreamCenterLogger.warning("Statistiche di ritrovamento non salvate", mapOf("errore" to it.toString()))
+            }
+        }
+    }
+
+    fun discoverySummaries(): List<SourceDiscoverySummary> = synchronized(this) {
+        if (prune(loaded())) persist(loaded())
+        loadedDiscoveries().values.map { entry ->
+            SourceDiscoverySummary.of(entry, groupOf(entry.group))
+        }.sortedWith(SourceDiscoverySummary.ranking)
+    }
+
     fun summaries(): List<PlaybackInsightSummary> = synchronized(this) {
         val all = loaded()
         if (prune(all)) persist(all)
@@ -214,6 +242,7 @@ internal object StreamCenterPlaybackInsights {
 
     fun clear() = synchronized(this) {
         entries = mutableMapOf()
+        discoveries = mutableMapOf()
         origins.clear()
         file()?.let { target ->
             listOf(target, File(target.path + ".bak"), File(target.path + ".new")).forEach(File::delete)
@@ -246,22 +275,47 @@ internal object StreamCenterPlaybackInsights {
             all.entries.sortedBy { it.value.lastAtMillis }.take(all.size - MAX_ENTRIES).forEach { all.remove(it.key) }
             changed = true
         }
+        val found = loadedDiscoveries()
+        found.entries.toList().forEach { (key, entry) ->
+            val kept = entry.samples.filter { it.atMillis >= cutoff }.takeLast(MAX_DISCOVERY_SAMPLES)
+            when {
+                kept.isEmpty() -> found.remove(key).also { changed = true }
+                kept.size != entry.samples.size -> found.put(key, entry.copy(samples = kept)).also { changed = true }
+            }
+        }
+        if (found.size > MAX_ENTRIES) {
+            found.entries.sortedBy { it.value.samples.maxOfOrNull(DiscoverySample::atMillis) ?: 0L }
+                .take(found.size - MAX_ENTRIES).forEach { found.remove(it.key) }
+            changed = true
+        }
         return changed
     }
 
     private fun loaded(): MutableMap<String, PlaybackInsightEntry> {
         entries?.let { return it }
-        val snapshot = file()?.takeIf { it.exists() || File(it.path + ".bak").exists() }
-            ?.let { runCatching { parseJson<PlaybackInsightSnapshot>(AtomicTextFile.read(it)) }.getOrNull() }
-            ?.takeIf { it.schemaVersion == SCHEMA_VERSION }
+        val snapshot = readSnapshot()
+        discoveries = snapshot?.discoveries.orEmpty().associateByTo(mutableMapOf()) { it.sourceKey }
         return snapshot?.entries.orEmpty()
             .associateByTo(mutableMapOf()) { entryKey(it.sourceKey, it.host) }
             .also { entries = it }
     }
 
+    private fun loadedDiscoveries(): MutableMap<String, SourceDiscoveryEntry> {
+        loaded()
+        return discoveries ?: mutableMapOf<String, SourceDiscoveryEntry>().also { discoveries = it }
+    }
+
+    private fun readSnapshot(): PlaybackInsightSnapshot? = file()
+        ?.takeIf { it.exists() || File(it.path + ".bak").exists() }
+        ?.let { runCatching { parseJson<PlaybackInsightSnapshot>(AtomicTextFile.read(it)) }.getOrNull() }
+        ?.takeIf { it.schemaVersion == SCHEMA_VERSION }
+
     private fun persist(all: Map<String, PlaybackInsightEntry>) {
         val target = file() ?: return
-        AtomicTextFile.write(target, PlaybackInsightSnapshot(entries = all.values.toList()).toJson())
+        AtomicTextFile.write(
+            target,
+            PlaybackInsightSnapshot(entries = all.values.toList(), discoveries = loadedDiscoveries().values.toList()).toJson(),
+        )
     }
 
     private fun file(): File? = appContext?.filesDir?.let { File(it, FILE_NAME) }

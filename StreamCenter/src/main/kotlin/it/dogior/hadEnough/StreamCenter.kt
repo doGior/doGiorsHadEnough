@@ -182,7 +182,6 @@ class StreamCenter internal constructor(
             VPNStatus.None
         }
     override var sequentialMainPage = true
-    override var sequentialMainPageDelay = SEQUENTIAL_MAIN_PAGE_DELAY_MS
     override var sequentialMainPageScrollDelay = SEQUENTIAL_MAIN_PAGE_SCROLL_DELAY_MS
     override val supportedTypes = if (catalogDefinition != null) {
         catalogDefinition.supportedTypes
@@ -268,12 +267,12 @@ class StreamCenter internal constructor(
         }
     }
 
-    internal fun animeSeasonCards(items: List<SearchResponse>): List<SearchResponse> {
+    internal fun presentedCards(items: List<SearchResponse>): List<SearchResponse> {
         if (items.isEmpty()) return items
         val groupSeasons = StreamCenterPlugin.shouldGroupAnimeSeasons(sharedPref)
-        return items.map { item ->
+        return applyCardLabelPreferences(items.map { item ->
             if (item.apiName == name) AnimeSeasonRoutes.card(item, groupSeasons) else item
-        }
+        })
     }
     internal val searchTitleAliases = ConcurrentHashMap<String, List<String>>()
     internal val pendingCardProvenance = Collections.synchronizedMap(
@@ -414,9 +413,14 @@ class StreamCenter internal constructor(
                 }
         }.let { configuredSections -> mainPageOf(*configuredSections.toTypedArray()) }
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    private val lazyHome = StreamCenterLazyHome(this)
+
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse =
+        lazyHome.page(page, request, ::presentedMainPage)
+
+    internal suspend fun presentedMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val response = getUngroupedMainPage(page, request)
-        return response.copy(items = response.items.map { it.copy(list = animeSeasonCards(it.list)) })
+        return response.copy(items = response.items.map { it.copy(list = presentedCards(it.list)) })
     }
 
     internal fun JSONObject.toAnimeUnityHomeItem(episodeNumber: Int? = null): AnimeUnityHomeItem? {
@@ -534,16 +538,16 @@ class StreamCenter internal constructor(
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        return animeSeasonCards(fetchSearchResults(query, 1).first)
+        return presentedCards(fetchSearchResults(query, 1).first)
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val (items, hasNext) = fetchSearchResults(query, page)
-        return newSearchResponseList(animeSeasonCards(items), hasNext)
+        return newSearchResponseList(presentedCards(items), hasNext)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> {
-        return animeSeasonCards(fetchSearchResults(query, 1, includeFallbacks = false).first)
+        return presentedCards(fetchSearchResults(query, 1, includeFallbacks = false).first)
     }
 
     override suspend fun getLoadUrl(name: SyncIdName, id: String): String? {
@@ -618,6 +622,7 @@ class StreamCenter internal constructor(
                 throw CancellationException("Account cambiato durante il caricamento")
             }
             catchUp.remember(response)
+            StreamCenterUnairedResume.remember(response)
             return response
         }
         val original = if (AnimeSeasonRoutes.isGrouped(url)) {
@@ -848,13 +853,12 @@ class StreamCenter internal constructor(
             SyncIdName.Kitsu,
             SyncIdName.Simkl,
         )
-        internal val checkedSourceDomains = mutableSetOf<String>()
         internal val activeInstances = Collections.newSetFromMap(
             WeakHashMap<StreamCenter, Boolean>(),
         )
 
         fun resetSourceDomainChecks() {
-            synchronized(checkedSourceDomains) { checkedSourceDomains.clear() }
+            StreamCenterSourceDomains.reset()
         }
 
         fun resetRuntimeConfiguration() {
@@ -897,8 +901,9 @@ class StreamCenter internal constructor(
         internal const val ANIME_JAPANESE_TITLE_ANIZIP_TIMEOUT_MS = 5_000L
         internal const val STREMIO_ADDON_TIMEOUT_MS = 45_000L
         internal const val TMDB_ANIME_EPISODE_METADATA_TIMEOUT_MS = 20_000L
+        internal const val SC_TITLE_LOOKUP_TIMEOUT_MS = 15_000L
+        internal const val SC_EPISODE_DETAILS_TIMEOUT_MS = 20_000L
         internal const val ANIME_SEARCH_ENRICHMENT_TIMEOUT_MS = 5_000L
-        internal const val SEQUENTIAL_MAIN_PAGE_DELAY_MS = 300L
         internal const val SEQUENTIAL_MAIN_PAGE_SCROLL_DELAY_MS = 300L
         internal val ANILIST_RECOMMENDATIONS_QUERY = """
             query(${'$'}id: Int) {

@@ -39,6 +39,7 @@ internal class StreamCenterTvTouchCursor(
         private set
 
     var onStateChanged: ((Boolean) -> Unit)? = null
+    var onLeaveToControls: (() -> Unit)? = null
 
     init {
         overlay.addView(dot) 
@@ -78,14 +79,25 @@ internal class StreamCenterTvTouchCursor(
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val step = if (event.repeatCount >= 2) fastStep else slowStep
-                    when (keyCode) {
-                        KeyEvent.KEYCODE_DPAD_UP -> cursorY -= step
-                        KeyEvent.KEYCODE_DPAD_DOWN -> cursorY += step
-                        KeyEvent.KEYCODE_DPAD_LEFT -> cursorX -= step
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> cursorX += step
+                    val (dx, dy) = when (keyCode) {
+                        KeyEvent.KEYCODE_DPAD_UP -> 0f to -step
+                        KeyEvent.KEYCODE_DPAD_DOWN -> 0f to step
+                        KeyEvent.KEYCODE_DPAD_LEFT -> -step to 0f
+                        else -> step to 0f
                     }
+                    val wantedX = cursorX + dx
+                    val wantedY = cursorY + dy
+                    cursorX = wantedX
+                    cursorY = wantedY
                     clampToBounds()
+                    scrollTargetPastEdge(wantedX - cursorX, wantedY - cursorY, step)
                     updateDot()
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN &&
+                        cursorY >= overlay.height - diameter / 2f && !target.canScrollVertically(1)
+                    ) {
+                        deactivate()
+                        onLeaveToControls?.invoke()
+                    }
                 }
                 true
             }
@@ -107,6 +119,14 @@ internal class StreamCenterTvTouchCursor(
         cursorY = cursorY.coerceIn(radius, h - radius)
     }
 
+    private fun scrollTargetPastEdge(overflowX: Float, overflowY: Float, step: Float) {
+        val horizontal = overflowX.compareTo(0f)
+        val vertical = overflowY.compareTo(0f)
+        val scrollX = if (horizontal != 0 && target.canScrollHorizontally(horizontal)) horizontal * step else 0f
+        val scrollY = if (vertical != 0 && target.canScrollVertically(vertical)) vertical * step else 0f
+        if (scrollX != 0f || scrollY != 0f) target.scrollBy(scrollX.toInt(), scrollY.toInt())
+    }
+
     private fun updateDot() {
         dot.translationX = cursorX - diameter / 2f
         dot.translationY = cursorY - diameter / 2f
@@ -123,8 +143,5 @@ internal class StreamCenterTvTouchCursor(
             down.recycle()
             up.recycle()
         }
-        dot.animate().scaleX(0.6f).scaleY(0.6f).setDuration(60L).withEndAction {
-            dot.animate().scaleX(1f).scaleY(1f).setDuration(90L).start()
-        }.start()
     }
 }

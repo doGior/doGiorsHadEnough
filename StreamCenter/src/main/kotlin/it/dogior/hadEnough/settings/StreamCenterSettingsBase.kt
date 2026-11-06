@@ -222,6 +222,7 @@ private class HeaderInfoBadgeShineDrawable(
     private val endColor: Int,
     private val strokeColor: Int,
     private val shineColor: Int,
+    private val cornerRadius: Float,
 ) : Drawable() {
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val shinePaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -240,7 +241,6 @@ private class HeaderInfoBadgeShineDrawable(
     override fun draw(canvas: Canvas) {
         val badge = RectF(bounds)
         if (badge.isEmpty) return
-        val cornerRadius = badge.height() / 2f
         fillPaint.shader = LinearGradient(
             badge.left,
             badge.top,
@@ -542,6 +542,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         private const val CHEVRON_FORWARD_DURATION_MS = 240L
         private const val CHEVRON_RETURN_DURATION_MS = 360L
         private const val HEADER_INFO_SHINE_CYCLE_MS = 12_000L
+        private const val HEADER_INFO_RADIUS_DP = 12
         private const val DISPLAY_FONT_FAMILY = "sans-serif-condensed"
         const val OVERFLOW_SYMBOL = "⋮"
         private const val MEDIUM_FONT_FAMILY = "sans-serif-medium"
@@ -585,11 +586,6 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     private var nextChevronIndex = 0
     private val chevronPulse = Runnable { playNextChevronPulse() }
 
-    protected enum class HeaderInfoEffectStyle {
-        COMMIT,
-        BUILD,
-    }
-
     protected data class SettingsRowViews(
         val view: LinearLayout,
         val badge: View?,
@@ -606,19 +602,7 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
 
     private data class HeaderInfoEffectTarget(
         val container: LinearLayout,
-        val label: TextView,
-        val value: TextView,
-        val style: HeaderInfoEffectStyle,
         var background: HeaderInfoBadgeShineDrawable? = null,
-    )
-
-    private data class HeaderInfoBadgePalette(
-        val start: Int,
-        val end: Int,
-        val stroke: Int,
-        val label: Int,
-        val value: Int,
-        val shine: Int,
     )
 
     private data class HeaderInfoShineFrame(
@@ -868,55 +852,23 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     private fun updateHeaderInfoEffect(target: HeaderInfoEffectTarget) {
         if (!visualTitleEffectsEnabled) {
             stopHeaderInfoShineAnimation()
-            target.container.background = null
-            target.label.setTextColor(Color.parseColor(COLOR_MUTED))
-            target.value.setTextColor(Color.parseColor(COLOR_MUTED))
-            target.value.typeface = Typeface.DEFAULT
-            target.value.letterSpacing = 0f
-            target.label.paint.clearShadowLayer()
-            target.value.paint.clearShadowLayer()
-            target.label.setLayerType(View.LAYER_TYPE_NONE, null)
-            target.value.setLayerType(View.LAYER_TYPE_NONE, null)
+            target.container.background = solid(COLOR_CARD, HEADER_INFO_RADIUS_DP)
             return
         }
-        val palette = headerInfoBadgePalette(target.style)
         val background = target.background ?: HeaderInfoBadgeShineDrawable(
-            startColor = palette.start,
-            endColor = palette.end,
-            strokeColor = palette.stroke,
-            shineColor = palette.shine,
+            startColor = Color.parseColor(COLOR_CARD),
+            endColor = Color.parseColor(COLOR_GROUP),
+            strokeColor = Color.parseColor(COLOR_STROKE),
+            shineColor = Color.parseColor(COLOR_ACCENT),
+            cornerRadius = dp(HEADER_INFO_RADIUS_DP).toFloat(),
         ).also { target.background = it }
         target.container.background = background
-        target.label.setTextColor(palette.label)
-        target.value.setTextColor(palette.value)
-        target.value.typeface = if (target.style == HeaderInfoEffectStyle.COMMIT) {
-            Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        } else {
-            Typeface.DEFAULT_BOLD
-        }
-        target.value.letterSpacing = if (target.style == HeaderInfoEffectStyle.COMMIT) 0.04f else 0f
-        target.label.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-        target.value.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
-        target.label.setShadowLayer(dp(3).toFloat(), 0f, 0f, ColorUtils.setAlphaComponent(palette.shine, 72))
-        target.value.setShadowLayer(dp(5).toFloat(), 0f, 0f, ColorUtils.setAlphaComponent(palette.shine, 128))
         if (visualAnimationsEnabled) {
             startHeaderInfoShineAnimation()
         } else {
             stopHeaderInfoShineAnimation()
             background.setShine(0.52f, 0.24f)
         }
-    }
-
-    private fun headerInfoBadgePalette(style: HeaderInfoEffectStyle): HeaderInfoBadgePalette {
-        val accent = Color.parseColor(COLOR_ACCENT)
-        return HeaderInfoBadgePalette(
-            start = Color.parseColor(COLOR_CARD),
-            end = Color.parseColor(COLOR_GROUP),
-            stroke = if (style == HeaderInfoEffectStyle.COMMIT) accent else Color.parseColor(COLOR_STROKE),
-            label = Color.parseColor(COLOR_MUTED),
-            value = Color.parseColor(COLOR_TEXT),
-            shine = accent,
-        )
     }
 
     private fun startHeaderInfoShineAnimation() {
@@ -943,21 +895,8 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
     }
 
     private fun updateHeaderInfoShineFrame(phase: Float) {
-        headerInfoEffectTargets.forEach { target ->
-            val frame = when (target.style) {
-                HeaderInfoEffectStyle.COMMIT -> headerInfoShineFrame(
-                    phase = phase,
-                    start = 0.10f,
-                    end = 0.28f,
-                )
-                HeaderInfoEffectStyle.BUILD -> headerInfoShineFrame(
-                    phase = phase,
-                    start = 0.28f,
-                    end = 0.46f,
-                )
-            }
-            target.background?.setShine(frame.progress, frame.intensity)
-        }
+        val frame = headerInfoShineFrame(phase = phase, start = 0.10f, end = 0.34f)
+        headerInfoEffectTargets.forEach { it.background?.setShine(frame.progress, frame.intensity) }
     }
 
     private fun headerInfoShineFrame(
@@ -976,34 +915,48 @@ abstract class StreamCenterBaseSettingsFragment : BottomSheetDialogFragment() {
         return HeaderInfoShineFrame(progress, intensity)
     }
 
-    protected fun headerInfoBadge(
-        label: String,
-        value: String,
-        style: HeaderInfoEffectStyle,
-    ): LinearLayout {
-        val labelView = bodyText(label, 10).apply {
-            typeface = Typeface.DEFAULT_BOLD
-            letterSpacing = 0.02f
-        }
-        val valueView = bodyText(value, 11)
-        return LinearLayout(requireContext()).apply {
+    protected fun headerInfoStrip(items: List<Pair<String, String>>): LinearLayout =
+        LinearLayout(requireContext()).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(11), dp(6), dp(11), dp(6))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                topMargin = dp(6)
+            setPadding(dp(3), dp(5), dp(3), dp(5))
+            items.forEachIndexed { index, (label, value) ->
+                if (index > 0) addView(View(context).apply {
+                    setBackgroundColor(Color.parseColor(COLOR_STROKE))
+                    layoutParams = LinearLayout.LayoutParams(dp(1), dp(20))
+                })
+                addView(headerInfoCell(label, value))
             }
-            addView(labelView)
-            addView(valueView.apply { setPadding(dp(7), 0, 0, 0) })
-            HeaderInfoEffectTarget(this, labelView, valueView, style).also {
+            HeaderInfoEffectTarget(this).also {
                 headerInfoEffectTargets += it
                 updateHeaderInfoEffect(it)
             }
         }
-    }
+
+    private fun headerInfoCell(label: String, value: String): LinearLayout =
+        LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), 0)
+            contentDescription = "$label $value"
+            addView(bodyText(label, 8).apply {
+                maxLines = 1
+                letterSpacing = 0.03f
+                includeFontPadding = false
+            })
+            addView(bodyText(value, 10).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                includeFontPadding = false
+                setPadding(0, dp(2), 0, 0)
+                setTextColor(Color.parseColor(if (label == "Versione") COLOR_ACCENT else COLOR_TEXT))
+                typeface = if (label == "Commit") {
+                    Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                } else {
+                    Typeface.DEFAULT_BOLD
+                }
+            })
+        }
 
     protected fun releaseEffectTargets() {
         titleGradientAnimations.values.forEach { it.cancel() }

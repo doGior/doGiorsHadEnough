@@ -123,7 +123,7 @@ internal data class CachedMediaSummary(
 )
 
 internal object StreamCenterMediaCache {
-    const val SCHEMA_VERSION = 10
+    const val SCHEMA_VERSION = 11
     const val TYPE_MOVIE = "movie"
     const val TYPE_SERIES = "series"
     const val TYPE_ANIME = "anime"

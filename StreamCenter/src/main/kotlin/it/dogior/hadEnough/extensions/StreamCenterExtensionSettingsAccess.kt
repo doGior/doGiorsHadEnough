@@ -70,6 +70,7 @@ internal data class StreamCenterOptionalExtension(
 internal object StreamCenterOptionalExtensions {
     const val PRISYNX = "prisynx"
     const val WATCH_ADVANCED = "watchparty-advanced"
+    const val ITALIAVERSE = "utility-ItaliaVerse"
     val entries = listOf(
         StreamCenterOptionalExtension(PRISYNX, StreamCenterPriSynx.NAME, StreamCenterPriSynx.AUTHOR,
             "Fonti e cataloghi di PriSynx Center", "🧩"),
@@ -78,10 +79,11 @@ internal object StreamCenterOptionalExtensions {
             "SleepGuard" -> "sleepguard.SleepGuardSettingsFragment" to "sg_close"
             "WatchParty" -> "watchparty.WatchPartySettingsFragmentCloudStream" to "wp_close"
             "Wrapped" -> "wrapped.WrappedFragment" to "wrapped_close"
+            "ItaliaVerse" -> null to null
             else -> error("Estensione opzionale non supportata")
         }
         StreamCenterOptionalExtension(extension.key, extension.name, extension.author, extension.summary,
-            extension.icon, "it.dogior.hadEnough.$panel", close)
+            extension.icon, panel?.let { "it.dogior.hadEnough.$it" }, close)
     }
 
     fun entry(key: String): StreamCenterOptionalExtension? = if (key == WATCH_ADVANCED) {

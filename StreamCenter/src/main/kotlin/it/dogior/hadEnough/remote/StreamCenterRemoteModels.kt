@@ -16,6 +16,9 @@ internal data class RemoteHandoff(
     val positionMs: Long,
     val durationMs: Long,
     val linkName: String?,
+    val link: RemoteLink? = null,
+    val subtitles: List<RemoteSubtitleFile> = emptyList(),
+    val episodeData: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("url", url)
@@ -27,6 +30,9 @@ internal data class RemoteHandoff(
         .put("positionMs", positionMs)
         .put("durationMs", durationMs)
         .putOpt("linkName", linkName)
+        .putOpt("link", link?.toJson())
+        .putOpt("episodeData", episodeData)
+        .put("subtitles", JSONArray().apply { subtitles.forEach { put(it.toJson()) } })
 
     companion object {
         fun fromJson(json: JSONObject): RemoteHandoff? = runCatching {
@@ -40,6 +46,9 @@ internal data class RemoteHandoff(
                 positionMs = json.optLong("positionMs").coerceAtLeast(0L),
                 durationMs = json.optLong("durationMs").coerceAtLeast(0L),
                 linkName = json.optNullableString("linkName")?.take(200),
+                link = RemoteLink.fromJson(json.optJSONObject("link")),
+                subtitles = RemoteSubtitleFile.listFromJson(json.optJSONArray("subtitles")),
+                episodeData = json.optNullableString("episodeData"),
             )
         }.getOrNull()
     }

@@ -99,7 +99,11 @@ internal object StreamCenterRemote {
         onMissing: () -> Unit,
     ) {
         scope.launch {
-            val message = JSONObject().put("type", "play").put("handoff", handoff.toJson())
+            val message = compactPlayMessage(handoff)
+            if (message == null) {
+                StreamCenterRemoteNavigator.toast("Il messaggio per la TV è troppo grande")
+                return@launch
+            }
             val delivered = runCatching { StreamCenterRemoteClient.deliver(context, receiver, message) }.isSuccess
             if (delivered) {
                 StreamCenterRemotePlayer.close()
@@ -108,6 +112,22 @@ internal object StreamCenterRemote {
                 onMissing()
             }
         }
+    }
+
+    private fun compactPlayMessage(handoff: RemoteHandoff): JSONObject? {
+        var compact = handoff
+        fun message(): JSONObject = JSONObject().put("type", "play").put("handoff", compact.toJson())
+        fun fits(value: JSONObject): Boolean = value.toString().toByteArray(Charsets.UTF_8).size <= 64 * 1024 - 128
+        var result = message()
+        while (!fits(result) && compact.subtitles.isNotEmpty()) {
+            compact = compact.copy(subtitles = compact.subtitles.dropLast(1))
+            result = message()
+        }
+        if (!fits(result) && compact.link != null) {
+            compact = compact.copy(linkName = compact.linkName ?: compact.link.name, link = null)
+            result = message()
+        }
+        return result.takeIf(::fits)
     }
 
     fun chooseReceiver(receivers: List<StreamCenterLocalSyncPresence>, onChosen: (StreamCenterLocalSyncPresence) -> Unit) {

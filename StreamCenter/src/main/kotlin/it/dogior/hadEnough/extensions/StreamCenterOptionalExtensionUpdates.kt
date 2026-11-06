@@ -42,7 +42,7 @@ internal object StreamCenterOptionalExtensionUpdates {
 
     internal fun repositoryUrl(entry: StreamCenterOptionalExtension): String =
         if (entry.key == StreamCenterOptionalExtensions.PRISYNX) StreamCenterPriSynx.REPOSITORY_URL
-        else StreamCenterUtilityExtensions.REPOSITORY_URL
+        else StreamCenterOptionalExtensions.utility(entry)!!.repository.url
 
     internal suspend fun refresh(backend: StreamCenterOptionalUpdateBackend): StreamCenterOptionalUpdateResult = refreshLock.withLock {
         val installed = backend.installed().distinctBy { it.entry.key }

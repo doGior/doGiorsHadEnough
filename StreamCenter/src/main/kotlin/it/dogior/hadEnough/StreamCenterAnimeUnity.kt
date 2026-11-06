@@ -233,8 +233,7 @@ internal suspend fun StreamCenter.buildBaseCatalogAnimeUnityRecommendations(
     val recommendations = sources
         .flatMap(AnimeUnityTitleSources::recommendations)
         .filterNot { recommendation -> isCurrentAnime(recommendation) || recommendation.id in relatedIds }
-    val showDubStatus = !performanceMode && StreamCenterPlugin.shouldShowAnimeHomeDubStatus(sharedPref)
-    val showEpisodeNumber = !performanceMode && StreamCenterPlugin.shouldShowAnimeHomeEpisodeNumber(sharedPref)
+    val (_, showDubStatus, showEpisodeNumber) = cardLabelVisibility()
     val relatedResponses = buildGroupedAnimeUnityHomeResponses(
         items = related.mapNotNull { recommendation -> recommendation.toAnimeUnityHomeItem() },
         showDubStatus = showDubStatus,
@@ -301,16 +300,16 @@ internal suspend fun StreamCenter.buildAniListRecommendationResponses(
     }.distinctBy { it.url }.take(limit)
 }
 
-internal suspend fun StreamCenter.fetchAnimeUnityHtml(path: String): Document {
-    ensureUpdatedSourceDomain(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
-    val url = "$animeUnityUrl$path"
-    val html = fetchText {
-        val response = app.get(url, headers = headers, timeout = 5L)
-        check(response.code in 200..299) { "AnimeUnity Home HTTP ${response.code}" }
-        response.text
+internal suspend fun StreamCenter.fetchAnimeUnityHtml(path: String): Document =
+    withSourceDomain(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) {
+        val url = "$animeUnityUrl$path"
+        val html = fetchText {
+            val response = app.get(url, headers = headers, timeout = 5L)
+            check(response.code in 200..299) { "AnimeUnity Home HTTP ${response.code}" }
+            response.text
+        }
+        Jsoup.parse(html, url)
     }
-    return Jsoup.parse(html, url)
-}
 
 internal suspend fun StreamCenter.fetchAnimeUnityCalendarHome(
     limit: Int,
@@ -319,7 +318,6 @@ internal suspend fun StreamCenter.fetchAnimeUnityCalendarHome(
     showEpisodeNumber: Boolean,
 ): List<SearchResponse> {
     val today = normalizeDayName(currentItalianCalendarDayName())
-    ensureUpdatedSourceDomain(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
     val cache = StreamCenterHomeCalendarCache.storage()
         ?.takeIf { StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref) }
     val cacheKey = "$animeUnityUrl/calendario"

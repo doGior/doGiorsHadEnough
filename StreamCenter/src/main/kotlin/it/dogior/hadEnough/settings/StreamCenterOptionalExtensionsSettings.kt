@@ -25,6 +25,7 @@ class StreamCenterOptionalExtensionsSettingsFragment : StreamCenterBaseSettingsF
     override val screenTitle = "Estensioni opzionali"
     override val screenIcon = "🧩"
     private var entriesContainer: LinearLayout? = null
+    private var repositoriesContainer: LinearLayout? = null
     private var updateStatus: TextView? = null
     private var checkingUpdates = true
 
@@ -33,15 +34,23 @@ class StreamCenterOptionalExtensionsSettingsFragment : StreamCenterBaseSettingsF
         content.addView(bodyText("Scegli cosa installare e gestisci le impostazioni qui, in StreamCenter."))
         updateStatus = bodyText("Controllo e aggiornamento delle estensioni…").also(content::addView)
         entriesContainer = groupColumn().also(content::addView)
+        content.addView(sectionHeading("Repository"))
+        repositoriesContainer = groupColumn().also(content::addView)
         checkingUpdates = true
         renderEntries()
         return scroll(content, fixedSubmenuHeight = true)
     }
 
     private fun renderEntries() {
-        val container = entriesContainer ?: return
+        val (repositories, extensions) = StreamCenterOptionalExtensions.entries
+            .partition { it.key == StreamCenterOptionalExtensions.ITALIAVERSE }
+        entriesContainer?.let { renderEntries(it, extensions) }
+        repositoriesContainer?.let { renderEntries(it, repositories) }
+    }
+
+    private fun renderEntries(container: LinearLayout, entries: List<StreamCenterOptionalExtension>) {
         container.removeAllViews()
-        StreamCenterOptionalExtensions.entries.forEach { entry ->
+        entries.forEach { entry ->
             val status = if (StreamCenterOptionalExtensions.isInstalled(entry)) {
                 "Installato · ${StreamCenterOptionalExtensions.installedVersionLabel(entry)}"
             } else "Da installare"
@@ -81,6 +90,7 @@ class StreamCenterOptionalExtensionsSettingsFragment : StreamCenterBaseSettingsF
 
     override fun onDestroyView() {
         entriesContainer = null
+        repositoriesContainer = null
         updateStatus = null
         super.onDestroyView()
     }
@@ -193,6 +203,8 @@ class StreamCenterOptionalExtensionSettingsFragment : StreamCenterBaseSettingsFr
                 summary = "Installazione facoltativa · ${entry.credit}", icon = "↓", accent = COLOR_ACCENT,
                 leadingView = optionalExtensionBadge(entry),
             ) { install() }.view.apply { isEnabled = !downloadRunning })
+        } else if (entry.key == StreamCenterOptionalExtensions.ITALIAVERSE) {
+            root.addView(bodyText("I repository compaiono in Impostazioni › Estensioni di CloudStream. ItaliaVerse li ricontrolla a ogni avvio: quelli già aggiunti restano anche se lo disinstalli."))
         } else if (plugin == null) {
             root.addView(bodyText("Installato. Riavvia CloudStream per caricare le impostazioni in StreamCenter."))
         } else if (entry.key == StreamCenterOptionalExtensions.PRISYNX) {
@@ -285,7 +297,9 @@ class StreamCenterOptionalExtensionSettingsFragment : StreamCenterBaseSettingsFr
             if (!isAdded || view == null) return@launch
             render()
             mountPanel()
-            saveToast(result.exceptionOrNull()?.message ?: "${entry.name} installato · impostazioni disponibili qui")
+            saveToast(result.exceptionOrNull()?.message ?: if (entry.key == StreamCenterOptionalExtensions.ITALIAVERSE) {
+                "ItaliaVerse installato · repository disponibili in CloudStream"
+            } else "${entry.name} installato · impostazioni disponibili qui")
         }
     }
 

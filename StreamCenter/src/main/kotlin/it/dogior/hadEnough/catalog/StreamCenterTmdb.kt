@@ -12,7 +12,6 @@ import it.dogior.hadEnough.tmdb.StreamCenterTmdbUserAgent
 import it.dogior.hadEnough.tmdb.TmdbApiMapping
 import it.dogior.hadEnough.util.StreamCenterHostGate
 import it.dogior.hadEnough.util.cleanText
-import it.dogior.hadEnough.util.mapChunkedParallel
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -20,6 +19,9 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
 
 internal class StreamCenterTmdbCatalog(
     private val headers: Map<String, String>,
@@ -34,7 +36,6 @@ internal class StreamCenterTmdbCatalog(
         val embeddedScore: Score?,
     )
 
-    private val scoreCache = ConcurrentHashMap<String, Score>()
     private val englishTitleCache = ConcurrentHashMap<String, String>()
 
     suspend fun resolveAnimeIds(titles: List<String>, year: Int?, isMovie: Boolean): List<Int> {
@@ -42,15 +43,24 @@ internal class StreamCenterTmdbCatalog(
         val candidates = titles.map(String::trim).filter(String::isNotBlank).distinct()
         val kind = if (isMovie) "movie" else "tv"
         if (StreamCenterTmdbApiClient.isActive()) apiAnimeIds(candidates, year, kind)?.let { return it }
-        for (title in candidates.take(4)) {
-            val results = document(
-                requestUrl("/search/$kind", 1, "query=${encode(title)}&include_adult=true"),
-                search = true,
-            )
-            val ids = TmdbSeriesMetadata.matchingSearchIds(results.select(CARD_SELECTOR), candidates, year, isMovie)
-            if (ids.isNotEmpty()) return ids.take(5)
+        return supervisorScope {
+            val searches = candidates.take(4).map { title ->
+                async(Dispatchers.IO) {
+                    val results = document(
+                        requestUrl("/search/$kind", 1, "query=${encode(title)}&include_adult=true"),
+                        search = true,
+                    )
+                    TmdbSeriesMetadata.matchingSearchIds(results.select(CARD_SELECTOR), candidates, year, isMovie)
+                }
+            }
+            try {
+                searches.firstNotNullOfOrNull { search -> search.await().takeIf(List<Int>::isNotEmpty) }
+                    ?.take(5)
+                    .orEmpty()
+            } finally {
+                searches.forEach { it.cancel() }
+            }
         }
-        return emptyList()
     }
 
     private suspend fun apiAnimeIds(candidates: List<String>, year: Int, kind: String): List<Int>? {
@@ -191,7 +201,8 @@ internal class StreamCenterTmdbCatalog(
         return buildString {
             append(TMDB_BASE_URL)
             append(path)
-            append("?language=it-IT&page=")
+            append(if ('?' in path) '&' else '?')
+            append("language=it-IT&page=")
             append(page)
             extraQuery?.takeIf(String::isNotBlank)?.let {
                 append('&')
@@ -200,7 +211,7 @@ internal class StreamCenterTmdbCatalog(
         }
     }
 
-    private suspend fun mediaCards(
+    private fun mediaCards(
         api: MainAPI,
         document: Document,
         expectedType: TvType?,
@@ -209,7 +220,7 @@ internal class StreamCenterTmdbCatalog(
         return mediaCards(api, document.select(CARD_SELECTOR), expectedType, showScore)
     }
 
-    private suspend fun mediaCards(
+    private fun mediaCards(
         api: MainAPI,
         cards: Iterable<Element>,
         expectedType: TvType?,
@@ -261,9 +272,8 @@ internal class StreamCenterTmdbCatalog(
                 embeddedScore = if (showScore) tmdbScore(card) else null,
             )
         }
-        val remoteScores = if (showScore) fetchMissingScores(parsedCards) else emptyMap()
         return parsedCards.map { card ->
-            val score = card.embeddedScore ?: scoreCache[card.url] ?: remoteScores[card.url]
+            val score = if (showScore) knownScore(card) else null
             if (card.type == TvType.TvSeries) {
                 api.newTvSeriesSearchResponse(card.title, card.url, TvType.TvSeries) {
                     posterUrl = card.posterUrl
@@ -280,30 +290,30 @@ internal class StreamCenterTmdbCatalog(
         }
     }
 
-    private suspend fun fetchMissingScores(cards: List<CatalogCard>): Map<String, Score> {
-        cards.forEach { card -> card.embeddedScore?.let { scoreCache[card.url] = it } }
-        return cards
-            .filter { it.embeddedScore == null && scoreCache[it.url] == null }
-            .distinctBy(CatalogCard::url)
-            .mapChunkedParallel(REMOTE_SCORE_REQUEST_CHUNK_SIZE) { card ->
-                val html = StreamCenterHostGate.request(card.ratingDetailsUrl) {
-                    app.get(
-                        card.ratingDetailsUrl,
-                        headers = StreamCenterTmdbUserAgent.webHeaders(headers) + mapOf(
-                            "Referer" to card.url,
-                            "X-Requested-With" to "XMLHttpRequest",
-                        ),
-                    )
-                }.text
-                val score = Jsoup.parse(html, card.ratingDetailsUrl)
-                    .selectFirst(".user_score_chart[data-percent]")
-                    ?.attr("data-percent")
-                    ?.let { scoreFromTmdbValue(it, true) }
-                    ?: return@mapChunkedParallel null
-                scoreCache[card.url] = score
-                card.url to score
-            }
-            .toMap()
+    private fun knownScore(card: CatalogCard): Score? {
+        card.embeddedScore?.let { score ->
+            StreamCenterTmdbScores.remember(card.url, score)
+            return score
+        }
+        StreamCenterTmdbScores.cached(card.url)?.let { return it }
+        StreamCenterTmdbScores.fetchLater(card.url) { remoteScore(card) }
+        return null
+    }
+
+    private suspend fun remoteScore(card: CatalogCard): Score? {
+        val html = StreamCenterHostGate.request(card.ratingDetailsUrl) {
+            app.get(
+                card.ratingDetailsUrl,
+                headers = StreamCenterTmdbUserAgent.webHeaders(headers) + mapOf(
+                    "Referer" to card.url,
+                    "X-Requested-With" to "XMLHttpRequest",
+                ),
+            )
+        }.text
+        return Jsoup.parse(html, card.ratingDetailsUrl)
+            .selectFirst(".user_score_chart[data-percent]")
+            ?.attr("data-percent")
+            ?.let { scoreFromTmdbValue(it, true) }
     }
 
     private fun tmdbScore(card: Element): Score? {
@@ -362,7 +372,6 @@ internal class StreamCenterTmdbCatalog(
 
     companion object {
         const val PAGE_SIZE = 20
-        private const val REMOTE_SCORE_REQUEST_CHUNK_SIZE = 5
         private const val TMDB_BASE_URL = "https://www.themoviedb.org"
         private const val CARD_SELECTOR =
             "div.media-list-results > div[data-object-id], " +

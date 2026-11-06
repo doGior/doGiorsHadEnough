@@ -57,7 +57,7 @@ fun resolveNativeCacheKey(): String {
 val nativeLibraryCache = nativeCacheRoot.resolve("libass/${resolveNativeCacheKey()}")
 val nativeLibraryCached = nativeAbis.all { nativeLibraryCache.resolve("$it/$nativeLibraryName").isFile }
 
-version = 13
+version = 14
 val pluginVersion = version.toString()
 
 cloudstream {

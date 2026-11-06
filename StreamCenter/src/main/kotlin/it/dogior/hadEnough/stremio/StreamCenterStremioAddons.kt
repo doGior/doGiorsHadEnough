@@ -286,6 +286,7 @@ internal object StreamCenterStremioAddonClient {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
         stopAfterFirstResult: Boolean = false,
+        onFailure: (Boolean) -> Unit = {},
     ): Boolean = supervisorScope {
         StreamCenterVpnGuard.requireInternetAccess()
         val streamRequests = resolveResourceRequests(addon, "stream", context)
@@ -324,6 +325,7 @@ internal object StreamCenterStremioAddonClient {
             requests = streamRequests,
             semaphore = streamSemaphore,
             stopAfterFirstResult = stopAfterFirstResult,
+            onFailure = onFailure,
         ) { response ->
             val responseEmitted = emitStreams(
                 addon = addon,
@@ -413,6 +415,7 @@ internal object StreamCenterStremioAddonClient {
     private suspend fun getResource(
         addon: StreamCenterStremioAddon,
         request: ResourceRequest,
+        onFailure: (Boolean) -> Unit,
     ): JSONObject? {
         StreamCenterVpnGuard.requireInternetAccess()
         val resourceUrl = buildString {
@@ -445,21 +448,25 @@ internal object StreamCenterStremioAddonClient {
                         "${safeLogValue(addon.name)}: ${request.name}/${request.type} $detail",
                     )
                 } else {
+                    onFailure(false)
                     logResourceFailure(addon, request, detail)
                 }
                 return null
             }
             response.text.length > RESPONSE_MAX_SIZE -> {
+                onFailure(false)
                 logResourceFailure(addon, request, "risposta troppo grande")
                 return null
             }
             !isHttpsUrl(responseUrl) -> {
+                onFailure(false)
                 logResourceFailure(addon, request, "redirect non sicuro")
                 return null
             }
         }
         return runCatching { JSONObject(response.text) }
             .getOrElse {
+                onFailure(false)
                 logResourceFailure(addon, request, "JSON non valido")
                 null
             }
@@ -468,12 +475,14 @@ internal object StreamCenterStremioAddonClient {
     private suspend fun getResourceSafely(
         addon: StreamCenterStremioAddon,
         request: ResourceRequest,
+        onFailure: (Boolean) -> Unit = {},
     ): JSONObject? {
         return try {
-            getResource(addon, request)
+            getResource(addon, request, onFailure)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
+            onFailure(false)
             logResourceFailure(
                 addon,
                 request,
@@ -488,12 +497,13 @@ internal object StreamCenterStremioAddonClient {
         requests: List<ResourceRequest>,
         semaphore: Semaphore,
         stopAfterFirstResult: Boolean = false,
+        onFailure: (Boolean) -> Unit = {},
         handleResponse: suspend (JSONObject) -> Boolean = { false },
     ) {
         if (requests.isEmpty()) return
         val waveSize = if (stopAfterFirstResult) PERFORMANCE_RESOURCE_WAVE_SIZE else RESOURCE_WAVE_SIZE
         for (wave in requests.chunked(waveSize)) {
-            val waveResults = getResourceWave(addon, wave, semaphore)
+            val waveResults = getResourceWave(addon, wave, semaphore, onFailure)
             var handled = false
             for (response in waveResults) {
                 handled = handleResponse(response) || handled
@@ -507,13 +517,17 @@ internal object StreamCenterStremioAddonClient {
         addon: StreamCenterStremioAddon,
         requests: List<ResourceRequest>,
         semaphore: Semaphore,
+        onFailure: (Boolean) -> Unit,
     ): List<JSONObject> = supervisorScope {
         requests.map { request ->
             async {
                 semaphore.withPermit {
-                    withTimeoutOrNull(RESOURCE_REQUEST_TIMEOUT_MILLIS) {
-                        getResourceSafely(addon, request)
+                    var completed = false
+                    val response = withTimeoutOrNull(RESOURCE_REQUEST_TIMEOUT_MILLIS) {
+                        getResourceSafely(addon, request, onFailure).also { completed = true }
                     }
+                    if (!completed) onFailure(true)
+                    response
                 }
             }
         }.awaitAll().filterNotNull()

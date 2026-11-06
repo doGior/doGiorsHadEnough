@@ -4,6 +4,7 @@ import it.dogior.hadEnough.extensions.InstalledExtensionSources
 
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.catalog.StreamCenterHomeImports
+import it.dogior.hadEnough.catalog.StreamCenterUnairedResume
 import it.dogior.hadEnough.tracking.TrackingIdService
 import it.dogior.hadEnough.tracking.StreamCenterTrackingOverrides
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoConfig
@@ -152,6 +153,14 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_LIBASS_SUBTITLES = "libassSubtitles"
         const val PREF_MEDIA_CACHE_ENABLED = "mediaCacheEnabled"
         const val PREF_HOME_CALENDAR_CACHE_ENABLED = "homeCalendarCacheEnabled"
+        const val PREF_TMDB_SCORE_CACHE_ENABLED = "tmdbScoreCacheEnabled"
+        const val PREF_LAZY_HOME = "lazyHome"
+        const val PREF_LAZY_HOME_WAIT_MS = "lazyHomeWaitMs"
+        const val PREF_LAZY_HOME_PARALLEL_SECTIONS = "lazyHomeParallelSections"
+        const val LAZY_HOME_DEFAULT_WAIT_MS = 1_000
+        const val LAZY_HOME_DEFAULT_PARALLEL_SECTIONS = 6
+        val LAZY_HOME_WAIT_OPTIONS_MS = listOf(500, 1_000, 2_000, 3_000)
+        val LAZY_HOME_PARALLEL_OPTIONS = listOf(3, 6, 9)
         const val PREF_MEDIA_CACHE_MAX_ENTRIES = "mediaCacheMaxEntries"
         const val PREF_MEDIA_CACHE_MAX_MB = "mediaCacheMaxMb"
         const val PREF_MEDIA_CACHE_COMPLETED_DAYS = "mediaCacheCompletedDays"
@@ -201,7 +210,7 @@ class StreamCenterPlugin : Plugin() {
         const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.to"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.build"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.boo"
         const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
@@ -424,6 +433,7 @@ class StreamCenterPlugin : Plugin() {
             StreamCenterTrackingOverrides.PREF_OVERRIDES,
             PREF_MEDIA_CACHE_ENABLED,
             PREF_HOME_CALENDAR_CACHE_ENABLED,
+            PREF_TMDB_SCORE_CACHE_ENABLED,
             PREF_MEDIA_CACHE_MAX_ENTRIES,
             PREF_MEDIA_CACHE_MAX_MB,
             PREF_MEDIA_CACHE_COMPLETED_DAYS,
@@ -510,6 +520,21 @@ class StreamCenterPlugin : Plugin() {
 
         fun isHomeCalendarCacheEnabled(sharedPref: SharedPreferences?): Boolean =
             sharedPref?.getBoolean(PREF_HOME_CALENDAR_CACHE_ENABLED, false) ?: false
+
+        fun isTmdbScoreCacheEnabled(sharedPref: SharedPreferences?): Boolean =
+            sharedPref?.getBoolean(PREF_TMDB_SCORE_CACHE_ENABLED, true) ?: true
+
+        fun isLazyHomeEnabled(sharedPref: SharedPreferences?): Boolean =
+            sharedPref?.getBoolean(PREF_LAZY_HOME, true) ?: true
+
+        fun lazyHomeWaitMs(sharedPref: SharedPreferences?): Int =
+            (sharedPref?.getInt(PREF_LAZY_HOME_WAIT_MS, LAZY_HOME_DEFAULT_WAIT_MS) ?: LAZY_HOME_DEFAULT_WAIT_MS)
+                .takeIf { it in LAZY_HOME_WAIT_OPTIONS_MS } ?: LAZY_HOME_DEFAULT_WAIT_MS
+
+        fun lazyHomeParallelSections(sharedPref: SharedPreferences?): Int =
+            (sharedPref?.getInt(PREF_LAZY_HOME_PARALLEL_SECTIONS, LAZY_HOME_DEFAULT_PARALLEL_SECTIONS)
+                ?: LAZY_HOME_DEFAULT_PARALLEL_SECTIONS)
+                .takeIf { it in LAZY_HOME_PARALLEL_OPTIONS } ?: LAZY_HOME_DEFAULT_PARALLEL_SECTIONS
 
         fun mediaCacheMaxEntries(sharedPref: SharedPreferences?): Int =
             (sharedPref?.getInt(PREF_MEDIA_CACHE_MAX_ENTRIES, MEDIA_CACHE_DEFAULT_MAX_ENTRIES)
@@ -1043,17 +1068,17 @@ class StreamCenterPlugin : Plugin() {
                 }
         }
 
-        fun getBuildInfoText(): String {
-            val rawCommit = BuildConfig.BUILD_COMMIT_SHA.trim()
-            val rawBuildCompletedAt = BuildConfig.BUILD_COMPLETED_AT_ROME.trim()
-            val shortCommit = rawCommit.takeIf { it.isNotEmpty() && it != "unknown" }?.take(7)
-            val buildCompletedAt = rawBuildCompletedAt.replace(' ', ' ')
-            return when {
-                shortCommit != null && buildCompletedAt.isNotEmpty() ->
-                    "Commit $shortCommit\nBuild $buildCompletedAt"
-                shortCommit != null -> "Commit $shortCommit"
-                else -> "???"
-            }
+        fun getBuildInfo(): List<Pair<String, String>> {
+            val commit = BuildConfig.BUILD_COMMIT_SHA.trim().takeIf { it.isNotEmpty() && it != "unknown" }?.take(7)
+            val completedAt = BuildConfig.BUILD_COMPLETED_AT_ROME.replace('\u00A0', ' ').trim()
+            val build = Regex("""^(\d{2}/\d{2})/\d{4} (\d{2}:\d{2})""").find(completedAt)
+                ?.let { "${it.groupValues[1]} ${it.groupValues[2]}" }
+                ?: completedAt.takeIf(String::isNotEmpty)
+            return listOfNotNull(
+                "Versione" to BuildConfig.PLUGIN_VERSION,
+                commit?.let { "Commit" to it },
+                build?.let { "Build" to it },
+            )
         }
 
         fun sectionEnabledKey(sectionKey: String): String = "home_${sectionKey}_enabled"
@@ -2120,6 +2145,8 @@ class StreamCenterPlugin : Plugin() {
             }.apply()
         }
         StreamCenterHomeCalendarCache.initialize(context.filesDir, isHomeCalendarCacheEnabled(sharedPref))
+        StreamCenterHomeReuse.install(sharedPref)
+        StreamCenterUnairedResume.install(context.applicationContext)
         activePlugin = this
         StreamCenterLogger.startSession(
             context = context,
@@ -2145,6 +2172,7 @@ class StreamCenterPlugin : Plugin() {
             isOneTapPlaybackEnabled(sharedPref)
         }
         it.dogior.hadEnough.remote.StreamCenterRemote.install(context)
+        it.dogior.hadEnough.playback.StreamCenterVpnBadge.install(context)
 
         registerMainAPI(StreamCenter(sharedPref))
         registerMainAPI(StreamCenter(sharedPref, StreamCenter.SEARCH_SECTION_MOVIES))

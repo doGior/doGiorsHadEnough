@@ -13,10 +13,18 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.URI
 
+internal data class StreamCenterUtilityRepository(
+    val name: String,
+    val label: String,
+    val url: String,
+    val path: String,
+)
+
 internal data class StreamCenterUtilityExtension(
     val name: String,
     val summary: String,
     val icon: String,
+    val repository: StreamCenterUtilityRepository,
     val author: String = "DieGon",
 ) {
     val key: String get() = "utility-$name"
@@ -25,7 +33,7 @@ internal data class StreamCenterUtilityExtension(
         val uri = URI(url)
         uri.scheme == "https" && uri.host.equals("raw.githubusercontent.com", ignoreCase = true) &&
             uri.userInfo == null && uri.port == -1 &&
-            uri.path.startsWith("/DieGon7771/ItaliaInStreaming/") && uri.path.endsWith("/$name.cs3")
+            uri.path.startsWith(repository.path) && uri.path.endsWith("/$name.cs3")
     }.getOrDefault(false)
 
     internal fun matches(info: InstalledExtensionInfo): Boolean {
@@ -36,12 +44,23 @@ internal data class StreamCenterUtilityExtension(
 }
 
 internal object StreamCenterUtilityExtensions {
-    const val REPOSITORY_URL =
-        "https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json"
+    private val italiaInStreaming = StreamCenterUtilityRepository(
+        name = "DieGon Repository",
+        label = "ItaliaInStreaming",
+        url = "https://raw.githubusercontent.com/DieGon7771/ItaliaInStreaming/builds/repo.json",
+        path = "/DieGon7771/ItaliaInStreaming/",
+    )
+    private val italiaVerse = StreamCenterUtilityRepository(
+        name = "ItaliaVerse Repository",
+        label = "ItaliaVerse",
+        url = "https://raw.githubusercontent.com/DieGon7771/ItaliaVerse/main/repo.json",
+        path = "/DieGon7771/ItaliaVerse/",
+    )
     val extensions = listOf(
-        StreamCenterUtilityExtension("SleepGuard", "Mette in pausa dopo un periodo di inattività · Beta", "🌙"),
-        StreamCenterUtilityExtension("WatchParty", "Visione sincronizzata con gli amici e chat · Beta", "🎉"),
-        StreamCenterUtilityExtension("Wrapped", "Statistiche di visione e riepilogo condivisibile", "📊"),
+        StreamCenterUtilityExtension("SleepGuard", "Mette in pausa dopo un periodo di inattività · Beta", "🌙", italiaInStreaming),
+        StreamCenterUtilityExtension("WatchParty", "Visione sincronizzata con gli amici e chat · Beta", "🎉", italiaInStreaming),
+        StreamCenterUtilityExtension("Wrapped", "Statistiche di visione e riepilogo condivisibile", "📊", italiaInStreaming),
+        StreamCenterUtilityExtension("ItaliaVerse", "Aggiunge a CloudStream tutti i repository italiani in un colpo solo", "🌐", italiaVerse),
     )
     private val installLocks = extensions.associate { it.key to Mutex() }
 
@@ -65,7 +84,7 @@ internal object StreamCenterUtilityExtensions {
 
     internal fun selectPlugin(extension: StreamCenterUtilityExtension, plugins: List<SitePlugin>): SitePlugin {
         val plugin = plugins.singleOrNull { it.internalName == extension.name && extension.isDownloadUrl(it.url) }
-            ?: error("${extension.name} non è disponibile nel repository ItaliaInStreaming.")
+            ?: error("${extension.name} non è disponibile nel repository ${extension.repository.label}.")
         check(plugin.status in 1..3) { "${extension.name} è temporaneamente disabilitato dal repository." }
         check(plugin.apiVersion == 1) { "Questa versione di ${extension.name} richiede un aggiornamento di CloudStream." }
         return plugin
@@ -86,9 +105,9 @@ internal object StreamCenterUtilityExtensions {
             if (installed(extension) != null) return@withDownloadLock
             val completed = withTimeoutOrNull(120_000L) {
                 StreamCenterVpnGuard.requireInternetAccess(preferences)
-                val repository = RepositoryData(name = "DieGon Repository", url = REPOSITORY_URL)
+                val repository = RepositoryData(name = extension.repository.name, url = extension.repository.url)
                 val plugins = RepositoryManager.getRepoPlugins(repository)
-                    ?: error("Impossibile leggere il repository ItaliaInStreaming. Riprova più tardi.")
+                    ?: error("Impossibile leggere il repository ${extension.repository.label}. Riprova più tardi.")
                 val plugin = selectPlugin(extension, plugins.map { it.plugin })
                 RepositoryManager.addRepository(repository)
                 StreamCenterVpnGuard.requireInternetAccess(preferences)
@@ -97,7 +116,7 @@ internal object StreamCenterUtilityExtensions {
                     pluginUrl = plugin.url,
                     pluginHash = plugin.fileHash,
                     internalName = plugin.internalName,
-                    repositoryUrl = REPOSITORY_URL,
+                    repositoryUrl = extension.repository.url,
                     loadPlugin = true,
                 )) { "Download o caricamento di ${extension.name} non riuscito. Riprova più tardi." }
                 check(installed(extension) != null) { "${extension.name} scaricato. Riavvia CloudStream per caricarlo." }

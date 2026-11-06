@@ -12,6 +12,7 @@ import androidx.appcompat.app.AlertDialog
 import it.dogior.hadEnough.StreamCenterPlugin
 import it.dogior.hadEnough.StreamCenter
 import it.dogior.hadEnough.cache.StreamCenterMediaCache
+import it.dogior.hadEnough.catalog.StreamCenterTmdbScores
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -141,6 +142,33 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
             saveToast("Cache calendario svuotata")
         }.view
 
+        val scoreCacheRow = switchRow(
+            title = "Voti in cache",
+            summary = "Ricorda per 7 giorni i voti letti dal sito TMDB",
+            checked = StreamCenterPlugin.isTmdbScoreCacheEnabled(sharedPref),
+            defaultChecked = StreamCenterPlugin.isTmdbScoreCacheEnabled(null),
+            accent = COLOR_ACCENT,
+            icon = "⭐",
+        ) { enabled ->
+            val preferences = sharedPref
+            if (preferences == null) {
+                saveToast("Impossibile aggiornare l'impostazione della cache")
+            } else {
+                preferences.edit().putBoolean(StreamCenterPlugin.PREF_TMDB_SCORE_CACHE_ENABLED, enabled).apply()
+                if (!enabled) StreamCenterTmdbScores.clear()
+                saveToast(if (enabled) "Cache voti attivata" else "Cache voti disattivata e svuotata")
+            }
+        }
+        val clearScoresRow = settingsRow(
+            title = "Svuota voti",
+            summary = "Li riscarica in sottofondo alla prossima apertura",
+            icon = "🗑",
+            accent = COLOR_ACCENT,
+        ) {
+            StreamCenterTmdbScores.clear()
+            saveToast("Cache voti svuotata")
+        }.view
+
         content.addView(sectionHeading("Schede"))
         addAdaptiveCardGrid(content, listOf(enabledRow, manageRow, limitsRow, durationRow))
         cacheOptionRows.clear()
@@ -148,6 +176,8 @@ class StreamCenterCacheSettingsFragment : StreamCenterBaseSettingsFragment() {
         if (!StreamCenterMediaCache.isEnabled(sharedPref)) cacheOptionRows.forEach { it.alpha = settingsRowDisabledAlpha }
         content.addView(sectionHeading("Calendario Home"))
         addAdaptiveCardGrid(content, listOf(homeCalendarRow, clearCalendarRow))
+        content.addView(sectionHeading("Voti TMDB"))
+        addAdaptiveCardGrid(content, listOf(scoreCacheRow, clearScoresRow))
         content.addView(
             bodyText("Su Android TV e dispositivi poco potenti è meglio lasciare la cache spenta", 12).apply {
                 setPadding(dp(6), dp(14), dp(6), 0)

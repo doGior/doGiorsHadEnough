@@ -8,7 +8,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.TextUtils
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -21,7 +20,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.widget.TextViewCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import it.dogior.hadEnough.StreamCenterPlugin
@@ -292,47 +290,10 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         }
     }
 
-    private fun buildHeaderInfo(): LinearLayout {
-        val infoLines = StreamCenterPlugin.getBuildInfoText().replace('\u00A0', ' ').lines()
-        return LinearLayout(requireContext()).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            listOf("Commit" to HeaderInfoEffectStyle.COMMIT, "Build" to HeaderInfoEffectStyle.BUILD)
-                .forEach { (label, style) ->
-                    val value = infoLines.firstOrNull { it.startsWith("$label ") }
-                        ?.removePrefix("$label ") ?: return@forEach
-                    addView(headerInfoBadge(label, value, style).apply {
-                        orientation = LinearLayout.VERTICAL
-                        gravity = Gravity.CENTER
-                        setPadding(dp(5), dp(3), dp(5), dp(3))
-                        contentDescription = "$label $value"
-                        (getChildAt(0) as TextView).apply {
-                            textSize = 9f
-                            maxLines = 1
-                        }
-                        (getChildAt(1) as TextView).apply {
-                            setPadding(0, dp(1), 0, 0)
-                            maxLines = 1
-                            ellipsize = TextUtils.TruncateAt.END
-                            gravity = Gravity.CENTER
-                            maxWidth = dp(if (label == "Build") 114 else 48)
-                            layoutParams = LinearLayout.LayoutParams(
-                                ViewGroup.LayoutParams.WRAP_CONTENT, dp(14),
-                            )
-                            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
-                                this, 8, 10, 1, TypedValue.COMPLEX_UNIT_SP,
-                            )
-                        }
-                        layoutParams = LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ).apply { if (label == "Build") marginStart = dp(5) }
-                    })
-                }
-            if (childCount == 0) addView(bodyText(infoLines.firstOrNull().orEmpty(), 11).apply {
-                gravity = Gravity.END
-            })
-        }
+    private fun buildHeaderInfo(): LinearLayout = LinearLayout(requireContext()).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        addView(headerInfoStrip(StreamCenterPlugin.getBuildInfo()))
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {

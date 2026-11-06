@@ -25,6 +25,7 @@ internal data class StreamCenterCatalogSection(
     val trackingListKey: String? = null,
     val stremioCatalog: StreamCenterStremioCatalogDescriptor? = null,
     val trackingMediaCategory: StreamCenterTrackingMediaCategory = StreamCenterTrackingMediaCategory.ALL,
+    val requiresTmdbApiKey: Boolean = false,
 )
 
 internal data class StreamCenterCatalogDefinition(
@@ -130,8 +131,22 @@ internal object StreamCenterCatalogs {
                     "Film al cinema",
                     "/movie/now-playing",
                     TvType.Movie,
+                    requiresTmdbApiKey = true,
                 ),
-                StreamCenterCatalogSection("movie_upcoming", "Film in arrivo", "/movie/upcoming", TvType.Movie),
+                StreamCenterCatalogSection(
+                    "movie_upcoming",
+                    "Film in arrivo",
+                    "/movie/upcoming",
+                    TvType.Movie,
+                    requiresTmdbApiKey = true,
+                ),
+                StreamCenterCatalogSection(
+                    "movie_new_streaming",
+                    "Film nuovi in streaming",
+                    "/movie?discover_preset=new-on-streaming",
+                    TvType.Movie,
+                    defaultEnabled = false,
+                ),
                 StreamCenterCatalogSection(
                     "movie_top_rated",
                     "Film più votati",

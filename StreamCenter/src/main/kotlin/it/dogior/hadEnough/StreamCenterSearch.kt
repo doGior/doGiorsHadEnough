@@ -237,7 +237,8 @@ internal suspend fun StreamCenter.fetchHomeSearchResults(
     includeFallbacks: Boolean = true,
 ): Pair<List<SearchResponse>, Boolean> = supervisorScope {
     val empty = emptyList<SearchResponse>() to false
-    val streamingCommunity = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)) {
+    val streamingCommunity = if (isSourceEnabled(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY) &&
+        isSourceReachableNow(StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY)) {
         async(Dispatchers.IO) {
             StreamCenterLogger.logMenu(
                 action = "Ricerca fonte avviata",

@@ -37,6 +37,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -61,6 +62,8 @@ import java.util.Locale
 private const val CLOUDFLARE_CLEARANCE_POLL_INTERVAL_MS = 700L
 private const val CLOUDFLARE_CLEARANCE_CLOSE_DELAY_MS = 900L
 private const val CLOUDFLARE_ACCESS_CHECK_INTERVAL_MS = 5_000L
+private const val CLOUDFLARE_MIN_WEBVIEW_CHROME_VERSION = 100
+private val chromeVersionPattern = Regex("""Chrome/(\d+)""")
 
 private data class TorrentChoice<T>(
     val title: String,
@@ -96,6 +99,7 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
     private var isExtAvailabilityCheckRunning = false
     private val extDomainStatuses = mutableMapOf<StreamCenterExtDomain, StreamCenterExtDomainStatus>()
     private var extAvailabilityStatusViews: Map<StreamCenterExtDomain, TextView> = emptyMap()
+    private var verificationDialog: AlertDialog? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -112,6 +116,9 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
     }
 
     override fun onDestroyView() {
+        val dialog = verificationDialog
+        verificationDialog = null
+        dialog?.dismiss()
         content = null
         optionRows.clear()
         extDomainStatuses.clear()
@@ -1206,15 +1213,19 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
         val status = bodyText("Completa la verifica nella pagina qui sotto", 12).apply {
             setPadding(dp(18), dp(12), dp(18), dp(8))
         }
-        val cursorHint = bodyText(
-            "Se col telecomando non riesci a cliccare la casella, premi «Cursore TV»",
-            11,
-        ).apply {
+        val cursorHint = bodyText("", 11).apply {
             setPadding(dp(18), 0, dp(18), dp(8))
         }
-        val webView = WebView(requireContext()).apply {
+        val tvLike = isTvLikeDevice()
+        val webView = runCatching { WebView(requireContext()) }.getOrElse {
+            Toast.makeText(requireContext(), "WebView di sistema non disponibile", Toast.LENGTH_LONG).show()
+            return
+        }.apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            webChromeClient = WebChromeClient()
             isFocusable = true
             isFocusableInTouchMode = true
             layoutParams = FrameLayout.LayoutParams(
@@ -1225,7 +1236,14 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
         val webHost = FrameLayout(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                minOf(dp(520), (resources.displayMetrics.heightPixels * 0.5f).toInt()),
+                if (tvLike) {
+                    minOf(
+                        (resources.displayMetrics.heightPixels * 0.45f).toInt(),
+                        (resources.displayMetrics.heightPixels * 0.85f).toInt() - dp(260),
+                    ).coerceAtLeast(dp(160))
+                } else {
+                    minOf(dp(520), (resources.displayMetrics.heightPixels * 0.5f).toInt())
+                },
             )
             addView(webView)
         }
@@ -1234,14 +1252,22 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
         }
-        webView.settings.userAgentString = StreamCenterExtCloudflareSession.verificationUserAgent(
-            baseUrl, webView.settings.userAgentString,
-        )
+        val engineUserAgent = webView.settings.userAgentString
+        webView.settings.userAgentString = StreamCenterExtCloudflareSession.verificationUserAgent(baseUrl, engineUserAgent)
         StreamCenterExtCloudflareSession.beginVerification(baseUrl, webView.settings.userAgentString)
+        val outdatedWebView = chromeVersionPattern.find(engineUserAgent)
+            ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?.takeIf { it < CLOUDFLARE_MIN_WEBVIEW_CHROME_VERSION }
+        val warning = outdatedWebView?.let { version ->
+            "WebView di sistema datata (Chrome $version): se la casella non compare aggiorna «Android System WebView» dal Play Store"
+        }
+        val defaultCursorHint = "Se col telecomando non riesci a cliccare la casella, premi «Cursore TV» (o il tasto MENU)"
+        cursorHint.text = defaultCursorHint
 
         val content = LinearLayout(requireContext()).apply {
             orientation = LinearLayout.VERTICAL
             addView(status)
+            warning?.let { text -> addView(bodyText(text, 11).apply { setPadding(dp(18), 0, dp(18), dp(8)) }) }
             addView(cursorHint)
             addView(webHost)
         }
@@ -1253,12 +1279,15 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
             .create()
         tvCursor.onStateChanged = { active ->
             cursorHint.text = if (active) {
-                "Cursore TV attivo, muovi il pallino col D-pad e premi OK per cliccare la casella"
+                "Cursore TV attivo: muovi il pallino col D-pad, premi OK sulla casella e MENU per tornare ai pulsanti"
             } else {
-                "Se col telecomando non riesci a cliccare la casella, premi «Cursore TV» (o il tasto MENU)"
+                defaultCursorHint
             }
             dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.text =
                 if (active) "Cursore: ON" else "Cursore TV"
+        }
+        tvCursor.onLeaveToControls = {
+            dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.requestFocus()
         }
         var clearanceHandled = false
         var pageFinished = false
@@ -1277,7 +1306,7 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
             var lastAttemptCookie: String? = null
             var hasAttempted = false
             while (isActive && !clearanceHandled) {
-                cookieManager.flush()
+                withContext(Dispatchers.IO) { cookieManager.flush() }
                 val cookie = StreamCenterExtCloudflareSession.clearanceCookie(verificationUrl)
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (pageFinished && (
@@ -1338,6 +1367,7 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
 
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val target = request?.url?.toString() ?: return true
+                if (!request.isForMainFrame) return false
                 if (clearanceHandled) return true
                 val blocked = !isAllowedExtNavigation(baseUrl, target)
                 if (blocked) status.text = "Navigazione esterna bloccata per sicurezza"
@@ -1362,13 +1392,15 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
             }
         }
         applyDialogBackdrop(dialog, onDismiss = {
+            val refreshAvailability = verificationDialog === dialog
+            verificationDialog = null
             clearancePollJob.cancel()
             cookieManager.flush()
             webView.stopLoading()
             webView.loadUrl("about:blank")
             webView.removeAllViews()
             webView.destroy()
-            if (isAdded) startExtAvailabilityCheck()
+            if (refreshAvailability && isAdded && view != null) startExtAvailabilityCheck()
         })
         dialog.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_MENU) {
@@ -1379,8 +1411,9 @@ class StreamCenterTorrentSettingsFragment : StreamCenterBaseSettingsFragment() {
             }
         }
         dialog.show()
+        verificationDialog = dialog
         dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.setOnClickListener { tvCursor.toggle() }
-        if (isTvLikeDevice()) tvCursor.activate()
+        if (tvLike) tvCursor.activate()
         webView.loadUrl(verificationUrl)
         clearancePollJob.start()
     }

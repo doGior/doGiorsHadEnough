@@ -38,7 +38,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.jsoup.Jsoup
 
 private const val STREMIO_CATEGORY_TITLE = "Add-on Stremio"
 private const val STREMIO_MANIFEST_REFRESH_NOTICE_MS = 3_000L
@@ -1322,24 +1321,9 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         }
     }
 
-    private fun streamingCommunityPublishedUrl(): String? {
+    private suspend fun streamingCommunityPublishedUrl(): String? {
         StreamCenterVpnGuard.requireInternetAccess(sharedPref)
-        val page = Jsoup.connect(STREAMING_COMMUNITY_UPDATED_LINK_PAGE)
-            .userAgent("Mozilla/5.0 (Android 14; Mobile)")
-            .timeout(15_000)
-            .get()
-        return page.select("a[href]")
-            .asSequence()
-            .map { it.absUrl("href").trim() }
-            .mapNotNull { url ->
-                val host = Uri.parse(url).host?.lowercase() ?: return@mapNotNull null
-                if (host.matches(Regex("""streamingcommunityz\.[a-z0-9-]+(?:\.[a-z0-9-]+)*"""))) {
-                    "https://$host"
-                } else {
-                    null
-                }
-            }
-            .firstOrNull()
+        return fetchStreamingCommunityPublishedUrl()
     }
 
     private fun sameSourceHost(first: String, second: String): Boolean {

@@ -36,6 +36,8 @@ import java.security.SecureRandom
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
+internal const val ANIME_UNITY_SESSION_PREF = "streamcenter_au_session"
+
 internal class AnimeUnitySourceClient(
     private val sharedPref: SharedPreferences?,
     private val baseUrl: () -> String,
@@ -306,7 +308,7 @@ internal class AnimeUnitySourceClient(
 
     fun resetSession() {
         sessionBaseUrl = null
-        sharedPref?.edit()?.remove(PREF_SESSION)?.apply()
+        sharedPref?.edit()?.remove(ANIME_UNITY_SESSION_PREF)?.apply()
         AnimeSourceLog.info(SOURCE_NAME, "Sessione sorgente reimpostata")
     }
 
@@ -740,16 +742,16 @@ internal class AnimeUnitySourceClient(
             .put("cookie", requestHeaders["Cookie"].orEmpty())
             .put("csrfToken", requestHeaders["X-CSRF-Token"].orEmpty())
             .put("expiresAt", System.currentTimeMillis() + SESSION_TTL_MS)
-        sharedPref?.edit()?.putString(PREF_SESSION, payload.toString())?.apply()
+        sharedPref?.edit()?.putString(ANIME_UNITY_SESSION_PREF, payload.toString())?.apply()
     }
 
     private fun readSessionPayload(): JSONObject? {
-        val raw = sharedPref?.getString(PREF_SESSION, null) ?: return null
+        val raw = sharedPref?.getString(ANIME_UNITY_SESSION_PREF, null) ?: return null
         return runCatching {
             val json = JSONObject(raw)
             val expiresAt = json.optLong("expiresAt", 0L)
             if (expiresAt in 1..System.currentTimeMillis()) {
-                sharedPref?.edit()?.remove(PREF_SESSION)?.apply()
+                sharedPref?.edit()?.remove(ANIME_UNITY_SESSION_PREF)?.apply()
                 return null
             }
             json
@@ -762,7 +764,6 @@ internal class AnimeUnitySourceClient(
 
     private companion object {
         const val SOURCE_NAME = "AnimeUnity"
-        const val PREF_SESSION = "streamcenter_au_session"
         const val SESSION_TTL_MS = 12L * 60L * 60L * 1000L
         const val ARCHIVE_SIZE_CACHE_MS = 6L * 60L * 60L * 1000L
         const val ARCHIVE_PAGE_SIZE = 30

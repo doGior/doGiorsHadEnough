@@ -125,9 +125,7 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
     if (data.startsWith(StreamCenterHomeImports.DATA_PREFIX)) {
         return importedHomePage(page, request)
     }
-    val showHomeScores = showCardScores
-    val showAnimeDubStatus = !performanceMode && StreamCenterPlugin.shouldShowAnimeHomeDubStatus(sharedPref)
-    val showAnimeEpisodeNumber = !performanceMode && StreamCenterPlugin.shouldShowAnimeHomeEpisodeNumber(sharedPref)
+    val (showHomeScores, showAnimeDubStatus, showAnimeEpisodeNumber) = cardLabelVisibility()
     val limit = StreamCenterPlugin.getHomeSectionCount(sharedPref, data)
 
     StreamCenterLogger.logMenu(
@@ -211,9 +209,13 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
             else -> emptyList()
         }
     }
-    val itemsResult = runCatchingCancellable {
+    val sourceKey = homeSectionSourceKey(data)
+    val sourceReachable = sourceKey == null || isSourceReachableNow(sourceKey)
+    var loadTimedOut = false
+    val itemsResult = if (!sourceReachable && data != "au:calendar") Result.success(emptyList()) else runCatchingCancellable {
         if (data.startsWith("au:")) {
             withTimeoutOrNull(6_000L) { loadItems() } ?: run {
+                loadTimedOut = true
                 StreamCenterLogger.logMenu(
                     action = "Tempo massimo di caricamento Home AnimeUnity raggiunto",
                     metadata = mapOf("sezione" to data, "pagina" to page, "limite_ms" to 6_000L),
@@ -236,14 +238,21 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
             ),
         )
     }
-    val items = itemsResult.getOrDefault(emptyList())
+    val fallback = if (sourceKey != null &&
+        ((!sourceReachable && itemsResult.getOrNull().isNullOrEmpty()) || itemsResult.isFailure ||
+            loadTimedOut || (page == 1 && itemsResult.getOrNull().isNullOrEmpty()))
+    ) {
+        fallbackHomePage(data, page, limit, showHomeScores)
+    } else null
+    if (page == 1 && sourceKey != null && !fallback?.items.isNullOrEmpty()) announceHomeFallback(sourceKey)
+    val items = fallback?.items ?: itemsResult.getOrDefault(emptyList())
 
-    val hasNext = (
+    val hasNext = fallback?.hasNext ?: ((
         data == "au:popular" ||
             data.startsWith("au:archive:") ||
             data.startsWith("sc:archive:tv_custom:") ||
             data.startsWith("sc:archive:movie_custom:")
-        ) && items.size >= limit
+        ) && items.size >= limit)
     val title = StreamCenterPlugin.resolveHomeTitlePlaceholders(
         request.name,
         Calendar.getInstance(),

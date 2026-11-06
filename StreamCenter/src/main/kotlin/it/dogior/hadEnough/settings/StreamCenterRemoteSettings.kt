@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import com.lagradost.cloudstream3.SearchResponse
 import it.dogior.hadEnough.StreamCenter
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.activeMainProvider
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncPresence
 import it.dogior.hadEnough.localsync.StreamCenterLocalSyncStorage
 import it.dogior.hadEnough.remote.RemoteCard
@@ -32,6 +33,8 @@ import it.dogior.hadEnough.remote.StreamCenterRemoteHistory
 import it.dogior.hadEnough.remote.StreamCenterRemoteNavigator
 import it.dogior.hadEnough.remote.StreamCenterRemoteQueue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -56,9 +59,15 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
     private var playerMode: PlayerMode? = null
     private var pendingSeek: Runnable? = null
     private var lastState: RemotePlayerState? = null
+    private var connected = false
+    private var screenContent: LinearLayout? = null
+    private var remoteSwitch: View? = null
+    private var scanJob: Job? = null
+    private var scanGeneration = 0
+    private val rescan = Runnable { if (!connected) scan() }
     private val queueListener: () -> Unit = { mainHandler.post { renderQueue() } }
 
-    private enum class PlayerMode { PLAYING, PARKED, IDLE }
+    private enum class PlayerMode { PLAYING, PARKED, IDLE, OFFLINE }
 
     private class PlayerViews(
         val title: TextView,
@@ -78,21 +87,42 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
             setPadding(paddingLeft, 0, paddingRight, paddingBottom)
             minimumHeight = standardSubmenuMinimumHeight()
         }
+        screenContent = content
+        populate(content)
+        return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    private fun rebuild() {
+        val content = screenContent ?: return
+        if (!isAdded) return
+        releaseLiveViews()
+        content.removeAllViews()
+        populate(content)
+        if (isTvLikeDevice()) remoteSwitch?.requestFocus()
+    }
+
+    private fun populate(content: LinearLayout) {
         content.addView(experimentalBanner())
-        content.addView(remoteSwitchRow())
+        content.addView(remoteSwitchRow().also { remoteSwitch = it })
         if (!StreamCenterRemote.isEnabled()) {
-            content.addView(emptyStateCard("Attiva la funzione per usare il telefono come telecomando", COLOR_EXPERIMENTAL, "📺"))
-            return scroll(content, fixedSubmenuHeight = true)
+            content.addView(setupSteps(paired = false))
+            return
         }
         if (!StreamCenterRemote.hasTrustedPeers(requireContext())) {
-            content.addView(emptyStateCard("Associa prima un dispositivo in «Sync tra dispositivi»", COLOR_EXPERIMENTAL, "🔗"))
-            return scroll(content, fixedSubmenuHeight = true)
+            content.addView(setupSteps(paired = false))
+            content.addView(navigationRow(
+                title = "Associa un dispositivo",
+                summary = "Apri «Sync tra dispositivi» e collega telefono e TV",
+                icon = "🔗",
+                accent = COLOR_EXPERIMENTAL,
+            ) { openScreen(StreamCenterLocalSyncSettingsFragment(), "StreamCenterLocalSyncSettings") })
+            return
         }
         if (isTvLikeDevice()) return tvContent(content)
 
         content.addView(sectionHeading("TV"))
         deviceRow = settingsRow(
-            title = "Cerco la TV…",
+            title = "🟡 Cerco la TV…",
             summary = SEARCH_HINT,
             icon = "📺",
             accent = COLOR_EXPERIMENTAL,
@@ -101,12 +131,14 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         ) { if (receivers.size > 1) chooseDevice() else scan() }.also { content.addView(it.view) }
         playerContainer = verticalSection().also(content::addView)
 
-        content.addView(sectionHeading("Continua sulla TV"))
-        historyContainer = verticalSection().also(content::addView)
-
         content.addView(sectionHeading("Cerca e apri sulla TV"))
+        content.addView(sectionHint("Tocca un titolo per aprirlo sulla TV, ➕ per metterlo in coda"))
         content.addView(searchBar())
         searchResults = verticalSection().also(content::addView)
+
+        content.addView(sectionHeading("Continua sulla TV"))
+        content.addView(sectionHint("Riparte dal punto in cui eri arrivato sul telefono"))
+        historyContainer = verticalSection().also(content::addView)
 
         content.addView(sectionHeading("Prossimi da guardare"))
         queueContainer = verticalSection().also(content::addView)
@@ -117,14 +149,14 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         renderHistory()
         renderQueue()
         scan()
-        return scroll(content, fixedSubmenuHeight = true)
     }
 
-    private fun tvContent(content: LinearLayout): View {
+    private fun tvContent(content: LinearLayout) {
         content.addView(sectionHeading("Questa TV"))
         content.addView(settingsRow(
-            title = "Pronta a ricevere",
-            summary = "Sul telefono apri Telecomando per comandare la riproduzione e mandare titoli qui",
+            title = "🟢 Pronta a ricevere",
+            summary = "Sul telefono apri Telecomando e scegli «${StreamCenterLocalSyncStorage.deviceName()}». " +
+                "Tieni StreamCenter aperto qui mentre lo usi",
             icon = "📺",
             accent = COLOR_EXPERIMENTAL,
         ).view)
@@ -132,14 +164,28 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         queueContainer = verticalSection().also(content::addView)
         StreamCenterRemoteQueue.addListener(queueListener)
         renderQueue()
-        return scroll(content, fixedSubmenuHeight = true)
     }
 
     override fun onDestroyView() {
+        releaseLiveViews()
+        screenContent = null
+        remoteSwitch = null
+        super.onDestroyView()
+    }
+
+    private fun releaseLiveViews() {
+        scanGeneration++
+        scanJob?.cancel()
+        scanJob = null
+        mainHandler.removeCallbacks(rescan)
         StreamCenterRemoteQueue.removeListener(queueListener)
         pendingSeek?.let(mainHandler::removeCallbacks)
+        pendingSeek = null
         client?.close()
         client = null
+        connected = false
+        receivers = emptyList()
+        lastState = null
         deviceRow = null
         playerContainer = null
         historyContainer = null
@@ -147,18 +193,19 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         queueContainer = null
         playerViews = null
         playerMode = null
-        super.onDestroyView()
     }
 
     override fun onStatus(message: String, connected: Boolean) {
         mainHandler.post {
-            showDevice(client?.target?.name ?: "TV", message)
+            if (client == null) return@post
+            this.connected = connected
+            showDevice("${if (connected) "🟢" else "🟡"} ${client?.target?.name ?: "TV"}", message)
             if (!connected) renderPlayer(null, parked = false)
         }
     }
 
     override fun onState(state: RemotePlayerState?, parked: Boolean) {
-        mainHandler.post { renderPlayer(state, parked) }
+        mainHandler.post { if (client != null) renderPlayer(state, parked) }
     }
 
     override fun onHandoff(handoff: RemoteHandoff?) {
@@ -187,7 +234,27 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
     ) { enabled ->
         sharedPref?.edit { putBoolean(StreamCenterPlugin.PREF_REMOTE_CONTROL, enabled) }
         StreamCenterRemote.refresh()
-        saveToast(if (enabled) "Telecomando attivo: riapri questa schermata" else "Telecomando disattivato")
+        saveToast(if (enabled) "Telecomando attivo" else "Telecomando disattivato")
+        mainHandler.post { rebuild() }
+    }
+
+    private fun sectionHint(text: String): View = bodyText(text, 12).apply {
+        alpha = 0.75f
+        layoutParams = verticalParams(top = 2)
+    }
+
+    private fun setupSteps(paired: Boolean): View = LinearLayout(requireContext()).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = cardBackground(COLOR_CARD, tint(COLOR_EXPERIMENTAL, "55"), 14)
+        layoutParams = verticalParams(top = 8)
+        isFocusable = true
+        addView(titleText("Come si usa", 15))
+        listOf(
+            "1. Attiva «Telecomando e continuità» sia sul telefono sia sulla TV",
+            if (paired) "2. Telefono e TV sono già associati ✓" else "2. Associa i due dispositivi in «Sync tra dispositivi»",
+            "3. Apri StreamCenter sulla TV: da qui la comandi e le mandi titoli e fonti",
+        ).forEach { step -> addView(bodyText(step, 13).apply { layoutParams = verticalParams(top = 6) }) }
     }
 
     private fun showDevice(title: String, summary: String) {
@@ -198,17 +265,27 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
 
     private fun scan() {
         val remote = client ?: return
+        scanJob?.cancel()
+        val generation = ++scanGeneration
         showDevice("Cerco la TV…", SEARCH_HINT)
-        lifecycleScope.launch {
-            val found = withContext(Dispatchers.IO) { runCatching { remote.scan() }.getOrDefault(emptyList()) }
+        scanJob = lifecycleScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                try { remote.scan() } catch (error: CancellationException) { throw error }
+                catch (_: Exception) { emptyList() }
+            }
+            if (generation != scanGeneration || client !== remote || screenContent == null) return@launch
             receivers = found
             val current = remote.target
             when {
-                found.isEmpty() -> showDevice("Nessuna TV trovata", "Apri StreamCenter sulla TV e tocca 🔄")
+                found.isEmpty() -> {
+                    showDevice("🔴 Nessuna TV trovata", "Apri StreamCenter sulla TV: riprovo da solo ogni ${RESCAN_INTERVAL_MS / 1_000} s")
+                    mainHandler.removeCallbacks(rescan)
+                    mainHandler.postDelayed(rescan, RESCAN_INTERVAL_MS)
+                }
                 current == null && found.size == 1 -> remote.connect(found.first())
                 current == null -> showDevice("${found.size} dispositivi trovati", "Tocca per scegliere quale comandare")
                 found.none { it.identityKey == current.identityKey } -> remote.connect(found.first())
-                else -> showDevice(current.name, "Collegato")
+                else -> showDevice("🟢 ${current.name}", "Collegato")
             }
         }
     }
@@ -224,7 +301,8 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         val mode = when {
             state != null -> PlayerMode.PLAYING
             parked -> PlayerMode.PARKED
-            else -> PlayerMode.IDLE
+            connected -> PlayerMode.IDLE
+            else -> PlayerMode.OFFLINE
         }
         if (mode != playerMode) {
             playerMode = mode
@@ -238,7 +316,12 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
                     icon = "📱",
                     accent = COLOR_EXPERIMENTAL,
                 ) { takeOver() })
-                PlayerMode.IDLE -> Unit
+                PlayerMode.IDLE -> container.addView(emptyStateCard(
+                    "Sulla TV non c'è niente in riproduzione: cerca un titolo qui sotto",
+                    COLOR_EXPERIMENTAL,
+                    "⏸",
+                ))
+                PlayerMode.OFFLINE -> Unit
             }
         }
         val views = playerViews ?: return
@@ -249,12 +332,12 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
             state.episode?.let { "Episodio $it" },
         ).joinToString(" · ").ifBlank { "Film" }
         views.time.text = "${formatTime(state.positionMs)} / ${formatTime(state.durationMs)}"
-        views.playPause.text = if (state.playing) "⏸" else "▶"
+        views.playPause.text = if (state.playing) "⏸ Pausa" else "▶ Play"
         if (pendingSeek == null && !views.seekBar.isPressed) {
             views.seekBar.max = (state.durationMs / 1_000L).toInt().coerceAtLeast(1)
             views.seekBar.progress = (state.positionMs / 1_000L).toInt()
         }
-        views.subtitles.text = "CC " + (state.subtitles.firstOrNull { it.id == state.selectedSubtitle }?.label ?: "Nessuno")
+        views.subtitles.text = "💬 " + (state.subtitles.firstOrNull { it.id == state.selectedSubtitle }?.label ?: "Sottotitoli: no")
     }
 
     private fun createPlayerViews(container: LinearLayout): PlayerViews {
@@ -288,10 +371,10 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
             })
         }.also(root::addView)
         val controls = buttonRow(root)
-        controls.addWeighted(actionButton("⏪", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.SeekBack) })
-        val playPause = actionButton("⏯", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.Toggle) }
+        controls.addWeighted(actionButton("⏪ Indietro", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.SeekBack) })
+        val playPause = actionButton("⏯ Play", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.Toggle) }
             .also { controls.addWeighted(it) }
-        controls.addWeighted(actionButton("⏩", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.SeekForward) })
+        controls.addWeighted(actionButton("⏩ Avanti", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.SeekForward) })
         val volume = buttonRow(root)
         volume.addWeighted(actionButton("🔉 Volume −", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.VolumeDown) })
         volume.addWeighted(actionButton("🔊 Volume +", COLOR_EXPERIMENTAL) { client?.command(RemoteCommand.VolumeUp) })
@@ -489,11 +572,7 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
         if (client?.send(message) == true) saveToast("Apro «$name» sulla TV") else saveToast(NOT_CONNECTED)
     }
 
-    private fun mainProvider(): StreamCenter? = synchronized(StreamCenter.activeInstances) {
-        StreamCenter.activeInstances.firstOrNull {
-            it.catalogDefinition == null && it.searchSection == StreamCenter.SEARCH_SECTION_MAIN
-        }
-    }
+    private fun mainProvider(): StreamCenter? = activeMainProvider()
 
     private fun formatTime(ms: Long): String {
         val total = (ms / 1_000L).coerceAtLeast(0L)
@@ -506,6 +585,7 @@ internal class StreamCenterRemoteSettingsFragment : StreamCenterBaseSettingsFrag
 
     private companion object {
         const val SEEK_DEBOUNCE_MS = 600L
+        const val RESCAN_INTERVAL_MS = 10_000L
         const val MAX_SEARCH_RESULTS = 20
         const val MAX_HISTORY_ITEMS = 8
         const val SEARCH_HINT = "La TV deve avere StreamCenter aperto"

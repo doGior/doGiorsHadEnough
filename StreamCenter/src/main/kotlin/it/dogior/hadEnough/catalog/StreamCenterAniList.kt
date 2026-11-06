@@ -99,7 +99,10 @@ internal class StreamCenterAniListCatalog(
                 val title = preferredTitle(entry.optJSONObject("title")) ?: continue
                 val format = entry.optNullableString("format")
                 val type = mediaType(format)
-                val url = entry.optNullableString("siteUrl") ?: "$BASE_URL/anime/$id"
+                val baseUrl = entry.optNullableString("siteUrl") ?: "$BASE_URL/anime/$id"
+                val url = entry.optNullableInt("idMal")?.let { malId ->
+                    "$baseUrl${if ('?' in baseUrl) '&' else '?'}streamcenter_mal=$malId"
+                } ?: baseUrl
                 val poster = entry.optJSONObject("coverImage")?.let { image ->
                     image.optNullableString("extraLarge")
                         ?: image.optNullableString("large")
