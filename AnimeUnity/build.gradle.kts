@@ -32,7 +32,7 @@ val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
 // use an integer for version numbers
-version = 28
+version = 29
 
 
 cloudstream {

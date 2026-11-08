@@ -15,7 +15,8 @@ class VixCloudExtractor(
 ) : ExtractorApi() {
     override val mainUrl = "vixcloud.co"
     override val name = "VixCloud"
-    override val requiresReferer = false
+    override val requiresReferer = true
+    private var referer: String? = null
     private val headers = mutableMapOf(
         "Accept" to "*/*",
         "Connection" to "keep-alive",
@@ -34,6 +35,7 @@ class VixCloudExtractor(
         callback: (ExtractorLink) -> Unit
     ) {
         Log.d(LOG_TAG, "REFERER: $referer  URL: $url")
+        this.referer = referer
         val playlistUrl = getPlaylistLink(url)
 
         Log.d(LOG_TAG, "FINAL URL: $playlistUrl")
@@ -79,7 +81,7 @@ class VixCloudExtractor(
     private suspend fun getScript(url: String): JSONObject {
         Log.d(LOG_TAG, "Embed url: $url")
 
-        val iframe = app.get(url, headers = headers).document
+        val iframe = app.get(url, headers = headers, referer = this.referer).document
 
         val scripts = iframe.select("script")
         val script = scripts

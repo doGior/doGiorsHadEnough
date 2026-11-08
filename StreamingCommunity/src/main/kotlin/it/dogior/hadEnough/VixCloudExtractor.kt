@@ -13,7 +13,7 @@ import org.json.JSONObject
 class VixCloudExtractor : ExtractorApi() {
     override val mainUrl = "vixcloud.co"
     override val name = "VixCloud"
-    override val requiresReferer = false
+    override val requiresReferer = true
     val TAG = "VixCloudExtractor"
     private var referer: String? = null
     private val h = mutableMapOf(
@@ -33,7 +33,6 @@ class VixCloudExtractor : ExtractorApi() {
         Log.d(TAG, "REFERER: $referer  URL: $url")
         val playlistUrl = getPlaylistLink(url)
         Log.w(TAG, "FINAL URL: $playlistUrl")
-
         callback.invoke(
             newExtractorLink(
                 source = "VixCloud",
@@ -52,6 +51,7 @@ class VixCloudExtractor : ExtractorApi() {
         Log.d(TAG, "Item url: $url")
 
         val script = getScript(url)
+        Log.d(TAG, "Script: $script")
         val masterPlaylist = script.getJSONObject("masterPlaylist")
         val masterPlaylistParams = masterPlaylist.getJSONObject("params")
         val token = masterPlaylistParams.getString("token")
@@ -76,9 +76,9 @@ class VixCloudExtractor : ExtractorApi() {
     }
 
     private suspend fun getScript(url: String): JSONObject {
-        Log.d(TAG, "Item url: $url")
+        Log.d(TAG, "Script url: $url")
 
-        val iframe = app.get(url, headers = h, interceptor = CloudflareKiller()).document
+        val iframe = app.get(url, headers = h, referer = this.referer).document
         Log.d(TAG, iframe.toString())
 
 //        Log.d(TAG, iframe.document.toString())

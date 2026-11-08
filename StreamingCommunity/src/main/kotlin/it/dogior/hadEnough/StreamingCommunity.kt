@@ -497,7 +497,6 @@ class StreamingCommunity(
 
         val response = app.get(loadData.url).document
         val iframeSrc = response.select("iframe").attr("src")
-
         VixCloudExtractor().getUrl(
             url = iframeSrc,
             referer = siteRootUrl,
