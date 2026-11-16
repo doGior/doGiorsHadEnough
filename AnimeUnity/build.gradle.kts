@@ -32,7 +32,7 @@ val buildCommitSha = resolveBuildCommitSha()
 val buildCompletedAtRome = resolveBuildCompletedAtRome()
 
 // use an integer for version numbers
-version = 29
+version = 30
 
 
 cloudstream {
@@ -58,7 +58,7 @@ cloudstream {
     language = "it"
     requiresResources = true
 
-    iconUrl = "https://www.animeunity.to/apple-touch-icon.png"
+    iconUrl = "https://animeunity.cx/icon/apple-touch-icon.png"
 }
 
 android {

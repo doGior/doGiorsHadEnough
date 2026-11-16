@@ -59,7 +59,7 @@ class AnimeUnityPlugin : Plugin() {
         const val PREF_CACHE_MAX_ENTRIES = "cacheMaxEntries"
         const val PREF_CACHE_MAX_SIZE_MB = "cacheMaxSizeMb"
 
-        const val DEFAULT_SITE_URL = "https://www.animeunity.co/"
+        const val DEFAULT_SITE_URL = "https://animeunity.cx/"
         const val DEFAULT_SECTION_COUNT = 30
         const val MAX_SECTION_COUNT = 100
         const val DEFAULT_ADVANCED_SEARCH_COUNT = MAX_SECTION_COUNT
@@ -178,7 +178,10 @@ class AnimeUnityPlugin : Plugin() {
                 return null
             }
 
-            return "https://${normalizedHost.lowercase(Locale.ROOT)}/"
+            val host = normalizedHost.lowercase(Locale.ROOT).let {
+                if (it == "www.animeunity.cx") "animeunity.cx" else it
+            }
+            return "https://$host/"
         }
 
         fun isValidSiteUrl(value: String?): Boolean {
@@ -190,7 +193,11 @@ class AnimeUnityPlugin : Plugin() {
         }
 
         fun getConfiguredSiteUrl(sharedPref: SharedPreferences?): String {
-            return getValidatedSiteUrl(sharedPref?.getString(PREF_SITE_URL, null))
+            val configuredUrl = getValidatedSiteUrl(sharedPref?.getString(PREF_SITE_URL, null))
+            return when (configuredUrl) {
+                "https://animeunity.co/", "https://www.animeunity.co/" -> DEFAULT_SITE_URL
+                else -> configuredUrl
+            }
         }
 
         fun getConfiguredBaseUrl(sharedPref: SharedPreferences?): String {
