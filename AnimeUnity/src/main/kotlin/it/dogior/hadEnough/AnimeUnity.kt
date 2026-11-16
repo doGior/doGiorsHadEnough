@@ -1266,6 +1266,9 @@ class AnimeUnity(
         val shouldLabelSources = playerSources.size > 1
 
         playerSources.forEach { playerSource ->
+            check(!usesModernSite() || playerSource.url.toHttpUrl().host.removePrefix("www.") != "animeunity.co") {
+                "AnimeUnity: episodio salvato sul vecchio sito; riaprire il titolo e selezionare nuovamente l'episodio"
+            }
             val document = app.get(playerSource.url).document
             val sourceUrl = if (usesModernSite()) modernProps(document).optString("embedUrl")
                 else document.select("video-player").attr("embed_url")
@@ -1302,23 +1305,46 @@ class AnimeUnity(
         "ova", "ona", "special" -> TvType.OVA
         else -> TvType.Anime
     }
-    private suspend fun modernCards(animes: List<JSONObject>): List<SearchResponse> = animes.distinctBy { it.getInt("id") }.map { anime ->
-        newAnimeSearchResponse(anime.text("title_it") ?: anime.getString("title"), modernAnimeUrl(anime), modernType(anime)).apply {
-            addPoster(anime.optJSONObject("images")?.text("poster"))
-            if (shouldShowScore()) anime.text("score")?.let { score = Score.from(it, 10) }
-            if (shouldShowDubSub()) {
-                anime.optJSONArray("variants")?.objects()?.forEach { variant ->
-                    addDubStatus(if (variant.optString("language") == "ita") DubStatus.Dubbed else DubStatus.Subbed,
-                        if (shouldShowEpisodeNumber()) variant.optInt("episodes_count") else null)
+    private suspend fun modernCards(animes: List<JSONObject>): List<SearchResponse> {
+        return animes.groupBy { it.getInt("id") }.values.flatMap { entries ->
+            val anime = entries.first()
+            val variants = anime.optJSONArray("variants")?.objects().orEmpty()
+            val languages = if (shouldUseUnifiedDubSubCards()) listOf<String?>(null)
+                else variants.map { it.optString("language") }.distinct().ifEmpty { listOf(null) }
+            languages.map { language ->
+                val latest = entries.filter { language == null || it.text("_latest_language") == language }
+                    .mapNotNull { it.text("_latest_number")?.toDoubleOrNull() }.maxOrNull()?.toInt()
+                val title = anime.text("title_it") ?: anime.getString("title")
+                val cardUrl = modernAnimeUrl(anime) + (language?.let { "?language=$it" } ?: "")
+                newAnimeSearchResponse(buildDisplayTitle(title, latest), cardUrl, modernType(anime)).apply {
+                    addPoster(anime.optJSONObject("images")?.text("poster"))
+                    if (shouldShowScore()) anime.text("score")?.let { score = Score.from(it, 10) }
+                    if (shouldShowDubSub()) {
+                        variants.filter { language == null || it.optString("language") == language }.forEach { variant ->
+                            val variantLatest = entries.filter { it.text("_latest_language") == variant.optString("language") }
+                                .mapNotNull { it.text("_latest_number")?.toDoubleOrNull() }.maxOrNull()?.toInt()
+                            addDubStatus(if (variant.optString("language") == "ita") DubStatus.Dubbed else DubStatus.Subbed,
+                                if (shouldShowEpisodeNumber()) variantLatest ?: variant.optInt("episodes_count") else null)
+                        }
+                    }
                 }
             }
         }
     }
 
     private suspend fun modernGet(path: String): JSONObject {
-        val response = app.get("$mainUrl/$path")
-        check(response.code == 200) { "AnimeUnity: HTTP ${response.code} per /${path.substringBefore('?')}" }
-        return JSONObject(response.text)
+        repeat(3) { attempt ->
+            val response = app.get("$mainUrl/$path")
+            if (response.code == 429 && attempt < 2) {
+                val retryAfter = response.headers["Retry-After"]?.toLongOrNull() ?: 60L
+                check(retryAfter in 1..120) { "AnimeUnity: troppe richieste; riprovare più tardi" }
+                kotlinx.coroutines.delay(retryAfter * 1000L)
+            } else {
+                check(response.code == 200) { "AnimeUnity: HTTP ${response.code} per /${path.substringBefore('?')}" }
+                return JSONObject(response.text)
+            }
+        }
+        error("AnimeUnity: troppe richieste; riprovare più tardi")
     }
 
     // API page sizes differ from the configured number of cards per section.
@@ -1357,7 +1383,12 @@ class AnimeUnity(
             "latest" -> {
                 val (items, more) = modernPage("api/home/latest-episodes", page, count)
                 hasNext = more
-                items.map { it.getJSONObject("episode").getJSONObject("anime") }
+                items.map {
+                    val episode = it.getJSONObject("episode")
+                    JSONObject(episode.getJSONObject("anime").toString())
+                        .put("_latest_number", episode.getString("number"))
+                        .put("_latest_language", it.getString("language"))
+                }
             }
             "calendar" -> {
                 if (page > 1) emptyList() else {
@@ -1403,7 +1434,18 @@ class AnimeUnity(
     }
 
     private suspend fun modernLoad(url: String): LoadResponse {
-        val path = url.toHttpUrl().encodedPath
+        val inputUrl = url.toHttpUrl()
+        val requestedLanguage = inputUrl.queryParameter("language")
+        val legacyHost = inputUrl.host.removePrefix("www.") == "animeunity.co"
+        val path = if (legacyHost) {
+            val slug = inputUrl.pathSegments.getOrNull(1)?.substringAfter('-')
+                ?: error("AnimeUnity: collegamento salvato non valido")
+            val matches = modernGet("api/search?q=" + java.net.URLEncoder.encode(slug.replace('-', ' '), "UTF-8"))
+                .getJSONArray("data").objects()
+            val match = matches.firstOrNull { it.getString("slug") == slug }
+                ?: error("AnimeUnity: titolo salvato non trovato sul nuovo sito; cercarlo nuovamente")
+            modernAnimeUrl(match).toHttpUrl().encodedPath
+        } else inputUrl.encodedPath
         val props = modernProps(app.get("$mainUrl$path").document)
         val anime = props.getJSONObject("anime")
         val animeUrl = modernAnimeUrl(anime)
@@ -1416,27 +1458,41 @@ class AnimeUnity(
             val tabSize = result.optInt("tab_size", 120)
             check(tabSize > 0) { "AnimeUnity: dimensione pagina episodi non valida" }
             start += tabSize
-        } while (batch.isNotEmpty() && episodes.size < result.getInt("total"))
+        } while (start <= result.getInt("total"))
         return newAnimeLoadResponse(anime.text("title_it") ?: anime.getString("title"), animeUrl, modernType(anime)) {
             posterUrl = anime.optJSONObject("images")?.text("poster")
             backgroundPosterUrl = anime.optJSONObject("images")?.text("banner")
             plot = anime.text("plot")
             year = anime.optInt("year").takeIf { it > 0 }
+            anime.optInt("episode_runtime").takeIf { it > 0 }?.let { addDuration(it.toString()) }
             showStatus = when (anime.optString("default_status")) { "completed" -> ShowStatus.Completed; "ongoing" -> ShowStatus.Ongoing; else -> null }
             comingSoon = anime.optString("default_status") == "upcoming"
             anime.text("score")?.let { addScore(it, 10) }
             anime.optInt("anilist_id").takeIf { it > 0 }?.let { addAniListId(it) }
             anime.optInt("mal_id").takeIf { it > 0 }?.let { addMalId(it) }
             tags = anime.optJSONArray("genres")?.objects()?.map { it.getString("name") }
-            for ((language, status) in listOf("jpn" to DubStatus.Subbed, "ita" to DubStatus.Dubbed)) {
-                val items = episodes.distinctBy { it.getInt("id") }.mapNotNull { episode ->
-                    val video = episode.getJSONArray("videos").objects().firstOrNull { it.optString("language") == language && !it.optBoolean("is_hidden") } ?: return@mapNotNull null
-                    newEpisode("$animeUrl/${video.getInt("id")}") {
-                        this.episode = episode.optString("number").toIntOrNull()
-                        name = "Episodio ${episode.optString("number")}"
-                    }
+            fun sources(language: String): LinkedHashMap<String, EpisodeSource> {
+                val result = linkedMapOf<String, EpisodeSource>()
+                episodes.distinctBy { it.getInt("id") }.forEach { episode ->
+                    val video = episode.getJSONArray("videos").objects().firstOrNull {
+                        it.optString("language") == language && !it.optBoolean("is_hidden")
+                    } ?: return@forEach
+                    val number = episode.getString("number")
+                    result[number] = EpisodeSource(number, "$animeUrl/${video.getInt("id")}")
                 }
-                if (items.isNotEmpty()) addEpisodes(status, items)
+                return result
+            }
+            val sub = sources("jpn")
+            val dub = sources("ita")
+            val merge = shouldUseUnifiedDubSubCards()
+            for ((language, status, primary) in listOf(Triple("jpn", DubStatus.Subbed, sub), Triple("ita", DubStatus.Dubbed, dub))) {
+                if (!merge && requestedLanguage != null && requestedLanguage != language) continue
+                if (primary.isEmpty()) continue
+                val fallback = if (!merge) linkedMapOf() else if (language == "ita") sub else dub
+                addEpisodes(status, buildMergedEpisodes(primary, fallback,
+                    if (merge || language == "jpn") sub else linkedMapOf(),
+                    if (merge || language == "ita") dub else linkedMapOf(),
+                    if (language == "ita") "[SUB] - " else null))
             }
             recommendations = modernCards(props.optJSONArray("relatedAnimes")?.objects().orEmpty())
         }
