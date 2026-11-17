@@ -44,7 +44,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
         with: 
-          packages: platform-tools platforms;android-36 build-tools;36.0.0
+          packages: platform-tools
+            platforms;android-36
+            build-tools;36.0.0
+            ndk;28.2.13676358
+            cmake;3.31.6
 
       - name: Access Secrets
         env:
