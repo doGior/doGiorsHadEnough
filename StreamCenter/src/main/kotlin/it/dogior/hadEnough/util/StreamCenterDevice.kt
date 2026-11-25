@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.util
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -15,5 +16,11 @@ internal object StreamCenterDevice {
         return uiMode == Configuration.UI_MODE_TYPE_TELEVISION ||
             pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
             !pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+    }
+
+    fun isLowPower(context: Context?): Boolean {
+        val ctx = context ?: return false
+        val activityManager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        return isTvLike(ctx) || activityManager?.isLowRamDevice == true
     }
 }

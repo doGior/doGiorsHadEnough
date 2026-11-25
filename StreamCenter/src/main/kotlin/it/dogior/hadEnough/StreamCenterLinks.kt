@@ -19,6 +19,7 @@ import it.dogior.hadEnough.StreamCenter.Companion.STREMIO_ADDON_CONCURRENCY
 import it.dogior.hadEnough.StreamCenter.Companion.STREMIO_ADDON_TIMEOUT_MS
 import it.dogior.hadEnough.anime.metadata.selectAnimeSeasonEpisode
 import it.dogior.hadEnough.anime.source.absoluteProviderUrl
+import it.dogior.hadEnough.anime.source.animeUnityPageProps
 import it.dogior.hadEnough.catalog.*
 import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
@@ -31,6 +32,7 @@ import it.dogior.hadEnough.playback.StreamCenterPlaybackInsights
 import it.dogior.hadEnough.playback.SourceDiscoveryTracker
 import it.dogior.hadEnough.playback.forLink
 import it.dogior.hadEnough.playback.StreamCenterSourceOrder
+import it.dogior.hadEnough.playback.AnimeAudio
 import it.dogior.hadEnough.stremio.*
 import it.dogior.hadEnough.torrent.*
 import it.dogior.hadEnough.tracking.*
@@ -188,7 +190,11 @@ internal suspend fun StreamCenter.resolveStreamCenterLinks(
         ),
         level = if (playbackData == null) StreamCenterLogger.Level.WARNING else StreamCenterLogger.Level.INFO,
     )
-    val sourceOrder = StreamCenterSourceOrder()
+    val preferredAudio = if (StreamCenterPlugin.prefersDubbedAnime(sharedPref)) AnimeAudio.DUB else AnimeAudio.SUB
+    val sourceOrder = StreamCenterSourceOrder(
+        preferredAudio = preferredAudio.takeIf { playbackData?.isAnime == true },
+        preferredAudioAvailable = playbackData != null && preferredAudio in availableAnimeAudio(playbackData),
+    )
     val discovery = SourceDiscoveryTracker()
     val playbackLinks = StreamingPlaybackLinks(this@resolveStreamCenterLinks::sourceLinkDedupKey) { source, original ->
         val origin = StreamCenterPlaybackInsights.originFor(source.forLink(original), original)
@@ -707,6 +713,24 @@ internal fun StreamCenter.buildAnimeUnityPlayerSources(playbackData: AnimeUnityP
     return sources
 }
 
+private val StreamCenterPlaybackData.isAnime: Boolean
+    get() = animeUnity != null || animeWorld.isNotEmpty() || animeSaturn.isNotEmpty() ||
+        extensions?.isAnime == true || stremio?.anilistId != null || stremio?.malId != null
+
+private fun StreamCenter.availableAnimeAudio(playbackData: StreamCenterPlaybackData): Set<AnimeAudio> {
+    fun usable(sourceKey: String) = isSourceEnabled(sourceKey) && isSourceReachable(sourceKey)
+    val labels = buildList {
+        if (usable(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)) {
+            playbackData.animeUnity?.let { addAll(buildAnimeUnityPlayerSources(it).map(AnimeUnityPlayerSource::label)) }
+        }
+        if (usable(StreamCenterPlugin.PREF_SOURCE_ANIMEWORLD)) addAll(playbackData.animeWorld.map { it.label })
+        if (usable(StreamCenterPlugin.PREF_SOURCE_ANIMESATURN)) addAll(playbackData.animeSaturn.map { it.label })
+    }
+    return AnimeAudio.entries.filterTo(mutableSetOf()) { audio ->
+        labels.any { label -> label.contains(audio.label, ignoreCase = true) }
+    }
+}
+
 internal fun StreamCenter.animeSourceDisplayName(provider: String, label: String): String {
     val audio = when {
         label.contains("DUB", ignoreCase = true) -> "\uD83C\uDDEE\uD83C\uDDF9 (DUB)"
@@ -747,13 +771,12 @@ internal suspend fun StreamCenter.getAnimeUnityEmbedUrl(playerUrl: String): Stri
     val html = fetchText {
         app.get(
             playerUrl,
+            headers = headers,
         ).text
     }
 
-    return Jsoup.parse(html, playerUrl)
-        .selectFirst("video-player")
-        ?.attr("embed_url")
-        ?.takeIf(String::isNotBlank)
+    return animeUnityPageProps(html, playerUrl)
+        ?.optNullableString("embedUrl")
 }
 
 internal suspend fun StreamCenter.loadAnimeWorldLink(

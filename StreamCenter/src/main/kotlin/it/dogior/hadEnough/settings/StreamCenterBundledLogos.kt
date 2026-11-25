@@ -27,8 +27,10 @@ internal object StreamCenterBundledLogos {
         "tv.apple.com" to "appletv",
         "nowtv.it" to "nowtv",
         "max.com" to "max",
+        "vixcloud.cc" to "vixcloud",
+        "vixcloud.co" to "vixcloud",
     )
-    private val namedLogos = setOf("prisynx", "sleepguard", "watchparty", "wrapped", "italiaverse")
+    private val namedLogos = setOf("prisynx", "sleepguard", "watchparty", "wrapped", "italiaverse", "syncstream")
 
     @Volatile
     private var pluginFile: String? = null

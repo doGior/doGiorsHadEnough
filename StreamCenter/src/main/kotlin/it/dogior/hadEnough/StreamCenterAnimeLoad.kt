@@ -945,7 +945,7 @@ internal suspend fun StreamCenter.renderAnimeResponse(
     val resolvedShowStatus = fallbackShowStatus ?: tmdb?.showStatus
     val comingSoon = resolvedShowStatus != ShowStatus.Completed && tmdb?.comingSoon == true
     val title = if (isMovie) displayTitles.forDisplay(tmdb?.title?.takeIf(String::isNotBlank) ?: fallbackTitle)
-        else seasonInfo.title(preferredTitle)
+        else displayTitles.sourceTitle(titlePreference) ?: seasonInfo.title(preferredTitle)
     val displayEnglishTitle = englishTitle?.takeIf(String::isNotBlank)?.let(seasonInfo::title)
     val displayNativeTitle = nativeTitle?.takeIf(String::isNotBlank)?.let(seasonInfo::title)
     val poster = tmdb?.poster ?: fallbackPoster ?: animeUnitySources.firstNotNullOfOrNull { it.posterUrl }

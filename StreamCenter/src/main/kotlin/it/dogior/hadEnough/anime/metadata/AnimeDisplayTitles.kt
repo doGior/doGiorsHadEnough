@@ -10,9 +10,12 @@ internal data class AnimeDisplayTitles(
     val native: String? = null,
     val animeUnity: String? = null,
 ) {
+    private val readableAnimeUnity: String?
+        get() = animeUnity?.trim()?.takeIf { it.isNotBlank() && !containsJapaneseTitleScript(it) }
+
     fun preferred(preference: String): String {
         val candidates = when (preference) {
-            StreamCenterPlugin.ANIME_CARD_TITLE_ANIMEUNITY -> listOf(animeUnity, fallback)
+            StreamCenterPlugin.ANIME_CARD_TITLE_ANIMEUNITY -> listOf(readableAnimeUnity, fallback)
             StreamCenterPlugin.ANIME_CARD_TITLE_ROMAJI -> listOf(romaji, fallback)
             StreamCenterPlugin.ANIME_CARD_TITLE_ENGLISH -> listOf(english, fallback)
             StreamCenterPlugin.ANIME_CARD_TITLE_NATIVE -> listOf(native, fallback)
@@ -22,8 +25,11 @@ internal data class AnimeDisplayTitles(
         return forDisplay(selected)
     }
 
+    fun sourceTitle(preference: String): String? =
+        readableAnimeUnity?.takeIf { preference == StreamCenterPlugin.ANIME_CARD_TITLE_ANIMEUNITY }
+
     fun forDisplay(title: String): String = if (containsJapaneseTitleScript(title)) {
-        animeUnity?.trim()?.takeIf(String::isNotBlank) ?: title
+        readableAnimeUnity ?: title
     } else title
 }
 

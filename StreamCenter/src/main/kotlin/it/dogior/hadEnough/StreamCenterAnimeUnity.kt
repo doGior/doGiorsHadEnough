@@ -9,13 +9,25 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.newAnimeSearchResponse
 import it.dogior.hadEnough.StreamCenter.Companion.ANILIST_RECOMMENDATIONS_QUERY
 import it.dogior.hadEnough.StreamCenter.Companion.ANIME_SEARCH_ENRICHMENT_TIMEOUT_MS
+import it.dogior.hadEnough.StreamCenter.Companion.ANIME_HOME_SCORE_TIMEOUT_MS
 import it.dogior.hadEnough.StreamCenter.Companion.AU_ARCHIVE_BATCH_SIZE
-import it.dogior.hadEnough.StreamCenter.Companion.POPULAR_HOME_VARIANT_PARALLELISM
+import it.dogior.hadEnough.StreamCenter.Companion.ANIME_UNITY_ID_LOOKUP_PARALLELISM
+import it.dogior.hadEnough.StreamCenter.Companion.ANIME_UNITY_ID_LOOKUP_TIMEOUT_MS
+import it.dogior.hadEnough.StreamCenter.Companion.ANIME_UNITY_LATEST_MAX_PAGES
+import it.dogior.hadEnough.StreamCenter.Companion.ANIME_UNITY_TOP_PAGES_PER_HOME_PAGE
 import it.dogior.hadEnough.StreamCenter.Companion.RANDOM_HOME_CANDIDATE_FACTOR
 import it.dogior.hadEnough.StreamCenter.Companion.SEARCH_ALTERNATIVE_TITLE_QUERY_LIMIT
+import it.dogior.hadEnough.anime.source.AnimeUnityArchivePage
 import it.dogior.hadEnough.anime.source.cleanAnimeUnityTitle
 import it.dogior.hadEnough.anime.source.displayTitle
-import it.dogior.hadEnough.anime.source.isDub
+import it.dogior.hadEnough.anime.source.ANIME_UNITY_DUB_LANGUAGE
+import it.dogior.hadEnough.anime.source.audioVariants
+import it.dogior.hadEnough.anime.source.episodeCount
+import it.dogior.hadEnough.anime.source.hasDub
+import it.dogior.hadEnough.anime.source.hasSub
+import it.dogior.hadEnough.anime.source.toAnimeUnityAnime
+import it.dogior.hadEnough.anime.source.toAnimeUnityAnimeList
+import it.dogior.hadEnough.anime.source.animeUnityPageProps
 import it.dogior.hadEnough.anime.source.sourceTitleDedupKey
 import it.dogior.hadEnough.cache.StreamCenterHomeCalendarCache
 import it.dogior.hadEnough.cache.nextCalendarDayStartMillis
@@ -28,20 +40,19 @@ import it.dogior.hadEnough.torrent.*
 import it.dogior.hadEnough.tracking.*
 import it.dogior.hadEnough.util.StreamCenterLogger
 import it.dogior.hadEnough.util.mapChunkedParallel
+import it.dogior.hadEnough.util.objects
 import it.dogior.hadEnough.util.optNullableInt
 import it.dogior.hadEnough.util.optNullableString
 import it.dogior.hadEnough.util.parseWholeAnimeEpisodeNumber
-import it.dogior.hadEnough.util.runCatchingCancellable
 import java.util.Calendar
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 
 internal data class AnimeUnityHomeItem(
     val title: String,
@@ -55,39 +66,35 @@ internal data class AnimeUnityHomeItem(
     val episodeNumber: Int?,
 )
 
-internal fun JSONObject.toAnimeUnityHomeItem(episodeNumber: Int? = null): AnimeUnityHomeItem? {
-    if (optNullableInt("id") == null || optNullableString("slug") == null) return null
-    val title = optNullableString("title_it")
-        ?: optNullableString("title_eng")
-        ?: optNullableString("title")
-        ?: return null
-    return AnimeUnityHomeItem(
-        title = title.replace(" (ITA)", "").trim(),
-        type = optNullableString("type"),
-        dub = optNullableInt("dub") == 1 || title.contains("(ITA)"),
-        score = optNullableString("score"),
-        imageUrl = optNullableString("imageurl"),
-        anilistId = optNullableInt("anilist_id"),
-        malId = optNullableInt("mal_id"),
-        availableEpisodes = optNullableInt("episodes_count") ?: optNullableInt("real_episodes_count"),
-        episodeNumber = episodeNumber,
-    )
+internal data class AnimeUnityHomePage(val items: List<SearchResponse>, val hasNext: Boolean)
+
+private data class AnimeUnityHomeCursor(val sitePage: Int, val skip: Int)
+
+private val animeUnityHomeCursors = ConcurrentHashMap<Pair<String, Int>, AnimeUnityHomeCursor>()
+
+internal fun AnimeUnityAnime.toAnimeUnityHomeItems(
+    variants: List<Boolean> = audioVariants(),
+    episodeNumber: (Boolean) -> Int? = { dub -> episodeCount(dub) },
+): List<AnimeUnityHomeItem> {
+    val homeTitle = cleanAnimeUnityTitle(displayTitle())
+    return variants.map { dub ->
+        AnimeUnityHomeItem(
+            title = homeTitle,
+            type = type,
+            dub = dub,
+            score = score,
+            imageUrl = imageUrl,
+            anilistId = anilistId,
+            malId = malId,
+            availableEpisodes = episodeCount(dub),
+            episodeNumber = episodeNumber(dub),
+        )
+    }
 }
 
-internal fun AnimeUnityAnime.toAnimeUnityHomeItem(): AnimeUnityHomeItem? {
-    val homeTitle = titleIt ?: titleEng ?: title ?: return null
-    val episodeCount = episodesCount ?: realEpisodesCount
-    return AnimeUnityHomeItem(
-        title = cleanAnimeUnityTitle(homeTitle),
-        type = type,
-        dub = isDub,
-        score = score,
-        imageUrl = imageUrl,
-        anilistId = anilistId,
-        malId = malId,
-        availableEpisodes = episodeCount,
-        episodeNumber = episodeCount,
-    )
+private fun animeUnityHomeTvType(type: String?): TvType = when (type?.lowercase(Locale.ROOT)) {
+    "movie", "special" -> TvType.AnimeMovie
+    else -> TvType.Anime
 }
 
 internal fun StreamCenter.animeHomeRoutingUrl(malId: Int?, anilistId: Int?): String? {
@@ -153,7 +160,9 @@ internal suspend fun StreamCenter.buildGroupedAnimeUnityHomeResponses(
     limit: Int,
 ): List<SearchResponse> {
     val anilistScores = if (showScore) {
-        aniListMetadataClient.fetchScores(items.mapNotNull { it.anilistId })
+        withTimeoutOrNull(ANIME_HOME_SCORE_TIMEOUT_MS) {
+            aniListMetadataClient.fetchScores(items.filter { it.score == null }.mapNotNull { it.anilistId })
+        }.orEmpty()
     } else {
         emptyMap()
     }
@@ -163,11 +172,7 @@ internal suspend fun StreamCenter.buildGroupedAnimeUnityHomeResponses(
             val baseUrl = animeHomeRoutingUrl(item.malId, item.anilistId) ?: return@mapNotNull null
             val url = "$baseUrl&$animeVariantParam=${if (item.dub) "dub" else "sub"}"
             if (!seen.add(url)) return@mapNotNull null
-            val type = when (item.type) {
-                "Movie", "Special" -> TvType.AnimeMovie
-                else -> TvType.Anime
-            }
-            newAnimeSearchResponse(item.title, url, type) {
+            newAnimeSearchResponse(item.title, url, animeUnityHomeTvType(item.type)) {
                 this.posterUrl = animeUnityPoster(item.imageUrl)
                 if (showDubStatus) {
                     addDubStatus(
@@ -176,7 +181,7 @@ internal suspend fun StreamCenter.buildGroupedAnimeUnityHomeResponses(
                     )
                 }
                 if (showScore) {
-                    (item.anilistId?.let { anilistScores[it] } ?: item.score)?.let {
+                    (item.score ?: item.anilistId?.let { anilistScores[it] })?.let {
                         this.score = Score.from(it, 10)
                     }
                 }
@@ -190,11 +195,7 @@ internal suspend fun StreamCenter.buildGroupedAnimeUnityHomeResponses(
     }
     return groups.entries.take(limit).map { (url, variants) ->
         val primary = variants.firstOrNull { !it.dub } ?: variants.first()
-        val type = when (primary.type) {
-            "Movie", "Special" -> TvType.AnimeMovie
-            else -> TvType.Anime
-        }
-        newAnimeSearchResponse(primary.title, url, type) {
+        newAnimeSearchResponse(primary.title, url, animeUnityHomeTvType(primary.type)) {
             this.posterUrl = variants.firstNotNullOfOrNull { animeUnityPoster(it.imageUrl) }
             if (showDubStatus) {
                 addDubStatus(
@@ -207,9 +208,8 @@ internal suspend fun StreamCenter.buildGroupedAnimeUnityHomeResponses(
                 )
             }
             if (showScore) {
-                val scoreValue = variants.firstNotNullOfOrNull { variant ->
-                    variant.anilistId?.let { anilistScores[it] }
-                } ?: variants.firstNotNullOfOrNull { it.score }
+                val scoreValue = variants.firstNotNullOfOrNull { it.score }
+                    ?: variants.firstNotNullOfOrNull { variant -> variant.anilistId?.let { anilistScores[it] } }
                 scoreValue?.let { this.score = Score.from(it, 10) }
             }
         }
@@ -226,16 +226,24 @@ internal suspend fun StreamCenter.buildBaseCatalogAnimeUnityRecommendations(
         (anilistId != null && recommendation.anilistId == anilistId) ||
             (malId != null && recommendation.malId == malId)
     }
+    val candidates = sources.flatMap(AnimeUnityTitleSources::related) +
+        sources.flatMap(AnimeUnityTitleSources::recommendations)
+    val resolved = if (performanceMode) emptyMap() else {
+        withAnimeUnityTrackingIds(candidates, limit).associateBy(AnimeUnityAnime::id)
+    }
+    val withIds: (AnimeUnityAnime) -> AnimeUnityAnime = { anime -> resolved[anime.id] ?: anime }
     val related = sources
         .flatMap(AnimeUnityTitleSources::related)
+        .map(withIds)
         .filterNot(isCurrentAnime)
     val relatedIds = related.mapTo(mutableSetOf(), AnimeUnityAnime::id)
     val recommendations = sources
         .flatMap(AnimeUnityTitleSources::recommendations)
+        .map(withIds)
         .filterNot { recommendation -> isCurrentAnime(recommendation) || recommendation.id in relatedIds }
     val (_, showDubStatus, showEpisodeNumber) = cardLabelVisibility()
     val relatedResponses = buildGroupedAnimeUnityHomeResponses(
-        items = related.mapNotNull { recommendation -> recommendation.toAnimeUnityHomeItem() },
+        items = related.flatMap { recommendation -> recommendation.toAnimeUnityHomeItems() },
         showDubStatus = showDubStatus,
         showEpisodeNumber = showEpisodeNumber,
         showScore = showCardScores,
@@ -245,7 +253,7 @@ internal suspend fun StreamCenter.buildBaseCatalogAnimeUnityRecommendations(
         relatedResponses
     } else {
         val suggestedResponses = buildGroupedAnimeUnityHomeResponses(
-            items = recommendations.mapNotNull { recommendation -> recommendation.toAnimeUnityHomeItem() },
+            items = recommendations.flatMap { recommendation -> recommendation.toAnimeUnityHomeItems() },
             showDubStatus = showDubStatus,
             showEpisodeNumber = showEpisodeNumber,
             showScore = showCardScores,
@@ -300,49 +308,52 @@ internal suspend fun StreamCenter.buildAniListRecommendationResponses(
     }.distinctBy { it.url }.take(limit)
 }
 
-internal suspend fun StreamCenter.fetchAnimeUnityHtml(path: String): Document =
+internal suspend fun StreamCenter.fetchAnimeUnityJson(path: String): String =
     withSourceDomain(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) {
-        val url = "$animeUnityUrl$path"
-        val html = fetchText {
-            val response = app.get(url, headers = headers, timeout = 5L)
+        fetchText {
+            val response = app.get(
+                "$animeUnityUrl$path",
+                headers = headers + mapOf("Accept" to "application/json", "X-Requested-With" to "XMLHttpRequest"),
+                timeout = 8L,
+            )
             check(response.code in 200..299) { "AnimeUnity Home HTTP ${response.code}" }
             response.text
         }
-        Jsoup.parse(html, url)
     }
 
-internal suspend fun StreamCenter.fetchAnimeUnityCalendarHome(
+private val animeUnityResolvedTrackingIds = ConcurrentHashMap<Int, Pair<Int?, Int?>>()
+
+internal suspend fun StreamCenter.withAnimeUnityTrackingIds(
+    animes: List<AnimeUnityAnime>,
+    limit: Int,
+): List<AnimeUnityAnime> {
+    val missing = animes.distinctBy(AnimeUnityAnime::id)
+        .take(limit)
+        .filter { it.anilistId == null && it.malId == null }
+        .filterNot { animeUnityResolvedTrackingIds.containsKey(it.id) }
+    withTimeoutOrNull(ANIME_UNITY_ID_LOOKUP_TIMEOUT_MS) {
+        missing.mapChunkedParallel(ANIME_UNITY_ID_LOOKUP_PARALLELISM) { anime ->
+            val match = animeUnitySourceClient.fetchArchive(title = anime.title ?: anime.displayTitle())
+                .firstOrNull { it.id == anime.id }
+            animeUnityResolvedTrackingIds[anime.id] = match?.anilistId to match?.malId
+        }
+    }
+    return animes.map { anime ->
+        val (anilistId, malId) = animeUnityResolvedTrackingIds[anime.id] ?: return@map anime
+        if (anime.anilistId != null || anime.malId != null) anime else anime.copy(anilistId = anilistId, malId = malId)
+    }
+}
+
+private suspend fun StreamCenter.buildAnimeUnityEntryResponses(
+    entries: List<Triple<AnimeUnityAnime, Boolean, Int?>>,
     limit: Int,
     showScore: Boolean,
     showDubStatus: Boolean,
     showEpisodeNumber: Boolean,
 ): List<SearchResponse> {
-    val today = normalizeDayName(currentItalianCalendarDayName())
-    val cache = StreamCenterHomeCalendarCache.storage()
-        ?.takeIf { StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref) }
-    val cacheKey = "$animeUnityUrl/calendario"
-    val expiresAt = nextCalendarDayStartMillis()
-    val generation = cache?.generation()
-    val cachedDocument = cache?.read(cacheKey, expiresAt)
-    val doc = cachedDocument?.let { Jsoup.parse(it, cacheKey) }
-        ?: fetchAnimeUnityHtml("/calendario").also { document ->
-            check(document.select("calendario-item").isNotEmpty()) {
-                "AnimeUnity: risposta priva del calendario"
-            }
-            if (cache != null && generation != null && StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref)) {
-                runCatching {
-                    cache.write(cacheKey, document.outerHtml(), expiresAt, generation)
-                }.onFailure { error ->
-                    StreamCenterLogger.logMenuError("Salvataggio cache calendario non riuscito", error)
-                }
-            }
-        }
-    val items = doc.select("calendario-item").mapNotNull { element ->
-        val json = element.attr("a").takeIf(String::isNotBlank) ?: return@mapNotNull null
-        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return@mapNotNull null
-        if (normalizeDayName(obj.optNullableString("day")) != today) return@mapNotNull null
-        val releasedEpisodes = element.attr("episodes_count").trim().toIntOrNull()
-        obj.toAnimeUnityHomeItem(episodeNumber = releasedEpisodes?.plus(1))
+    val resolved = withAnimeUnityTrackingIds(entries.map { it.first }, limit).associateBy(AnimeUnityAnime::id)
+    val items = entries.flatMap { (anime, dub, episodeNumber) ->
+        resolved.getValue(anime.id).toAnimeUnityHomeItems(listOf(dub)) { episodeNumber }
     }
     return buildGroupedAnimeUnityHomeResponses(
         items = items,
@@ -353,32 +364,69 @@ internal suspend fun StreamCenter.fetchAnimeUnityCalendarHome(
     )
 }
 
+internal suspend fun StreamCenter.fetchAnimeUnityCalendarHome(
+    dayOffset: Int,
+    limit: Int,
+    showScore: Boolean,
+    showDubStatus: Boolean,
+    showEpisodeNumber: Boolean,
+): List<SearchResponse> {
+    val targetDay = normalizeDayName(italianCalendarDayName(dayOffset))
+    val cache = StreamCenterHomeCalendarCache.storage()
+        ?.takeIf { StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref) }
+    val cacheKey = "$animeUnityUrl/api/calendar"
+    val expiresAt = nextCalendarDayStartMillis()
+    val generation = cache?.generation()
+    val calendar = cache?.read(cacheKey, expiresAt)
+        ?.let { cached -> runCatching { JSONObject(cached) }.getOrNull() }
+        ?: JSONObject(fetchAnimeUnityJson("/api/calendar")).also { json ->
+            check(json.length() > 0) { "AnimeUnity: risposta priva del calendario" }
+            if (cache != null && generation != null && StreamCenterPlugin.isHomeCalendarCacheEnabled(sharedPref)) {
+                runCatching {
+                    cache.write(cacheKey, json.toString(), expiresAt, generation)
+                }.onFailure { error ->
+                    StreamCenterLogger.logMenuError("Salvataggio cache calendario non riuscito", error)
+                }
+            }
+        }
+    val todayKey = calendar.keys().asSequence()
+        .firstOrNull { key -> normalizeDayName(key.substringBefore(" - ")) == targetDay }
+    val entries = calendar.optJSONArray(todayKey.orEmpty()).objects().mapNotNull { entry ->
+        val anime = entry.optJSONObject("anime")?.toAnimeUnityAnime() ?: return@mapNotNull null
+        Triple(
+            anime,
+            entry.optBoolean("isDub", false),
+            parseWholeAnimeEpisodeNumber(entry.optNullableString("nextEpisodeNumber")),
+        )
+    }
+    return buildAnimeUnityEntryResponses(entries, limit, showScore, showDubStatus, showEpisodeNumber)
+}
+
 internal suspend fun StreamCenter.fetchAnimeUnityLatestHome(
     limit: Int,
     showScore: Boolean,
     showDubStatus: Boolean,
     showEpisodeNumber: Boolean,
 ): List<SearchResponse> {
-    val doc = fetchAnimeUnityHtml("/")
-    val json = doc.selectFirst("#ultimi-episodi layout-items")?.attr("items-json").orEmpty()
-    check(json.isNotBlank()) { "AnimeUnity: risposta Home priva degli ultimi episodi" }
-    val data = JSONObject(json).optJSONArray("data")
-        ?: error("AnimeUnity: dati ultimi episodi non validi")
-    val items = buildList {
-        for (index in 0 until data.length()) {
-            val entry = data.optJSONObject(index) ?: continue
-            val episodeNumber = parseWholeAnimeEpisodeNumber(entry.optNullableString("number"))
-            val animeObj = entry.optJSONObject("anime") ?: continue
-            animeObj.toAnimeUnityHomeItem(episodeNumber = episodeNumber)?.let(::add)
+    val entries = mutableListOf<Triple<AnimeUnityAnime, Boolean, Int?>>()
+    var page = 1
+    while (page <= ANIME_UNITY_LATEST_MAX_PAGES) {
+        val root = JSONObject(fetchAnimeUnityJson("/api/home/latest-episodes?per_page=20&page=$page"))
+        val data = root.optJSONArray("data") ?: error("AnimeUnity: dati ultimi episodi non validi")
+        data.objects().forEach { video ->
+            val episode = video.optJSONObject("episode") ?: return@forEach
+            val anime = episode.optJSONObject("anime")?.toAnimeUnityAnime() ?: return@forEach
+            entries += Triple(
+                anime,
+                video.optNullableString("language") == ANIME_UNITY_DUB_LANGUAGE,
+                parseWholeAnimeEpisodeNumber(episode.optNullableString("number")),
+            )
         }
+        val distinctAnime = entries.distinctBy { it.first.id }.size
+        if (distinctAnime >= limit || page >= (root.optNullableInt("last_page") ?: page)) break
+        page++
     }
-    return buildGroupedAnimeUnityHomeResponses(
-        items = items,
-        showDubStatus = showDubStatus,
-        showEpisodeNumber = showEpisodeNumber,
-        showScore = showScore,
-        limit = limit,
-    )
+    return buildAnimeUnityEntryResponses(entries, limit, showScore, showDubStatus, showEpisodeNumber)
 }
 
 internal suspend fun StreamCenter.fetchAnimeUnityRandomHome(
@@ -391,7 +439,7 @@ internal suspend fun StreamCenter.fetchAnimeUnityRandomHome(
         .coerceAtMost(Int.MAX_VALUE.toLong())
         .toInt()
     val items = animeUnitySourceClient.fetchRandomArchive(requestedCandidates)
-        .mapNotNull { anime -> anime.toAnimeUnityHomeItem() }
+        .flatMap { anime -> anime.toAnimeUnityHomeItems() }
         .let { candidates -> selectAnimeUnityHomeItems(candidates, limit) }
     return buildGroupedAnimeUnityHomeResponses(
         items = items,
@@ -402,96 +450,95 @@ internal suspend fun StreamCenter.fetchAnimeUnityRandomHome(
     )
 }
 
-internal suspend fun StreamCenter.fetchAnimeUnityPopularHome(
+internal suspend fun StreamCenter.fetchAnimeUnityTopHome(
+    section: String,
+    period: String,
     page: Int,
     limit: Int,
     showScore: Boolean,
     showDubStatus: Boolean,
     showEpisodeNumber: Boolean,
-    resolveVariants: Boolean = true,
-): List<SearchResponse> {
-    val items = mutableListOf<AnimeUnityHomeItem>()
-    var currentPage = page
-    while (currentPage <= 5) {
-        val doc = fetchAnimeUnityHtml("/top-anime?order=most_viewed&page=$currentPage")
-        val json = doc.selectFirst("top-anime")?.attr("animes").orEmpty()
-        check(json.isNotBlank()) { "AnimeUnity: risposta priva degli anime popolari" }
-        val data = JSONObject(json).optJSONArray("data")
-            ?: error("AnimeUnity: dati anime popolari non validi")
-        if (data.length() == 0) break
-
-        val pageItems = (0 until data.length()).mapNotNull { index ->
-            data.optJSONObject(index)?.toAnimeUnityHomeItem()
-        }
-        for (batch in pageItems.chunked(POPULAR_HOME_VARIANT_PARALLELISM)) {
-            items += if (resolveVariants) {
-                batch.mapChunkedParallel(POPULAR_HOME_VARIANT_PARALLELISM, this@fetchAnimeUnityPopularHome::fetchAnimeUnityPopularHomeVariants)
-                    .flatten()
-            } else {
-                batch.map { it.copy(episodeNumber = it.availableEpisodes) }
-            }
-            val groupedCount = groupedAnimeUnityHomeCount(items)
-            if (groupedCount >= limit) {
-                return buildGroupedAnimeUnityHomeResponses(
-                    items = items,
-                    showDubStatus = showDubStatus,
-                    showEpisodeNumber = showEpisodeNumber,
-                    showScore = showScore,
-                    limit = limit,
-                )
-            }
-        }
-        currentPage++
+): AnimeUnityHomePage = fetchAnimeUnityPagedHome(
+    section = section,
+    page = page,
+    limit = limit,
+    maxSitePages = ANIME_UNITY_TOP_PAGES_PER_HOME_PAGE,
+    showScore = showScore,
+    showDubStatus = showDubStatus,
+    showEpisodeNumber = showEpisodeNumber,
+) { sitePage ->
+    val path = "/top-anime?period=$period&page=$sitePage"
+    val html = withSourceDomain(StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY) {
+        fetchText { app.get("$animeUnityUrl$path", headers = headers, timeout = 8L).text }
     }
-    return buildGroupedAnimeUnityHomeResponses(
-        items = items,
-        showDubStatus = showDubStatus,
-        showEpisodeNumber = showEpisodeNumber,
-        showScore = showScore,
-        limit = limit,
+    val animes = animeUnityPageProps(html, "$animeUnityUrl$path")?.optJSONObject("animes")
+    val records = animes?.optJSONArray("data")?.toAnimeUnityAnimeList()
+        ?: error("AnimeUnity: risposta priva della classifica")
+    AnimeUnityArchivePage(
+        records = records,
+        lastPage = animes.optNullableInt("last_page") ?: if (records.isEmpty()) sitePage else sitePage + 1,
     )
 }
 
-internal fun StreamCenter.groupedAnimeUnityHomeCount(items: List<AnimeUnityHomeItem>): Int {
-    return items.mapNotNull { animeHomeRoutingUrl(it.malId, it.anilistId) }
-        .distinct()
-        .size
-}
-
-internal suspend fun StreamCenter.fetchAnimeUnityPopularHomeVariants(item: AnimeUnityHomeItem): List<AnimeUnityHomeItem> {
-    val variants = runCatchingCancellable {
-        val syncIds = AnimeSyncIds(
-            anilistId = item.anilistId,
-            malId = item.malId,
-            kitsuId = null,
-        )
-        animeUnitySourceClient.findVariants(
-            syncIds,
-            listOf(item.title),
-            exactTitleKeys = setOf(sourceTitleDedupKey(item.title)),
-            allowTitleFallback = true,
-        )
-            .map { anime ->
-                AnimeUnityHomeItem(
-                    title = cleanAnimeUnityTitle(anime.displayTitle()),
-                    type = anime.type,
-                    dub = anime.isDub,
-                    score = anime.score ?: item.score,
-                    imageUrl = anime.imageUrl ?: item.imageUrl,
-                    anilistId = anime.anilistId,
-                    malId = anime.malId,
-                    availableEpisodes = anime.episodesCount ?: anime.realEpisodesCount ?: item.availableEpisodes,
-                    episodeNumber = anime.episodesCount ?: anime.realEpisodesCount ?: item.availableEpisodes,
-                )
+private suspend fun StreamCenter.fetchAnimeUnityPagedHome(
+    section: String,
+    page: Int,
+    limit: Int,
+    maxSitePages: Int,
+    showScore: Boolean,
+    showDubStatus: Boolean,
+    showEpisodeNumber: Boolean,
+    fetchSitePage: suspend (Int) -> AnimeUnityArchivePage,
+): AnimeUnityHomePage {
+    val groupVariants = StreamCenterPlugin.shouldGroupAnimeVariants(sharedPref)
+    val items = mutableListOf<AnimeUnityHomeItem>()
+    val cards = mutableSetOf<String>()
+    var cursor = animeUnityHomeStart(section, page, limit)
+    var hasNext = true
+    var loadedPages = 0
+    while (hasNext && cards.size < limit && loadedPages < maxSitePages) {
+        val sitePage = fetchSitePage(cursor.sitePage)
+        loadedPages++
+        val records = sitePage.records.drop(cursor.skip)
+        var used = 0
+        while (used < records.size && cards.size < limit) {
+            val variants = records[used++].toAnimeUnityHomeItems()
+            items += variants
+            variants.forEach { item ->
+                val url = animeHomeRoutingUrl(item.malId, item.anilistId) ?: return@forEach
+                cards += if (groupVariants) url else "$url:${item.dub}"
             }
-    }.getOrDefault(emptyList())
-    return variants.ifEmpty {
-        listOf(item.copy(episodeNumber = item.availableEpisodes))
+        }
+        if (used < records.size) {
+            cursor = cursor.copy(skip = cursor.skip + used)
+        } else {
+            hasNext = cursor.sitePage < sitePage.lastPage
+            cursor = AnimeUnityHomeCursor(cursor.sitePage + 1, 0)
+        }
     }
+    animeUnityHomeCursors[section to page + 1] = cursor
+    return AnimeUnityHomePage(
+        items = buildGroupedAnimeUnityHomeResponses(
+            items = items,
+            showDubStatus = showDubStatus,
+            showEpisodeNumber = showEpisodeNumber,
+            showScore = showScore,
+            limit = cards.size,
+        ),
+        hasNext = hasNext,
+    )
 }
 
-internal fun StreamCenter.currentItalianCalendarDayName(): String {
-    return when (Calendar.getInstance().get(Calendar.DAY_OF_WEEK)) {
+private fun animeUnityHomeStart(section: String, page: Int, limit: Int): AnimeUnityHomeCursor {
+    if (page <= 1) return AnimeUnityHomeCursor(1, 0)
+    val offset = (page - 1) * limit
+    return animeUnityHomeCursors[section to page]
+        ?: AnimeUnityHomeCursor(offset / AU_ARCHIVE_BATCH_SIZE + 1, offset % AU_ARCHIVE_BATCH_SIZE)
+}
+
+internal fun StreamCenter.italianCalendarDayName(dayOffset: Int = 0): String {
+    val day = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, dayOffset) }
+    return when (day.get(Calendar.DAY_OF_WEEK)) {
         Calendar.MONDAY -> "Lunedì"
         Calendar.TUESDAY -> "Martedì"
         Calendar.WEDNESDAY -> "Mercoledì"
@@ -566,17 +613,14 @@ internal suspend fun StreamCenter.searchAnimeUnity(
     page: Int,
     enrich: Boolean = true,
 ): Pair<List<SearchResponse>, Boolean> {
-    val records = animeUnitySourceClient.fetchArchive(
-        title = query,
-        offset = (page - 1) * AU_ARCHIVE_BATCH_SIZE,
-    )
+    val records = animeUnitySourceClient.fetchArchive(title = query, page = page)
     val anilistIds = records.mapNotNull { it.anilistId }
     val (anilistScores, anilistTitleAliases) = if (enrich && anilistIds.isNotEmpty()) {
         coroutineScope {
             val scoresJob = async(Dispatchers.IO) {
                 if (!showCardScores) return@async emptyMap<Int, String>()
                 withTimeoutOrNull(ANIME_SEARCH_ENRICHMENT_TIMEOUT_MS) {
-                    aniListMetadataClient.fetchScores(anilistIds)
+                    aniListMetadataClient.fetchScores(records.filter { it.score == null }.mapNotNull { it.anilistId })
                 }.orEmpty()
             }
             val aliasesJob = async(Dispatchers.IO) {
@@ -589,33 +633,31 @@ internal suspend fun StreamCenter.searchAnimeUnity(
     } else {
         emptyMap<Int, String>() to emptyMap<Int, List<String>>()
     }
+    val hasNext = records.size >= AU_ARCHIVE_BATCH_SIZE
     if (!StreamCenterPlugin.shouldGroupAnimeVariants(sharedPref)) {
         val seen = mutableSetOf<String>()
-        val items = records.mapNotNull { anime ->
-            val baseUrl = animeHomeRoutingUrl(anime.malId, anime.anilistId) ?: return@mapNotNull null
-            val url = "$baseUrl&$animeVariantParam=${if (anime.isDub) "dub" else "sub"}"
-            if (!seen.add(url)) return@mapNotNull null
-            val type = if (anime.type.equals("Movie", ignoreCase = true)) {
-                TvType.AnimeMovie
-            } else {
-                TvType.Anime
-            }
+        val items = records.flatMap { anime ->
+            val baseUrl = animeHomeRoutingUrl(anime.malId, anime.anilistId) ?: return@flatMap emptyList()
             val displayedTitle = cleanAnimeUnityTitle(anime.displayTitle())
             val aliases = anime.searchTitleAliases(anilistTitleAliases[anime.anilistId].orEmpty())
-            registerSearchTitleAliases(url, aliases)
-            newAnimeSearchResponse(displayedTitle, url, type) {
-                this.posterUrl = animeUnityPoster(anime.imageUrl)
-                this.year = anime.year
-                this.otherName = aliases.firstOrNull { alias ->
-                    sourceTitleDedupKey(alias) != sourceTitleDedupKey(displayedTitle)
+            anime.audioVariants().mapNotNull { dub ->
+                val url = "$baseUrl&$animeVariantParam=${if (dub) "dub" else "sub"}"
+                if (!seen.add(url)) return@mapNotNull null
+                registerSearchTitleAliases(url, aliases)
+                newAnimeSearchResponse(displayedTitle, url, animeUnitySearchTvType(anime.type)) {
+                    this.posterUrl = animeUnityPoster(anime.imageUrl)
+                    this.year = anime.year
+                    this.otherName = aliases.firstOrNull { alias ->
+                        sourceTitleDedupKey(alias) != sourceTitleDedupKey(displayedTitle)
+                    }
+                    (anime.score ?: anime.anilistId?.let { anilistScores[it] })?.let {
+                        this.score = Score.from(it, 10)
+                    }
+                    addDubStatus(dubExist = dub, subExist = !dub)
                 }
-                (anime.anilistId?.let { anilistScores[it] } ?: anime.score)?.let {
-                    this.score = Score.from(it, 10)
-                }
-                addDubStatus(dubExist = anime.isDub, subExist = !anime.isDub)
             }
         }
-        return items to (records.size >= AU_ARCHIVE_BATCH_SIZE)
+        return items to hasNext
     }
     val groups = linkedMapOf<String, MutableList<AnimeUnityAnime>>()
     records.forEach { anime ->
@@ -623,65 +665,53 @@ internal suspend fun StreamCenter.searchAnimeUnity(
         groups.getOrPut(url) { mutableListOf() } += anime
     }
     val items = groups.map { (url, variants) ->
-        val primary = variants.firstOrNull { !it.isDub } ?: variants.first()
-        val type = if (primary.type.equals("Movie", ignoreCase = true)) {
-            TvType.AnimeMovie
-        } else {
-            TvType.Anime
-        }
+        val primary = variants.firstOrNull { it.hasSub } ?: variants.first()
         val displayedTitle = cleanAnimeUnityTitle(primary.displayTitle())
         val aliases = variants.flatMap { anime ->
             anime.searchTitleAliases(anilistTitleAliases[anime.anilistId].orEmpty())
         }
         registerSearchTitleAliases(url, aliases)
-        newAnimeSearchResponse(displayedTitle, url, type) {
+        newAnimeSearchResponse(displayedTitle, url, animeUnitySearchTvType(primary.type)) {
             this.posterUrl = variants.firstNotNullOfOrNull { animeUnityPoster(it.imageUrl) }
             this.year = variants.firstNotNullOfOrNull { it.year }
             this.otherName = aliases.firstOrNull { alias ->
                 sourceTitleDedupKey(alias) != sourceTitleDedupKey(displayedTitle)
             }
-            val scoreValue = variants.firstNotNullOfOrNull { variant ->
-                variant.anilistId?.let { anilistScores[it] }
-            } ?: variants.firstNotNullOfOrNull { it.score }
+            val scoreValue = variants.firstNotNullOfOrNull { it.score }
+                ?: variants.firstNotNullOfOrNull { variant -> variant.anilistId?.let { anilistScores[it] } }
             scoreValue?.let { this.score = Score.from(it, 10) }
             addDubStatus(
-                dubExist = variants.any { it.isDub },
-                subExist = variants.any { !it.isDub },
+                dubExist = variants.any { it.hasDub },
+                subExist = variants.any { it.hasSub },
             )
         }
     }
-    return items to (records.size >= AU_ARCHIVE_BATCH_SIZE)
+    return items to hasNext
 }
 
+private fun animeUnitySearchTvType(type: String?): TvType =
+    if (type.equals("movie", ignoreCase = true)) TvType.AnimeMovie else TvType.Anime
+
 internal fun AnimeUnityAnime.searchTitleAliases(metadataAliases: Collection<String>): List<String> {
-    return (listOf(titleIt, titleEng, title, displayTitle()) + metadataAliases)
+    return (listOf(titleIt, title, titleJa, displayTitle()) + metadataAliases)
         .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
         .distinctBy(::sourceTitleDedupKey)
 }
 
 internal suspend fun StreamCenter.fetchAnimeUnityArchiveHome(
+    section: String,
     filters: StreamCenterAnimeArchiveFilters,
-    offset: Int,
+    page: Int,
     limit: Int,
     showScore: Boolean,
     showDubStatus: Boolean,
     showEpisodeNumber: Boolean,
-): List<SearchResponse> {
-    val records = buildList {
-        var nextOffset = offset
-        while (size.toLong() < limit.toLong() * 3L) {
-            val batch = animeUnitySourceClient.fetchArchive(filters, nextOffset)
-            addAll(batch)
-            if (batch.size < AU_ARCHIVE_BATCH_SIZE) break
-            nextOffset += batch.size
-        }
-    }
-    val items = records.mapNotNull { anime -> anime.toAnimeUnityHomeItem() }
-    return buildGroupedAnimeUnityHomeResponses(
-        items,
-        showDubStatus = showDubStatus,
-        showEpisodeNumber = showEpisodeNumber,
-        showScore = showScore,
-        limit = limit,
-    )
-}
+): AnimeUnityHomePage = fetchAnimeUnityPagedHome(
+    section = section,
+    page = page,
+    limit = limit,
+    maxSitePages = (limit * 3 + AU_ARCHIVE_BATCH_SIZE - 1) / AU_ARCHIVE_BATCH_SIZE,
+    showScore = showScore,
+    showDubStatus = showDubStatus,
+    showEpisodeNumber = showEpisodeNumber,
+) { sitePage -> animeUnitySourceClient.fetchArchivePage(filters, sitePage) }

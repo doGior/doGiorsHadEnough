@@ -1,6 +1,7 @@
 package it.dogior.hadEnough
 
 import it.dogior.hadEnough.extensions.InstalledExtensionSources
+import it.dogior.hadEnough.anime.source.AnimeUnityArchiveCatalog
 
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
 import it.dogior.hadEnough.catalog.StreamCenterHomeImports
@@ -19,6 +20,7 @@ import it.dogior.hadEnough.cache.StreamCenterHomeCalendarCache
 import it.dogior.hadEnough.torrent.StreamCenterExtCloudflareSession
 import it.dogior.hadEnough.torrent.StreamCenterTorrentPreferences
 import it.dogior.hadEnough.util.StreamCenterLogger
+import it.dogior.hadEnough.util.StreamCenterDevice
 import it.dogior.hadEnough.util.StreamCenterVpnGuard
 
 import android.content.Context
@@ -88,9 +90,17 @@ data class StreamCenterAnimeArchiveFilters(
     val type: String? = null,
     val season: String? = null,
     val dubbed: Boolean = false,
+    val excludedGenreIds: List<Int> = emptyList(),
+    val yearTo: Int? = null,
+    val country: String? = null,
+    val source: String? = null,
+    val studios: Map<Int, String> = emptyMap(),
 ) {
     val selectedGenreIds: List<Int>
         get() = genreIds.filter { it > 0 }.distinct()
+
+    val selectedExcludedGenreIds: List<Int>
+        get() = excludedGenreIds.filter { it > 0 && it !in genreIds }.distinct()
 }
 
 data class StreamCenterTvArchiveFilters(
@@ -181,6 +191,9 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_ANIME_CUSTOM_SECTIONS = "animeCustomSections"
         const val PREF_ANIME_CUSTOM_SECTION_COUNTER = "animeCustomSectionCounter"
         const val ANIME_CUSTOM_SECTION_PREFIX = "anime_custom_"
+        private const val ANIME_FILTER_GENRES_KEY = "genres"
+        private const val ANIME_FILTER_LEGACY_GENRES_KEY = "genreIds"
+        private const val ANIME_FILTER_EXCLUDED_GENRES_KEY = "genresExclude"
         const val PREF_TV_CUSTOM_SECTIONS = "tvCustomSections"
         const val PREF_TV_CUSTOM_SECTION_COUNTER = "tvCustomSectionCounter"
         const val TV_CUSTOM_SECTION_PREFIX = "tv_custom_"
@@ -207,11 +220,11 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_URL_VIXSRC = "urlVixSrc"
         const val PREF_URL_VIDXGO = "urlVidxGo"
 
-        const val DEFAULT_URL_ANIMEUNITY = "https://www.animeunity.to"
+        const val DEFAULT_URL_ANIMEUNITY = "https://animeunity.cx"
         const val DEFAULT_URL_ANIMEWORLD = "https://www.animeworld.ac"
         const val DEFAULT_URL_ANIMESATURN = "https://www.animesaturn.net"
-        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.boo"
-        const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.co"
+        const val DEFAULT_URL_STREAMINGCOMMUNITY = "https://streamingcommunityz.mov"
+        const val DEFAULT_URL_VIXCLOUD = "https://vixcloud.cc"
         const val DEFAULT_URL_VIXSRC = "https://vixsrc.to"
         const val DEFAULT_URL_VIDXGO = "https://v.vidxgo.co"
 
@@ -222,6 +235,9 @@ class StreamCenterPlugin : Plugin() {
         const val PREF_AUTO_UPDATE_SOURCE_URLS = "autoUpdateSourceUrls"
         const val PREF_TMDB_SEARCH_FALLBACK = "tmdbSearchFallback"
         const val PREF_ONE_TAP_PLAYBACK = "oneTapPlayback"
+        const val PREF_ANIME_AUDIO_PREFERENCE = "animeAudioPreference"
+        const val ANIME_AUDIO_SUB = "sub"
+        const val ANIME_AUDIO_DUB = "dub"
         const val PREF_REMOTE_CONTROL = "remoteControl"
 
         const val PREF_ANILIST_RPM = "anilistRequestsPerMinute"
@@ -305,6 +321,36 @@ class StreamCenterPlugin : Plugin() {
                 key = "anime_random",
                 data = "au:random",
                 defaultCount = DEFAULT_HOME_COUNT,
+            ),
+            StreamCenterHomeSectionDefinition(
+                key = "anime_calendar_tomorrow",
+                data = "au:calendar:tomorrow",
+                defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
+            ),
+            StreamCenterHomeSectionDefinition(
+                key = "anime_top_day",
+                data = "au:top:day",
+                defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
+            ),
+            StreamCenterHomeSectionDefinition(
+                key = "anime_top_week",
+                data = "au:top:week",
+                defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
+            ),
+            StreamCenterHomeSectionDefinition(
+                key = "anime_top_month",
+                data = "au:top:month",
+                defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
+            ),
+            StreamCenterHomeSectionDefinition(
+                key = "anime_upcoming",
+                data = "au:upcoming",
+                defaultCount = DEFAULT_HOME_COUNT,
+                defaultEnabled = false,
             ),
             StreamCenterHomeSectionDefinition(
                 key = "tv_trending",
@@ -522,7 +568,10 @@ class StreamCenterPlugin : Plugin() {
             sharedPref?.getBoolean(PREF_HOME_CALENDAR_CACHE_ENABLED, false) ?: false
 
         fun isTmdbScoreCacheEnabled(sharedPref: SharedPreferences?): Boolean =
-            sharedPref?.getBoolean(PREF_TMDB_SCORE_CACHE_ENABLED, true) ?: true
+            sharedPref?.getBoolean(PREF_TMDB_SCORE_CACHE_ENABLED, defaultTmdbScoreCacheEnabled())
+                ?: defaultTmdbScoreCacheEnabled()
+
+        fun defaultTmdbScoreCacheEnabled(): Boolean = !StreamCenterDevice.isLowPower(activeContext)
 
         fun isLazyHomeEnabled(sharedPref: SharedPreferences?): Boolean =
             sharedPref?.getBoolean(PREF_LAZY_HOME, true) ?: true
@@ -813,6 +862,7 @@ class StreamCenterPlugin : Plugin() {
                 remove(PREF_AUTO_UPDATE_SOURCE_URLS)
                 remove(PREF_TMDB_SEARCH_FALLBACK)
                 remove(PREF_ONE_TAP_PLAYBACK)
+                remove(PREF_ANIME_AUDIO_PREFERENCE)
                 remove(PREF_REMOTE_CONTROL)
                 remove(StreamCenterTmdbUserAgent.PREF_KEY)
                 stremioEnabledKeys.forEach { key -> remove(key) }
@@ -908,6 +958,9 @@ class StreamCenterPlugin : Plugin() {
 
         fun isOneTapPlaybackEnabled(sharedPref: SharedPreferences?): Boolean =
             sharedPref?.getBoolean(PREF_ONE_TAP_PLAYBACK, false) ?: false
+
+        fun prefersDubbedAnime(sharedPref: SharedPreferences?): Boolean =
+            sharedPref?.getString(PREF_ANIME_AUDIO_PREFERENCE, ANIME_AUDIO_SUB) == ANIME_AUDIO_DUB
 
         fun isRemoteControlEnabled(sharedPref: SharedPreferences?): Boolean =
             sharedPref?.getBoolean(PREF_REMOTE_CONTROL, false) ?: false
@@ -1216,6 +1269,11 @@ class StreamCenterPlugin : Plugin() {
                 "anime_calendar" -> "Anime: calendario (%Giorno%)"
                 "anime_latest" -> "Anime: ultimi episodi"
                 "anime_random" -> "Anime: random"
+                "anime_calendar_tomorrow" -> "Anime: calendario di domani"
+                "anime_top_day" -> "Anime: più visti di oggi"
+                "anime_top_week" -> "Anime: più visti della settimana"
+                "anime_top_month" -> "Anime: più visti del mese"
+                "anime_upcoming" -> "Anime: in arrivo"
                 "tv_trending" -> "Serie TV: titoli del momento"
                 "tv_catch_up" -> "Serie da continuare"
                 "tv_latest" -> "Serie TV: aggiunte di recente"
@@ -1627,15 +1685,14 @@ class StreamCenterPlugin : Plugin() {
             val raw = sharedPref?.getString(animeCustomFiltersKey(sectionKey), null) ?: return null
             return runCatching {
                 val json = JSONObject(raw)
-                val genreIds = json.optJSONArray("genreIds")
-                    ?.let { values ->
-                        buildList {
-                            for (index in 0 until values.length()) {
-                                values.optInt(index).takeIf { it > 0 }?.let(::add)
-                            }
-                        }
-                    }
-                    .orEmpty()
+                fun ids(key: String): List<Int> = json.optJSONArray(key)?.let { values ->
+                    (0 until values.length()).mapNotNull { index -> values.optInt(index).takeIf { it > 0 } }
+                }.orEmpty()
+                val genreIds = if (json.has(ANIME_FILTER_GENRES_KEY)) {
+                    ids(ANIME_FILTER_GENRES_KEY)
+                } else {
+                    ids(ANIME_FILTER_LEGACY_GENRES_KEY).mapNotNull(AnimeUnityArchiveCatalog::genreFromLegacyId)
+                }
                 StreamCenterAnimeArchiveFilters(
                     genreIds = genreIds,
                     year = json.optInt("year").takeIf { it > 0 },
@@ -1644,6 +1701,17 @@ class StreamCenterPlugin : Plugin() {
                     type = json.optString("type").takeIf { it.isNotBlank() },
                     season = json.optString("season").takeIf { it.isNotBlank() },
                     dubbed = json.optBoolean("dubbed", false),
+                    excludedGenreIds = ids(ANIME_FILTER_EXCLUDED_GENRES_KEY),
+                    yearTo = json.optInt("yearTo").takeIf { it > 0 },
+                    country = json.optString("country").takeIf { it.isNotBlank() },
+                    source = json.optString("source").takeIf { it.isNotBlank() },
+                    studios = json.optJSONArray("studios")?.let { values ->
+                        (0 until values.length()).mapNotNull { index ->
+                            val studio = values.optJSONObject(index) ?: return@mapNotNull null
+                            val id = studio.optInt("id").takeIf { it > 0 } ?: return@mapNotNull null
+                            id to studio.optString("name").ifBlank { id.toString() }
+                        }.toMap()
+                    }.orEmpty(),
                 )
             }.getOrNull()
         }
@@ -1670,13 +1738,22 @@ class StreamCenterPlugin : Plugin() {
 
         private fun animeFiltersToJson(filters: StreamCenterAnimeArchiveFilters): String = JSONObject().apply {
             val genreIds = filters.selectedGenreIds
-            if (genreIds.isNotEmpty()) put("genreIds", JSONArray(genreIds))
+            put(ANIME_FILTER_GENRES_KEY, JSONArray(genreIds))
             filters.year?.let { put("year", it) }
             filters.order?.let { put("order", it) }
             filters.status?.let { put("status", it) }
             filters.type?.let { put("type", it) }
             filters.season?.let { put("season", it) }
             put("dubbed", filters.dubbed)
+            filters.selectedExcludedGenreIds.takeIf { it.isNotEmpty() }?.let { put(ANIME_FILTER_EXCLUDED_GENRES_KEY, JSONArray(it)) }
+            filters.yearTo?.let { put("yearTo", it) }
+            filters.country?.let { put("country", it) }
+            filters.source?.let { put("source", it) }
+            if (filters.studios.isNotEmpty()) {
+                put("studios", JSONArray().apply {
+                    filters.studios.forEach { (id, name) -> put(JSONObject().put("id", id).put("name", name)) }
+                })
+            }
         }.toString()
 
         fun deleteAnimeCustomSection(sharedPref: SharedPreferences?, sectionKey: String) {
@@ -2165,6 +2242,7 @@ class StreamCenterPlugin : Plugin() {
 
         it.dogior.hadEnough.localsync.StreamCenterLocalSyncAutoRunner.attach(context.applicationContext)
         it.dogior.hadEnough.settings.StreamCenterBundledLogos.install(filename)
+        it.dogior.hadEnough.settings.StreamCenterResultTrackingButton.install(context)
         it.dogior.hadEnough.subtitles.StreamCenterAssSubtitles.install(context, filename) {
             isLibassSubtitlesEnabled(sharedPref)
         }

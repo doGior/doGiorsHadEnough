@@ -4,7 +4,6 @@ import android.content.SharedPreferences
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
-import it.dogior.hadEnough.anime.source.ANIME_UNITY_SESSION_PREF
 import it.dogior.hadEnough.serie_movie.STREAMING_COMMUNITY_SESSION_PREF
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Deferred
@@ -13,7 +12,7 @@ import kotlinx.coroutines.async
 internal object StreamCenterHomeReuse {
     private const val WINDOW_MS = 5 * 60_000L
     private val localSections = setOf(REMOTE_QUEUE_SECTION_DATA, "library:catch_up")
-    private val runtimeKeys = setOf(ANIME_UNITY_SESSION_PREF, STREAMING_COMMUNITY_SESSION_PREF)
+    private val runtimeKeys = setOf(STREAMING_COMMUNITY_SESSION_PREF)
 
     private data class Key(val api: String, val page: Int, val request: MainPageRequest)
 

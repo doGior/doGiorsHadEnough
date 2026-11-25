@@ -94,7 +94,6 @@ import it.dogior.hadEnough.anime.source.sourceTitleDedupKey
 import it.dogior.hadEnough.anime.source.sourceTitleScore
 import it.dogior.hadEnough.anime.source.cleanAnimeUnityTitle
 import it.dogior.hadEnough.anime.source.displayTitle
-import it.dogior.hadEnough.anime.source.isDub
 import it.dogior.hadEnough.anime.source.AnimeWorldSourceClient
 import it.dogior.hadEnough.anime.source.AnimeSaturnSourceClient
 import it.dogior.hadEnough.anime.source.AnimeUnitySourceClient
@@ -395,7 +394,6 @@ class StreamCenter internal constructor(
     }
 
     internal fun clearRuntimeConfiguration() {
-        animeUnitySourceClient.resetSession()
         streamingCommunityClient.resetSession()
     }
 
@@ -421,41 +419,6 @@ class StreamCenter internal constructor(
     internal suspend fun presentedMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val response = getUngroupedMainPage(page, request)
         return response.copy(items = response.items.map { it.copy(list = presentedCards(it.list)) })
-    }
-
-    internal fun JSONObject.toAnimeUnityHomeItem(episodeNumber: Int? = null): AnimeUnityHomeItem? {
-        if (optNullableInt("id") == null || optNullableString("slug") == null) return null
-        val title = optNullableString("title_it")
-            ?: optNullableString("title_eng")
-            ?: optNullableString("title")
-            ?: return null
-        return AnimeUnityHomeItem(
-            title = title.replace(" (ITA)", "").trim(),
-            type = optNullableString("type"),
-            dub = optNullableInt("dub") == 1 || title.contains("(ITA)"),
-            score = optNullableString("score"),
-            imageUrl = optNullableString("imageurl"),
-            anilistId = optNullableInt("anilist_id"),
-            malId = optNullableInt("mal_id"),
-            availableEpisodes = optNullableInt("episodes_count") ?: optNullableInt("real_episodes_count"),
-            episodeNumber = episodeNumber,
-        )
-    }
-
-    internal fun AnimeUnityAnime.toAnimeUnityHomeItem(): AnimeUnityHomeItem? {
-        val homeTitle = titleIt ?: titleEng ?: title ?: return null
-        val episodeCount = episodesCount ?: realEpisodesCount
-        return AnimeUnityHomeItem(
-            title = cleanAnimeUnityTitle(homeTitle),
-            type = type,
-            dub = isDub,
-            score = score,
-            imageUrl = imageUrl,
-            anilistId = anilistId,
-            malId = malId,
-            availableEpisodes = episodeCount,
-            episodeNumber = episodeCount,
-        )
     }
 
     internal fun JSONArray.toStreamingCommunityHomeResponses(
@@ -592,12 +555,6 @@ class StreamCenter internal constructor(
             if (!translation.optNullableString("key").equals("name", ignoreCase = true)) continue
             translation.optNullableString("value")?.let(::add)
         }
-    }
-
-    internal fun AnimeUnityAnime.searchTitleAliases(metadataAliases: Collection<String>): List<String> {
-        return (listOf(titleIt, titleEng, title, displayTitle()) + metadataAliases)
-            .mapNotNull { it?.trim()?.takeIf(String::isNotBlank) }
-            .distinctBy(::sourceTitleDedupKey)
     }
 
     internal fun <T : LoadResponse> T.withCardProvenance(
@@ -885,7 +842,10 @@ class StreamCenter internal constructor(
         internal const val SEARCH_ALTERNATIVE_TITLE_PENALTY = 8
         internal const val TRACKING_PROVIDER_PAGE_SIZE = 30
         internal const val AU_ARCHIVE_BATCH_SIZE = 30
-        internal const val POPULAR_HOME_VARIANT_PARALLELISM = 4
+        internal const val ANIME_UNITY_ID_LOOKUP_PARALLELISM = 4
+        internal const val ANIME_UNITY_ID_LOOKUP_TIMEOUT_MS = 2_500L
+        internal const val ANIME_UNITY_LATEST_MAX_PAGES = 5
+        internal const val ANIME_UNITY_TOP_PAGES_PER_HOME_PAGE = 3
         internal const val RANDOM_HOME_CANDIDATE_FACTOR = 3L
         internal const val AU_ARCHIVE_QUERY_LIMIT = 8
         internal const val AU_ARCHIVE_QUERY_LIMIT_PERFORMANCE = 4
@@ -904,6 +864,7 @@ class StreamCenter internal constructor(
         internal const val SC_TITLE_LOOKUP_TIMEOUT_MS = 15_000L
         internal const val SC_EPISODE_DETAILS_TIMEOUT_MS = 20_000L
         internal const val ANIME_SEARCH_ENRICHMENT_TIMEOUT_MS = 5_000L
+        internal const val ANIME_HOME_SCORE_TIMEOUT_MS = 2_500L
         internal const val SEQUENTIAL_MAIN_PAGE_SCROLL_DELAY_MS = 300L
         internal val ANILIST_RECOMMENDATIONS_QUERY = """
             query(${'$'}id: Int) {

@@ -1,5 +1,6 @@
 package it.dogior.hadEnough.util
 
+import android.util.Log
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
@@ -23,6 +24,7 @@ object StreamCenterLogger {
     const val PREF_RETENTION_LOG_COUNT = "loggingRetentionLogCount"
 
     private const val LOG_DIRECTORY_NAME = "streamcenter-logs"
+    private const val LOGCAT_TAG = "StreamCenterLog"
     private const val LOG_FILE_PREFIX = "streamcenter-log-"
     private const val LOG_FILE_EXTENSION = ".jsonl"
     private const val LOG_FORMAT_VERSION = 2
@@ -506,6 +508,7 @@ object StreamCenterLogger {
     }
 
     private fun appendJsonLine(file: File, value: JSONObject): Boolean {
+        Log.i(LOGCAT_TAG, value.toString())
         return runCatching {
             BufferedWriter(
                 OutputStreamWriter(FileOutputStream(file, true), StandardCharsets.UTF_8),

@@ -156,7 +156,6 @@ internal suspend fun <T> StreamCenter.withSourceDomain(prefKey: String, request:
 internal fun StreamCenter.resetSourceSession(prefKey: String) {
     when (prefKey) {
         StreamCenterPlugin.PREF_SOURCE_STREAMINGCOMMUNITY -> streamingCommunityClient.resetSession()
-        StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY -> animeUnitySourceClient.resetSession()
     }
 }
 

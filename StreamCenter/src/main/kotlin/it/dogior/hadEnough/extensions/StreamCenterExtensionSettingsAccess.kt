@@ -40,6 +40,10 @@ internal class StreamCenterExtensionSettingsAccess(private val loader: ClassLoad
     fun watchPartyManager(plugin: Plugin): Any = plugin.javaClass.getDeclaredField("manager")
         .apply { isAccessible = true }.get(plugin)!!
 
+    fun bindSyncStreamPlugin(plugin: Plugin) {
+        plugin.javaClass.getDeclaredField("activePlugin").apply { isAccessible = true }.set(null, plugin)
+    }
+
     private fun <T> invoke(block: () -> T): T = try {
         block()
     } catch (error: InvocationTargetException) {
@@ -71,6 +75,7 @@ internal object StreamCenterOptionalExtensions {
     const val PRISYNX = "prisynx"
     const val WATCH_ADVANCED = "watchparty-advanced"
     const val ITALIAVERSE = "utility-ItaliaVerse"
+    const val SYNCSTREAM = "utility-SyncStream"
     val entries = listOf(
         StreamCenterOptionalExtension(PRISYNX, StreamCenterPriSynx.NAME, StreamCenterPriSynx.AUTHOR,
             "Fonti e cataloghi di PriSynx Center", "🧩"),
@@ -79,6 +84,7 @@ internal object StreamCenterOptionalExtensions {
             "SleepGuard" -> "sleepguard.SleepGuardSettingsFragment" to "sg_close"
             "WatchParty" -> "watchparty.WatchPartySettingsFragmentCloudStream" to "wp_close"
             "Wrapped" -> "wrapped.WrappedFragment" to "wrapped_close"
+            "SyncStream" -> "SyncSettingsFragment" to null
             "ItaliaVerse" -> null to null
             else -> error("Estensione opzionale non supportata")
         }

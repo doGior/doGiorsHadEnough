@@ -334,6 +334,7 @@ class StreamCenterOptionalExtensionSettingsFragment : StreamCenterBaseSettingsFr
             }) { "Pannello WatchParty non compatibile" }
         }
         val access = StreamCenterExtensionSettingsAccess(plugin)
+        if (entry.key == StreamCenterOptionalExtensions.SYNCSTREAM) access.bindSyncStreamPlugin(plugin)
         if (entry.name == "WatchParty") {
             val manager = access.watchPartyManager(plugin)
             callbackNames.forEach { access.call(manager, "get$it") }
@@ -344,8 +345,9 @@ class StreamCenterOptionalExtensionSettingsFragment : StreamCenterBaseSettingsFr
             entry.name == "WatchParty" -> arrayOf(plugin, access.watchPartyManager(plugin))
             else -> arrayOf(plugin)
         }
-        val constructor = type.constructors.single { it.parameterTypes.size == args.size }
-        return (constructor.newInstance(*args) as DialogFragment).apply { showsDialog = false }
+        val constructor = type.constructors.singleOrNull { it.parameterTypes.size == args.size }
+        val panel = constructor?.newInstance(*args) ?: type.getConstructor().newInstance()
+        return (panel as DialogFragment).apply { showsDialog = false }
     }
 
     private fun pluginView(root: View, plugin: Plugin, name: String?): View? {

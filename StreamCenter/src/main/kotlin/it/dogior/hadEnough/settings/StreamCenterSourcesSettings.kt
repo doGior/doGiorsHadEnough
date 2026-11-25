@@ -141,6 +141,7 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         renderRows()
 
         content.addView(sectionHeading("Riproduzione"))
+        content.addView(animeAudioPreferenceRow())
         content.addView(switchRow(
             title = "Riproduzione con un tasto",
             summary = "In prova · impara quali fonti partono meglio, avvia subito la più affidabile",
@@ -180,6 +181,48 @@ class StreamCenterSourcesSettingsFragment : StreamCenterSupportSettingsFragment(
         preloadStreamingSourceIcons()
 
         return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    private fun animeAudioLabel(): String =
+        if (StreamCenterPlugin.prefersDubbedAnime(sharedPref)) "Doppiato (DUB) prima" else "Sottotitolato (SUB) prima"
+
+    private fun animeAudioPreferenceRow(): View {
+        val selectedAudio = bodyText(animeAudioLabel(), 12)
+        val arrow = chevron(COLOR_ACCENT)
+        return settingsRow(
+            title = "Audio anime preferito",
+            icon = "\uD83C\uDF99\uFE0F",
+            accent = COLOR_ACCENT,
+            fillColor = COLOR_CARD_ALT,
+            summaryView = selectedAudio,
+            onReset = {
+                sharedPref?.edit { remove(StreamCenterPlugin.PREF_ANIME_AUDIO_PREFERENCE) }
+                selectedAudio.text = animeAudioLabel()
+            },
+            trailingViews = listOf(arrow),
+            touchTarget = arrow,
+            fixedHeight = true,
+        ) {
+            showSettingsChoiceDialog(
+                title = "Audio anime preferito",
+                options = listOf(
+                    SettingsChoiceOption("Sottotitolato (SUB) prima", StreamCenterPlugin.ANIME_AUDIO_SUB, "\uD83C\uDDEF\uD83C\uDDF5"),
+                    SettingsChoiceOption("Doppiato (DUB) prima", StreamCenterPlugin.ANIME_AUDIO_DUB, "\uD83C\uDDEE\uD83C\uDDF9"),
+                ),
+                selectedValue = if (StreamCenterPlugin.prefersDubbedAnime(sharedPref)) {
+                    StreamCenterPlugin.ANIME_AUDIO_DUB
+                } else {
+                    StreamCenterPlugin.ANIME_AUDIO_SUB
+                },
+                accent = COLOR_ACCENT,
+                closeLabel = "Chiudi",
+                defaultValue = StreamCenterPlugin.ANIME_AUDIO_SUB,
+            ) { selected ->
+                sharedPref?.edit { putString(StreamCenterPlugin.PREF_ANIME_AUDIO_PREFERENCE, selected.value) }
+                selectedAudio.text = selected.label
+                saveToast("Vale dal prossimo episodio che apri")
+            }
+        }.view
     }
 
     override fun onStart() {

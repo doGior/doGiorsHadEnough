@@ -29,13 +29,11 @@ internal data class AnimeUnityAnime(
     val id: Int,
     val slug: String,
     val title: String?,
-    val titleEng: String?,
+    val titleJa: String?,
     val titleIt: String?,
-    val dub: Int,
+    val episodeCounts: Map<String, Int>,
     val anilistId: Int?,
     val malId: Int?,
-    val episodesCount: Int?,
-    val realEpisodesCount: Int?,
     val plot: String? = null,
     val imageUrl: String? = null,
     val score: String? = null,
@@ -44,8 +42,8 @@ internal data class AnimeUnityAnime(
 )
 
 internal data class AnimeUnityEpisodeInfo(
-    val id: Int,
     val number: String,
+    val videoIds: Map<String, Int>,
 )
 
 internal data class AnimeUnityPageData(

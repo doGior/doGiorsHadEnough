@@ -49,6 +49,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private companion object {
         val CONTAINER_ID = View.generateViewId()
         const val MENU_TAG = "StreamCenterMenu"
+        const val SCROLL_RESTORE_WINDOW_MS = 1_200L
     }
 
     private var backButton: TextView? = null
@@ -66,6 +67,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
     private var returningToPreviousScreen = false
     private val focusTrail = mutableListOf<List<Int>?>()
     private var pendingFocusRestore: List<Int>? = null
+    private val scrollTrail = mutableListOf<Int>()
+    private var pendingScrollRestore: Int? = null
 
     private val screenLifecycleCallbacks = object : FragmentManager.FragmentLifecycleCallbacks() {
         override fun onFragmentViewCreated(
@@ -75,6 +78,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             savedInstanceState: Bundle?,
         ) {
             syncBar()
+            restoreScreenScroll(view)
             restoreScreenFocus(view)
         }
     }
@@ -165,6 +169,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         clearSearch()
         focusTrail.clear()
         pendingFocusRestore = null
+        scrollTrail.clear()
+        pendingScrollRestore = null
         childFragmentManager.popBackStackImmediate(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
         childFragmentManager.beginTransaction()
             .replace(CONTAINER_ID, StreamCenterMenuFragment(), MENU_TAG)
@@ -313,6 +319,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         returningToPreviousScreen = false
         focusTrail.add(currentScreen()?.view?.let(::focusPathIn))
         pendingFocusRestore = null
+        scrollTrail.add(currentScreen()?.view?.let(::screenScrollView)?.scrollY ?: 0)
+        pendingScrollRestore = null
         StreamCenterSettingsNavigation.configure(childFragmentManager.beginTransaction())
             .replace(CONTAINER_ID, fragment, tag)
             .addToBackStack(tag)
@@ -324,6 +332,7 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         if (childFragmentManager.isStateSaved) return true
         returningToPreviousScreen = true
         pendingFocusRestore = focusTrail.removeLastOrNull()
+        pendingScrollRestore = scrollTrail.removeLastOrNull()
         childFragmentManager.popBackStack()
         return true
     }
@@ -334,6 +343,8 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
         returningToPreviousScreen = true
         pendingFocusRestore = focusTrail.firstOrNull()
         focusTrail.clear()
+        pendingScrollRestore = scrollTrail.firstOrNull()
+        scrollTrail.clear()
         childFragmentManager.popBackStack(null, FragmentManager.POP_BACK_STACK_INCLUSIVE)
     }
 
@@ -346,6 +357,27 @@ class StreamCenterSettings : StreamCenterBaseSettingsFragment() {
             node = parent
         }
         return path.asReversed()
+    }
+
+    private fun screenScrollView(root: View): ScrollView? {
+        val queue = ArrayDeque<View>().apply { add(root) }
+        while (queue.isNotEmpty()) {
+            val node = queue.removeFirst()
+            if (node is ScrollView) return node
+            if (node is ViewGroup) for (index in 0 until node.childCount) queue.add(node.getChildAt(index))
+        }
+        return null
+    }
+
+    private fun restoreScreenScroll(screenView: View) {
+        val offset = pendingScrollRestore?.takeIf { it > 0 } ?: return
+        pendingScrollRestore = null
+        val scrollView = screenScrollView(screenView) ?: return
+        val content = scrollView.getChildAt(0) ?: return
+        val follower = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> scrollView.scrollTo(0, offset) }
+        content.addOnLayoutChangeListener(follower)
+        scrollView.post { scrollView.scrollTo(0, offset) }
+        scrollView.postDelayed({ content.removeOnLayoutChangeListener(follower) }, SCROLL_RESTORE_WINDOW_MS)
     }
 
     private fun restoreScreenFocus(screenView: View) {

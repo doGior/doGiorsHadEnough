@@ -70,6 +70,7 @@ internal object StreamCenterSettingsIndex {
                         when (extension.key) {
                             StreamCenterOptionalExtensions.PRISYNX -> "prisync cataloghi provider ordine topx kitsu raiplay torrent"
                             StreamCenterOptionalExtensions.ITALIAVERSE -> "diegon repository megarepo"
+                            StreamCenterOptionalExtensions.SYNCSTREAM -> "sincronizzazione backup google drive github dispositivi continua a guardare"
                             else -> "italiainstreaming diegon"
                         },
                 )
@@ -138,6 +139,14 @@ internal object StreamCenterSettingsIndex {
             screen = SettingsScreenId.SOURCES,
             keywords = "avvio automatico migliore fonte link play subito salta elenco affidabile timeout",
             toggle = booleanPref(StreamCenterPlugin.PREF_ONE_TAP_PLAYBACK, false),
+        ),
+        SettingsIndexEntry(
+            title = "Audio anime preferito",
+            trail = "Fonti › Riproduzione",
+            icon = "\uD83C\uDF99\uFE0F",
+            accent = COLOR_ACCENT,
+            screen = SettingsScreenId.SOURCES,
+            keywords = "dub sub doppiato sottotitolato ita jpn lingua audio ordine link episodio anime",
         ),
         SettingsIndexEntry(
             title = "Cerca su TMDB se non ci sono risultati",
@@ -513,7 +522,7 @@ internal object StreamCenterSettingsIndex {
             accent = COLOR_ACCENT,
             screen = SettingsScreenId.CACHE,
             keywords = "voto punteggio rating tmdb svuota veloce home",
-            toggle = booleanPref(StreamCenterPlugin.PREF_TMDB_SCORE_CACHE_ENABLED, true),
+            toggle = booleanPref(StreamCenterPlugin.PREF_TMDB_SCORE_CACHE_ENABLED, StreamCenterPlugin.defaultTmdbScoreCacheEnabled()),
         ),
         SettingsIndexEntry(
             title = "Home progressiva",

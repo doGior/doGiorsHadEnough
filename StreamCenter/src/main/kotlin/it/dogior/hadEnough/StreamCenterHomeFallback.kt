@@ -17,6 +17,11 @@ private val aniListHomeFallbacks = mapOf(
     "au:latest" to "anilist_airing",
     "au:popular" to "anilist_popular",
     "au:random" to "anilist_trending",
+    "au:calendar:tomorrow" to "anilist_airing",
+    "au:top:day" to "anilist_trending",
+    "au:top:week" to "anilist_trending",
+    "au:top:month" to "anilist_popular",
+    "au:upcoming" to "anilist_upcoming",
 )
 
 private val tmdbHomeFallbacks = mapOf(

@@ -8,7 +8,7 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
-import it.dogior.hadEnough.StreamCenter.Companion.AU_ARCHIVE_BATCH_SIZE
+import it.dogior.hadEnough.anime.source.AnimeUnityArchiveCatalog
 import it.dogior.hadEnough.catalog.*
 import it.dogior.hadEnough.extensions.*
 import it.dogior.hadEnough.extractor.*
@@ -140,9 +140,11 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
             "punteggi_visibili" to showHomeScores,
         ),
     )
+    var pagedHasNext: Boolean? = null
     val loadItems: suspend () -> List<SearchResponse> = loadItems@{
         when {
             data == "au:calendar" -> fetchAnimeUnityCalendarHome(
+                0,
                 limit,
                 showHomeScores,
                 showAnimeDubStatus,
@@ -160,26 +162,56 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
                 showAnimeDubStatus,
                 showAnimeEpisodeNumber,
             )
-            data == "au:popular" -> fetchAnimeUnityPopularHome(
-                page,
+            data == "au:calendar:tomorrow" -> fetchAnimeUnityCalendarHome(
+                1,
                 limit,
                 showHomeScores,
                 showAnimeDubStatus,
                 showAnimeEpisodeNumber,
-                resolveVariants = !performanceMode,
             )
+            data.startsWith("au:top:") -> fetchAnimeUnityTopHome(
+                section = data,
+                period = data.substringAfter("au:top:"),
+                page = page,
+                limit = limit,
+                showScore = showHomeScores,
+                showDubStatus = showAnimeDubStatus,
+                showEpisodeNumber = showAnimeEpisodeNumber,
+            ).also { pagedHasNext = it.hasNext }.items
+            data == "au:upcoming" -> fetchAnimeUnityArchiveHome(
+                section = data,
+                filters = StreamCenterAnimeArchiveFilters(
+                    order = AnimeUnityArchiveCatalog.ORDER_LATEST,
+                    status = AnimeUnityArchiveCatalog.STATUS_UPCOMING,
+                ),
+                page = page,
+                limit = limit,
+                showScore = showHomeScores,
+                showDubStatus = showAnimeDubStatus,
+                showEpisodeNumber = showAnimeEpisodeNumber,
+            ).also { pagedHasNext = it.hasNext }.items
+            data == "au:popular" -> fetchAnimeUnityArchiveHome(
+                section = data,
+                filters = StreamCenterAnimeArchiveFilters(order = AnimeUnityArchiveCatalog.ORDER_POPULARITY),
+                page = page,
+                limit = limit,
+                showScore = showHomeScores,
+                showDubStatus = showAnimeDubStatus,
+                showEpisodeNumber = showAnimeEpisodeNumber,
+            ).also { pagedHasNext = it.hasNext }.items
             data.startsWith("au:archive:") -> {
                 val sectionKey = data.substringAfter("au:archive:")
                 val filters = StreamCenterPlugin.getAnimeCustomSectionFilters(sharedPref, sectionKey)
                     ?: return@loadItems emptyList()
                 fetchAnimeUnityArchiveHome(
+                    section = data,
                     filters = filters,
-                    offset = (page - 1) * AU_ARCHIVE_BATCH_SIZE,
+                    page = page,
                     limit = limit,
                     showScore = showHomeScores,
                     showDubStatus = showAnimeDubStatus,
                     showEpisodeNumber = showAnimeEpisodeNumber,
-                )
+                ).also { pagedHasNext = it.hasNext }.items
             }
             data.startsWith("sc:archive:tv_custom:") -> {
                 val sectionKey = data.substringAfter("sc:archive:tv_custom:")
@@ -212,7 +244,7 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
     val sourceKey = homeSectionSourceKey(data)
     val sourceReachable = sourceKey == null || isSourceReachableNow(sourceKey)
     var loadTimedOut = false
-    val itemsResult = if (!sourceReachable && data != "au:calendar") Result.success(emptyList()) else runCatchingCancellable {
+    val itemsResult = if (!sourceReachable && !data.startsWith("au:calendar")) Result.success(emptyList()) else runCatchingCancellable {
         if (data.startsWith("au:")) {
             withTimeoutOrNull(6_000L) { loadItems() } ?: run {
                 loadTimedOut = true
@@ -247,10 +279,8 @@ internal suspend fun StreamCenter.getUngroupedMainPage(page: Int, request: MainP
     if (page == 1 && sourceKey != null && !fallback?.items.isNullOrEmpty()) announceHomeFallback(sourceKey)
     val items = fallback?.items ?: itemsResult.getOrDefault(emptyList())
 
-    val hasNext = fallback?.hasNext ?: ((
-        data == "au:popular" ||
-            data.startsWith("au:archive:") ||
-            data.startsWith("sc:archive:tv_custom:") ||
+    val hasNext = fallback?.hasNext ?: pagedHasNext ?: ((
+        data.startsWith("sc:archive:tv_custom:") ||
             data.startsWith("sc:archive:movie_custom:")
         ) && items.size >= limit)
     val title = StreamCenterPlugin.resolveHomeTitlePlaceholders(

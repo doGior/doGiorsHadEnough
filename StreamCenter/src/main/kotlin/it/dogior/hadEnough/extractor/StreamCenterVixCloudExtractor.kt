@@ -12,7 +12,7 @@ class StreamCenterVixCloudExtractor(
     private val sourceName: String = "VixCloud",
     private val displayName: String = "AnimeUnity",
 ) : ExtractorApi() {
-    override val mainUrl = "vixcloud.co"
+    override val mainUrl = "vixcloud.cc"
     override val name = "StreamCenterVixCloud"
     override val requiresReferer = false
     private val headers = mapOf(
@@ -32,7 +32,7 @@ class StreamCenterVixCloudExtractor(
             newExtractorLink(
                 source = sourceName,
                 name = displayName,
-                url = getPlaylistLink(url),
+                url = getPlaylistLink(url, referer),
                 type = ExtractorLinkType.M3U8,
             ) {
                 this.headers = this@StreamCenterVixCloudExtractor.headers
@@ -40,12 +40,15 @@ class StreamCenterVixCloudExtractor(
         )
     }
 
-    private suspend fun getPlaylistLink(url: String): String {
-        return StreamCenterVixParser.playlistUrl(getScript(url))
+    private suspend fun getPlaylistLink(url: String, referer: String?): String {
+        return StreamCenterVixParser.playlistUrl(getScript(url, referer))
     }
 
-    private suspend fun getScript(url: String): JSONObject {
-        val script = app.get(url, headers = headers).document
+    private suspend fun getScript(url: String, referer: String?): JSONObject {
+        val requestHeaders = referer?.takeIf(String::isNotBlank)
+            ?.let { headers + ("Referer" to it) }
+            ?: headers
+        val script = app.get(url, headers = requestHeaders).document
             .select("script")
             .firstOrNull { it.data().contains("masterPlaylist") }
             ?.data()

@@ -1,6 +1,7 @@
 package it.dogior.hadEnough.settings
 
 import it.dogior.hadEnough.*
+import it.dogior.hadEnough.anime.source.AnimeUnityArchiveCatalog
 import it.dogior.hadEnough.catalog.StreamCenterCatalogDefinition
 import it.dogior.hadEnough.catalog.StreamCenterCatalogSection
 import it.dogior.hadEnough.catalog.StreamCenterCatalogs
@@ -49,7 +50,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import org.jsoup.Connection
 import org.jsoup.Jsoup
 import java.util.Locale
 import it.dogior.hadEnough.tmdb.StreamCenterTmdbApiClient
@@ -81,6 +81,7 @@ private data class HomeRowState(
 
 class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
     private companion object {
+        const val MULTI_PICKER_FULL_LIST_LIMIT = 60
         val ORDER_ONLY_SECTIONS = setOf("tv_catch_up")
     }
 
@@ -883,18 +884,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
         }
     }
 
-    private fun animeGenres(): List<Pair<Int, String>> = listOf(
-        51 to "Action", 21 to "Adventure", 43 to "Avant Garde", 59 to "Boys Love",
-        37 to "Comedy", 13 to "Demons", 22 to "Drama", 5 to "Ecchi", 9 to "Fantasy",
-        44 to "Game", 58 to "Girls Love", 52 to "Gore", 56 to "Gourmet", 15 to "Harem", 4 to "Hentai",
-        30 to "Historical", 3 to "Horror", 53 to "Isekai", 45 to "Josei", 14 to "Kids",
-        57 to "Mahou Shoujo", 31 to "Martial Arts", 38 to "Mecha", 46 to "Military",
-        16 to "Music", 24 to "Mystery", 32 to "Parody", 39 to "Police", 47 to "Psychological",
-        29 to "Racing", 54 to "Reincarnation", 17 to "Romance", 25 to "Samurai", 33 to "School",
-        40 to "Sci-fi", 49 to "Seinen", 18 to "Shoujo", 34 to "Shounen", 50 to "Slice of Life",
-        19 to "Space", 27 to "Sports", 35 to "Super Power", 42 to "Supernatural", 55 to "Survival",
-        48 to "Thriller", 20 to "Vampire",
-    )
+    private fun animeGenres(): List<Pair<Int, String>> = AnimeUnityArchiveCatalog.genres
 
     private fun normalizedCustomSectionName(value: String): String {
         return value.trim().replace(Regex("\\s+"), " ")
@@ -1660,6 +1650,10 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
         var status: String? = existing?.status
         var type: String? = existing?.type
         var season: String? = existing?.season
+        var country: String? = existing?.country
+        var source: String? = existing?.source
+        val excludedGenreIds = linkedSetOf<Int>().apply { addAll(existing?.selectedExcludedGenreIds.orEmpty()) }
+        val selectedStudios = linkedMapOf<Int, String>().apply { putAll(existing?.studios.orEmpty()) }
         val filterRowHeight = dp(60)
         val accent = categoryAccent("anime")
 
@@ -1685,6 +1679,7 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
             if (option == "Qualsiasi") return "•"
             return when (label) {
                 "Ordine" -> when (option) {
+                    "Più recenti" -> "N"
                     "A-Z" -> "A"
                     "Z-A" -> "Z"
                     "Popolarità" -> "P"
@@ -1779,7 +1774,12 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             filters = arrayOf(InputFilter.LengthFilter(4))
         }
-        val yearField = formInput("Anno", yearInput, "Qualsiasi")
+        val yearField = formInput("Anno (da)", yearInput, "Qualsiasi")
+        val yearToInput = input(existing?.yearTo?.toString().orEmpty()).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            filters = arrayOf(InputFilter.LengthFilter(4))
+        }
+        val yearToField = formInput("Fino all'anno", yearToInput, "Come «Anno»")
 
         fun resolvedAnimeSectionName(value: String, fallbackName: String): String {
             return resolvedCustomSectionName(
@@ -1810,43 +1810,15 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                 sharedPref,
                 StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY,
             ).ifBlank { StreamCenterPlugin.DEFAULT_URL_ANIMEUNITY }.trimEnd('/')
-            val archiveUrl = "$baseUrl/archivio"
-            val archiveResponse = Jsoup.connect(archiveUrl)
-                .userAgent("Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Chrome/131 Safari/537.36")
-                .header("Accept-Language", "it-IT,it;q=0.9")
-                .timeout(15_000)
-                .execute()
-            val csrfToken = Jsoup.parse(archiveResponse.body(), archiveUrl)
-                .selectFirst("meta[name=csrf-token]")
-                ?.attr("content")
-                ?.trim()
-                ?.takeIf(String::isNotBlank)
-                ?: error("Token di AnimeUnity non disponibile")
-            val requestBody = JSONObject().apply {
-                put("title", "")
-                put("type", false)
-                put("year", year)
-                put("order", false)
-                put("status", false)
-                put("genres", false)
-                put("season", false)
-                put("dubbed", 0)
-                put("offset", 0)
-            }.toString()
-            val response = Jsoup.connect("$archiveUrl/get-animes")
-                .method(Connection.Method.POST)
+            val query = AnimeUnityArchiveCatalog.query(StreamCenterAnimeArchiveFilters(year = year))
+            val response = Jsoup.connect("$baseUrl/api/archive?$query")
                 .userAgent("Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Chrome/131 Safari/537.36")
                 .header("Accept", "application/json")
-                .header("Content-Type", "application/json;charset=UTF-8")
-                .header("X-CSRF-TOKEN", csrfToken)
                 .header("X-Requested-With", "XMLHttpRequest")
-                .header("Referer", archiveUrl)
-                .cookies(archiveResponse.cookies())
-                .requestBody(requestBody)
                 .ignoreContentType(true)
                 .timeout(15_000)
                 .execute()
-            return JSONObject(response.body()).optJSONArray("records")?.length()?.let { it > 0 } == true
+            return JSONObject(response.body()).optJSONArray("data")?.length()?.let { it > 0 } == true
         }
 
         fun validateAnimeUnityYear(rawValue: String) {
@@ -1912,24 +1884,32 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
         yearInput.doAfterTextChanged { validateAnimeUnityYear(it?.toString().orEmpty()) }
         yearInput.text?.toString()?.takeIf(String::isNotBlank)?.let(::validateAnimeUnityYear)
         val genres = animeGenres()
-        fun selectedGenreValue(): String = when (selectedGenreIds.size) {
-            0 -> "Qualsiasi"
-            1 -> genres.firstOrNull { it.first in selectedGenreIds }?.second ?: "Qualsiasi"
-            else -> "${selectedGenreIds.size} generi"
-        }
-        val genreChoice = filterChoice("Genere", emptyList(), ::selectedGenreValue, interactive = false) { }
-        genreChoice.setOnClickListener {
-            val pendingGenreIds = linkedSetOf<Int>().apply { addAll(selectedGenreIds) }
+        fun selectionValue(selected: Collection<Int>, plural: String, name: (Int) -> String?): String =
+            when (selected.size) {
+                0 -> "Qualsiasi"
+                1 -> name(selected.first()) ?: "Qualsiasi"
+                else -> "${selected.size} $plural"
+            }
+        val genreName: (Int) -> String? = { id -> genres.firstOrNull { it.first == id }?.second }
+
+        fun showMultiPicker(
+            title: String,
+            options: List<Pair<Int, String>>,
+            selected: MutableSet<Int>,
+            searchHint: String,
+            onDone: () -> Unit,
+        ) {
+            val pending = linkedSetOf<Int>().apply { addAll(selected) }
             val searchInput = input("").apply {
-                hint = "Cerca genere"
+                hint = searchHint
                 layoutParams = verticalParams()
             }
-            val genreList = LinearLayout(ctx).apply {
+            val optionList = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
             }
-            val genreScroll = ScrollView(ctx).apply {
+            val optionScroll = ScrollView(ctx).apply {
                 isVerticalScrollBarEnabled = false
-                addView(genreList)
+                addView(optionList)
                 enableTvFocusScrolling()
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1937,81 +1917,145 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                 ).apply { topMargin = dp(8) }
             }
 
-            fun renderGenres(query: String = "") {
-                val shownGenres = genres.filter { it.second.contains(query, ignoreCase = true) }
-                genreList.removeAllViews()
+            fun render(query: String = "") {
+                val matching = options.filter { it.second.contains(query, ignoreCase = true) }
+                val shown = if (query.isBlank() && options.size > MULTI_PICKER_FULL_LIST_LIMIT) {
+                    matching.filter { it.first in pending } +
+                        matching.filterNot { it.first in pending }.take(MULTI_PICKER_FULL_LIST_LIMIT)
+                } else matching
+                optionList.removeAllViews()
                 val clearSelection = settingsRow(
                     title = "Qualsiasi",
-                    icon = if (pendingGenreIds.isEmpty()) "✓" else "×",
+                    icon = if (pending.isEmpty()) "✓" else "×",
                     accent = accent,
                     fillColor = COLOR_CARD_ALT,
-                    strokeColor = if (pendingGenreIds.isEmpty()) accent else COLOR_STROKE,
+                    strokeColor = if (pending.isEmpty()) accent else COLOR_STROKE,
                 ) {
-                    pendingGenreIds.clear()
-                    renderGenres(searchInput.text?.toString().orEmpty())
+                    pending.clear()
+                    render(searchInput.text?.toString().orEmpty())
                 }
-                if (pendingGenreIds.isEmpty()) clearSelection.title.setTextColor(Color.parseColor(accent))
-                genreList.addView(clearSelection.view)
-                val rowViews = mutableListOf<View>()
-                if (shownGenres.isEmpty()) {
-                    genreList.addView(bodyText("Nessun genere trovato", 13).apply {
+                if (pending.isEmpty()) clearSelection.title.setTextColor(Color.parseColor(accent))
+                optionList.addView(clearSelection.view)
+                if (shown.isEmpty()) {
+                    optionList.addView(bodyText("Nessun risultato", 13).apply {
                         setTextColor(Color.parseColor(COLOR_MUTED))
                         setPadding(dp(4), dp(14), dp(4), dp(14))
                     })
                     return
                 }
-                shownGenres.forEach { genre ->
-                    val selected = genre.first in pendingGenreIds
-                    val row = settingsRow(
-                        title = genre.second,
-                        icon = if (selected) "✓" else "+",
+                val rowViews = shown.map { option ->
+                    val isSelected = option.first in pending
+                    settingsRow(
+                        title = option.second,
+                        icon = if (isSelected) "✓" else "+",
                         accent = accent,
                         fillColor = COLOR_CARD_ALT,
-                        strokeColor = if (selected) accent else COLOR_STROKE,
+                        strokeColor = if (isSelected) accent else COLOR_STROKE,
                         topMargin = 8,
                     ) {
-                        if (!pendingGenreIds.add(genre.first)) pendingGenreIds.remove(genre.first)
-                        renderGenres(searchInput.text?.toString().orEmpty())
-                    }
-                    if (selected) row.title.setTextColor(Color.parseColor(accent))
-                    rowViews.add(row.view)
+                        if (!pending.add(option.first)) pending.remove(option.first)
+                        render(searchInput.text?.toString().orEmpty())
+                    }.also { row ->
+                        if (isSelected) row.title.setTextColor(Color.parseColor(accent))
+                    }.view
                 }
-                addAdaptiveCardGrid(genreList, rowViews)
+                addAdaptiveCardGrid(optionList, rowViews)
+                if (shown.size < matching.size) {
+                    optionList.addView(bodyText("Cerca per vedere gli altri ${matching.size - shown.size}", 12).apply {
+                        setTextColor(Color.parseColor(COLOR_MUTED))
+                        setPadding(dp(4), dp(12), dp(4), dp(4))
+                    })
+                }
             }
             val pickerContent = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(20), dp(20), dp(20), dp(20))
                 addView(searchInput)
-                addView(genreScroll)
+                addView(optionScroll)
             }
             val picker = AlertDialog.Builder(ctx)
-                .setCustomTitle(dialogTitle("Genere"))
+                .setCustomTitle(dialogTitle(title))
                 .setView(pickerContent)
                 .setPositiveButton("Fatto", null)
                 .setNegativeButton("Chiudi", null)
                 .create()
-            searchInput.doAfterTextChanged { renderGenres(it?.toString().orEmpty()) }
-            renderGenres()
+            searchInput.doAfterTextChanged { render(it?.toString().orEmpty()) }
+            render()
             showCompactActionDialog(picker)
             makeSectionCreationDialogSlightlyTaller(picker)
             picker.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener {
-                selectedGenreIds.clear()
-                selectedGenreIds.addAll(pendingGenreIds)
-                genreChoice.text = filterText("Genere", selectedGenreValue())
+                selected.clear()
+                selected.addAll(pending)
+                onDone()
                 picker.dismiss()
             }
         }
-        val orderChoice = filterChoice("Ordine", listOf("A-Z", "Z-A", "Popolarità", "Valutazione"), { order }) {
+
+        val genreChoice = filterChoice("Genere", emptyList(), {
+            selectionValue(selectedGenreIds, "generi", genreName)
+        }, interactive = false) { }
+        genreChoice.setOnClickListener {
+            showMultiPicker("Genere", genres, selectedGenreIds, "Cerca genere") {
+                genreChoice.text = filterText("Genere", selectionValue(selectedGenreIds, "generi", genreName))
+            }
+        }
+        val excludedGenreChoice = filterChoice("Generi esclusi", emptyList(), {
+            selectionValue(excludedGenreIds, "generi", genreName)
+        }, interactive = false) { }
+        excludedGenreChoice.setOnClickListener {
+            showMultiPicker("Generi esclusi", genres, excludedGenreIds, "Cerca genere") {
+                excludedGenreChoice.text = filterText("Generi esclusi", selectionValue(excludedGenreIds, "generi", genreName))
+            }
+        }
+        val studioChoice = filterChoice("Studio", emptyList(), {
+            selectionValue(selectedStudios.keys, "studi") { selectedStudios[it] }
+        }, interactive = false) { }
+        var loadingStudios = false
+        studioChoice.setOnClickListener {
+            if (loadingStudios) return@setOnClickListener
+            loadingStudios = true
+            val baseUrl = StreamCenterPlugin.getSourceBaseUrl(sharedPref, StreamCenterPlugin.PREF_SOURCE_ANIMEUNITY)
+                .ifBlank { StreamCenterPlugin.DEFAULT_URL_ANIMEUNITY }
+            CoroutineScope(Dispatchers.IO).launch {
+                val result = runCatching {
+                    StreamCenterVpnGuard.requireInternetAccess(sharedPref)
+                    AnimeUnityArchiveCatalog.studios(baseUrl, "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Chrome/131 Safari/537.36")
+                }
+                withContext(Dispatchers.Main) {
+                    loadingStudios = false
+                    if (!isAdded) return@withContext
+                    val studios = result.getOrNull() ?: run {
+                        saveToast("Impossibile caricare gli studi da AnimeUnity")
+                        return@withContext
+                    }
+                    val names = studios.toMap()
+                    val selectedIds = linkedSetOf<Int>().apply { addAll(selectedStudios.keys) }
+                    showMultiPicker("Studio", studios, selectedIds, "Cerca studio") {
+                        val previous = selectedStudios.toMap()
+                        selectedStudios.clear()
+                        selectedIds.forEach { id -> selectedStudios[id] = names[id] ?: previous[id] ?: id.toString() }
+                        studioChoice.text = filterText("Studio", selectionValue(selectedStudios.keys, "studi") { selectedStudios[it] })
+                    }
+                }
+            }
+        }
+        val orderChoice = filterChoice("Ordine", AnimeUnityArchiveCatalog.orders.keys.toList(), { order }) {
             order = it
         }
-        val statusChoice = filterChoice("Stato", listOf("In Corso", "Terminato", "In Uscita", "Droppato"), { status }) {
+        val statusChoice = filterChoice("Stato", AnimeUnityArchiveCatalog.statuses.keys.toList(), { status }) {
             status = it
         }
-        val typeChoice = filterChoice("Tipo", listOf("TV", "TV Short", "OVA", "ONA", "Special", "Movie"), { type }) {
+        val typeChoice = filterChoice("Tipo", AnimeUnityArchiveCatalog.types.keys.toList(), { type }) {
             type = it
         }
-        val seasonChoice = filterChoice("Stagione", listOf("Inverno", "Primavera", "Estate", "Autunno"), { season }) {
+        val seasonChoice = filterChoice("Stagione", AnimeUnityArchiveCatalog.seasons.keys.toList(), { season }) {
             season = it
+        }
+        val countryChoice = filterChoice("Paese", AnimeUnityArchiveCatalog.countries.keys.toList(), { country }) {
+            country = it
+        }
+        val sourceChoice = filterChoice("Fonte", AnimeUnityArchiveCatalog.sources.keys.toList(), { source }) {
+            source = it
         }
         val dubSwitch = styledSwitch(existing?.dubbed == true, categoryAccent("anime"),
             defaultChecked = false, resetTitle = "Doppiaggio",
@@ -2068,11 +2112,16 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
             listOf(
                 nameField,
                 genreChoice,
+                excludedGenreChoice,
                 yearField,
+                yearToField,
                 orderChoice,
                 statusChoice,
                 typeChoice,
                 seasonChoice,
+                studioChoice,
+                countryChoice,
+                sourceChoice,
                 dubRow,
                 countRow,
             ),
@@ -2104,6 +2153,16 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                 return false
             }
             if (!hasValidAnimeUnityYear()) return false
+            val yearFrom = yearInput.text?.toString()?.toIntOrNull()
+            val yearToText = yearToInput.text?.toString()?.trim().orEmpty()
+            val yearTo = yearToText.toIntOrNull()
+            if (yearToText.isNotEmpty() && (yearToText.length != 4 || yearTo == null || (yearFrom != null && yearTo < yearFrom))) {
+                yearToInput.error = if (yearFrom != null && yearTo != null && yearTo < yearFrom) {
+                    "Deve essere uguale o successivo a «Anno»"
+                } else "Inserisci un anno di quattro cifre"
+                yearToInput.requestFocus()
+                return false
+            }
             val filters = StreamCenterAnimeArchiveFilters(
                 genreIds = selectedGenreIds.toList(),
                 year = yearInput.text?.toString()?.toIntOrNull(),
@@ -2112,6 +2171,11 @@ class StreamCenterHomeSettingsFragment : StreamCenterSectionEditingFragment() {
                 type = type,
                 season = season,
                 dubbed = dubSwitch.isChecked,
+                excludedGenreIds = excludedGenreIds.toList(),
+                yearTo = yearTo,
+                country = country,
+                source = source,
+                studios = selectedStudios.toMap(),
             )
             val count = normalizedCount(
                 countInput.text?.toString(),

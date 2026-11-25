@@ -19,6 +19,7 @@ import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.syncproviders.SyncIdName
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import it.dogior.hadEnough.StreamCenterPlugin
+import it.dogior.hadEnough.anime.metadata.DisabledAnimeTracking
 import it.dogior.hadEnough.util.StreamCenterLogger
 import org.json.JSONArray
 import org.json.JSONObject
@@ -170,6 +171,7 @@ internal object StreamCenterTrackingOverrides {
         override: TrackingIdOverride?,
         showAsTags: Boolean,
         visibleServices: Set<TrackingIdService>,
+        restoreTags: Boolean = false,
     ): Boolean {
         val values = override?.values?.takeIf { it.isNotEmpty() } ?: return false
         val hadIdTags = response.tags.orEmpty().any { idTagRegex.containsMatchIn(it) }
@@ -185,7 +187,7 @@ internal object StreamCenterTrackingOverrides {
                 )
             }
         }
-        if (showAsTags && hadIdTags) {
+        if (showAsTags && (hadIdTags || restoreTags)) {
             val detected = detectedIds(response)
             val ids = StreamCenterTrackingIds(
                 anilist = detected[ManualTrackingService.ANILIST]?.toIntOrNull(),
@@ -206,6 +208,23 @@ internal object StreamCenterTrackingOverrides {
             },
         )
         return true
+    }
+
+    fun reapply(response: LoadResponse, prefs: SharedPreferences?, key: String, restoreTags: Boolean): Boolean {
+        if (response.syncData is DisabledAnimeTracking) return false
+        val detected = seen(key)?.detected
+        val manual = override(prefs, key)?.values.orEmpty()
+        val values = ManualTrackingService.entries.mapNotNull { service ->
+            val value = manual[service] ?: if (detected == null) null else detected[service] ?: DISABLED
+            value?.let { service to it }
+        }.toMap()
+        return applyOverride(
+            response = response,
+            override = TrackingIdOverride(key, "", response.name, null, null, null, values, System.currentTimeMillis()),
+            showAsTags = StreamCenterPlugin.shouldShowTrackingIds(prefs),
+            visibleServices = StreamCenterPlugin.visibleTrackingIdServices(prefs),
+            restoreTags = restoreTags,
+        )
     }
 
     private fun LoadResponse.setTrackingId(service: ManualTrackingService, value: String) {

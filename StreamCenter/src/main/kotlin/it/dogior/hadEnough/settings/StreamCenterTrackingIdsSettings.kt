@@ -80,7 +80,24 @@ private class TrackingChipFlowLayout(context: Context, private val spacing: Int)
 }
 
 class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment() {
+    companion object {
+        private const val ARG_CARD_KEY = "trackingCardKey"
+        private const val ARG_CARD_API = "trackingCardApi"
+        private const val ARG_CARD_TITLE = "trackingCardTitle"
+
+        internal fun forCard(key: String, apiName: String, title: String) = StreamCenterTrackingIdsSettingsFragment().apply {
+            arguments = Bundle().apply {
+                putString(ARG_CARD_KEY, key)
+                putString(ARG_CARD_API, apiName)
+                putString(ARG_CARD_TITLE, title)
+            }
+        }
+    }
+
     override val screenTitle: String = "ID di tracciamento"
+
+    private val cardKey: String? get() = arguments?.getString(ARG_CARD_KEY)
+    private var cardEditorShown = false
 
     override val screenIcon: String = "🆔"
 
@@ -140,11 +157,17 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
     private var listFilter: WatchType? = null
     private var restoreFilterFocus = false
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (cardKey != null) showsDialog = false
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
     ): View {
+        if (cardKey != null) return View(requireContext())
         val content = rootContainer().apply {
             setPadding(paddingLeft, 0, paddingRight, paddingBottom)
         }
@@ -172,6 +195,27 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
         }.also(content::addView)
         renderList()
         return scroll(content, fixedSubmenuHeight = true)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val key = cardKey ?: return
+        if (cardEditorShown) return
+        cardEditorShown = true
+        val arguments = requireArguments()
+        val item = loadItems().firstOrNull { it.key == key } ?: TrackingItem(
+            key = key,
+            apiName = arguments.getString(ARG_CARD_API).orEmpty(),
+            title = arguments.getString(ARG_CARD_TITLE).orEmpty().ifBlank { key },
+            posterUrl = null,
+            type = null,
+            year = null,
+            detected = emptyMap(),
+            override = StreamCenterTrackingOverrides.override(sharedPref, key),
+            groupedSeasons = false,
+            seenAt = null,
+        )
+        showEditor(item, onSaved = { StreamCenterResultTrackingButton.reload(key) }) { if (isAdded) dismissAllowingStateLoss() }
     }
 
     override fun onDestroyView() {
@@ -511,7 +555,7 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
             ?: "non aperta di recente".takeIf { item.listStatus == null },
     ).joinToString(", ")
 
-    private fun showEditor(item: TrackingItem) {
+    private fun showEditor(item: TrackingItem, onSaved: (() -> Boolean)? = null, onClosed: (() -> Unit)? = null) {
         val ctx = context ?: return
         val accent = COLOR_ACCENT
         val inputs = linkedMapOf<ManualTrackingService, android.widget.EditText>()
@@ -575,7 +619,7 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
             .setNegativeButton("Chiudi", null)
         if (item.override != null) builder.setNeutralButton("Automatici", null)
         val dialog = builder.create()
-        applyDialogBackdrop(dialog)
+        applyDialogBackdrop(dialog, onDismiss = onClosed)
         dialog.show()
         refreshers.forEach { it() }
 
@@ -600,7 +644,7 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
             }
             if (values.isEmpty()) {
                 StreamCenterTrackingOverrides.removeOverride(sharedPref, item.key)
-                saveToast("Verranno usati gli ID trovati da StreamCenter")
+                saveToast(if (onSaved?.invoke() == true) "Scheda aggiornata con gli ID trovati da StreamCenter" else "Verranno usati gli ID trovati da StreamCenter")
             } else {
                 StreamCenterTrackingOverrides.saveOverride(
                     sharedPref,
@@ -615,13 +659,14 @@ class StreamCenterTrackingIdsSettingsFragment : StreamCenterBaseSettingsFragment
                         updatedAt = System.currentTimeMillis(),
                     ),
                 )
-                saveToast("ID salvati: riapri la scheda per applicarli")
+                saveToast(if (onSaved?.invoke() == true) "ID salvati e applicati alla scheda" else "ID salvati: riapri la scheda per applicarli")
             }
             dialog.dismiss()
             renderList()
         }
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL)?.setOnClickListener {
             StreamCenterTrackingOverrides.removeOverride(sharedPref, item.key)
+            onSaved?.invoke()
             saveToast("Ripristinati gli ID trovati da StreamCenter")
             dialog.dismiss()
             renderList()

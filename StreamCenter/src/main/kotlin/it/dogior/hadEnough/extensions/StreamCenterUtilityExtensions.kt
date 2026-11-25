@@ -60,6 +60,7 @@ internal object StreamCenterUtilityExtensions {
         StreamCenterUtilityExtension("SleepGuard", "Mette in pausa dopo un periodo di inattività · Beta", "🌙", italiaInStreaming),
         StreamCenterUtilityExtension("WatchParty", "Visione sincronizzata con gli amici e chat · Beta", "🎉", italiaInStreaming),
         StreamCenterUtilityExtension("Wrapped", "Statistiche di visione e riepilogo condivisibile", "📊", italiaInStreaming),
+        StreamCenterUtilityExtension("SyncStream", "Sincronizza CloudStream tra dispositivi con Google Drive o GitHub · Beta", "🔄", italiaInStreaming),
         StreamCenterUtilityExtension("ItaliaVerse", "Aggiunge a CloudStream tutti i repository italiani in un colpo solo", "🌐", italiaVerse),
     )
     private val installLocks = extensions.associate { it.key to Mutex() }

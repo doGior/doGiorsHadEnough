@@ -14,6 +14,17 @@ internal enum class PlaybackSourceGroup(val label: String, val priorityRank: Int
     TORRENT("Torrent", 0), HTTPS("HTTPS", 1), EXTENSION("Estensioni", 2), STREMIO("Stremio", 2),
 }
 
+internal enum class AnimeAudio(val label: String) {
+    SUB("SUB"), DUB("DUB");
+
+    private val token = Regex("""(?<![\p{L}\p{N}])${label}(?![\p{L}\p{N}])""", RegexOption.IGNORE_CASE)
+
+    companion object {
+        fun of(link: ExtractorLink): AnimeAudio? =
+            AnimeAudio.entries.filter { audio -> audio.token.containsMatchIn(link.name) }.singleOrNull()
+    }
+}
+
 internal class StreamingPlaybackLinks(
     private val dedupKey: (ExtractorLink) -> String,
     private val emit: (PlaybackSource, ExtractorLink) -> Unit,
@@ -45,9 +56,15 @@ private object CloudStreamPlaybackPriorities : PlaybackPriorityStore {
         QualityDataHelper.setSourcePriority(profile, source, priority)
 }
 
-internal class StreamCenterSourceOrder(private val store: PlaybackPriorityStore = CloudStreamPlaybackPriorities) {
+internal class StreamCenterSourceOrder(
+    private val store: PlaybackPriorityStore = CloudStreamPlaybackPriorities,
+    private val preferredAudio: AnimeAudio? = null,
+    private val preferredAudioAvailable: Boolean = false,
+) {
     companion object {
         private const val PINNED_BONUS = 100
+        private const val PREFERRED_AUDIO_BONUS = 3
+        private val audioLabelledGroups = setOf(PlaybackSourceGroup.HTTPS, PlaybackSourceGroup.EXTENSION)
         private const val PINNED_LABEL = "StreamCenter · Scelta dal telefono"
 
         private class Pin(val linkName: String, val until: Long)
@@ -79,9 +96,17 @@ internal class StreamCenterSourceOrder(private val store: PlaybackPriorityStore 
         val qualityLabel = if (quality == Qualities.Unknown) "N/D" else "${quality.value}p"
         val pin = activePin()
         val isPinned = pin?.linkName == link.name
-        val appliedTier = if (playbackProvider == null && pin == null) tier else PlaybackTier.NORMAL
+        val audio = if (preferredAudio != null && group in audioLabelledGroups) AnimeAudio.of(link) else null
+        val isPreferredAudio = audio != null && audio == preferredAudio
+        val preferredAudioExpected = audio != null && !isPreferredAudio && preferredAudioAvailable
+        val appliedTier = when {
+            playbackProvider != null || pin != null -> PlaybackTier.NORMAL
+            preferredAudioExpected && tier == PlaybackTier.RELIABLE -> PlaybackTier.NORMAL
+            else -> tier
+        }
+        val audioBonus = if (isPreferredAudio) PREFERRED_AUDIO_BONUS else 0
         val source = if (isPinned) PINNED_LABEL else playbackProvider
-            ?: listOfNotNull("StreamCenter", group.label, qualityLabel, appliedTier.label).joinToString(" · ")
+            ?: listOfNotNull("StreamCenter", group.label, qualityLabel, audio?.label, appliedTier.label).joinToString(" · ")
         try {
             if (available && configuredSources.add(source)) {
                 profiles.forEach { (profile, priorities) ->
@@ -90,7 +115,7 @@ internal class StreamCenterSourceOrder(private val store: PlaybackPriorityStore 
                     val qualityRank = if (visiblePriorities.size <= 1) 0 else
                         (visiblePriorities.indexOf(original).coerceAtLeast(0) * 2 / (visiblePriorities.size - 1))
                     val total = if (original < -1) original + 1 else
-                        (2 - group.priorityRank) * 3 + qualityRank + appliedTier.bonus + if (isPinned) PINNED_BONUS else 0
+                        (2 - group.priorityRank) * 3 + qualityRank + appliedTier.bonus + audioBonus + if (isPinned) PINNED_BONUS else 0
                     val priority = total - original
                     if (store.sourcePriority(profile, source) != priority) store.setSourcePriority(profile, source, priority)
                 }
